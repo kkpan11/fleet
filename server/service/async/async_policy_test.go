@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -34,13 +35,13 @@ func testCollectPolicyQueryExecutions(t *testing.T, ds *mysql.Datastore, pool fl
 	t.Logf("real host IDs: %v", hostIDs)
 	t.Logf("real policy IDs: %v", policyIDs)
 	hid := func(id int) int {
-		return int(hostIDs[id-1])
+		return int(hostIDs[id-1]) //nolint:gosec // dismiss G115
 	}
 	pid := func(id int) int {
 		if id < 0 || id >= len(policyIDs) {
 			return id
 		}
-		return int(policyIDs[id-1])
+		return int(policyIDs[id-1]) //nolint:gosec // dismiss G115
 	}
 
 	nbTrue := sql.NullBool{Valid: true, Bool: true}
@@ -525,12 +526,15 @@ func createPolicies(t *testing.T, ds *mysql.Datastore, count int) []uint {
 	ids := make([]uint, count)
 	mysql.ExecAdhocSQL(t, ds, func(tx sqlx.ExtContext) error {
 		for i := 0; i < count; i++ {
-			res, err := tx.ExecContext(ctx, `INSERT INTO policies (name, description, query) VALUES (?, ?, ?)`, fmt.Sprintf("%s-%d", t.Name(), i), t.Name(), "SELECT 1")
+			res, err := tx.ExecContext(
+				ctx, `INSERT INTO policies (name, description, query, checksum) VALUES (?, ?, ?, ?)`,
+				fmt.Sprintf("%s-%d", t.Name(), i), t.Name(), "SELECT 1", strconv.Itoa(i),
+			)
 			if err != nil {
 				return err
 			}
 			pid, _ := res.LastInsertId()
-			ids[i] = uint(pid)
+			ids[i] = uint(pid) //nolint:gosec // dismiss G115
 		}
 		return nil
 	})

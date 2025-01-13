@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -34,6 +35,9 @@ func TestTeams(t *testing.T) {
 		{"DeleteIntegrationsFromTeams", testTeamsDeleteIntegrationsFromTeams},
 		{"TeamsFeatures", testTeamsFeatures},
 		{"TeamsMDMConfig", testTeamsMDMConfig},
+		{"TestTeamsNameUnicode", testTeamsNameUnicode},
+		{"TestTeamsNameEmoji", testTeamsNameEmoji},
+		{"TestTeamsNameSort", testTeamsNameSort},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,6 +90,20 @@ func testTeamsGetSetDelete(t *testing.T, ds *Datastore) {
 			cp, err := ds.NewMDMAppleConfigProfile(context.Background(), dummyCP)
 			require.NoError(t, err)
 
+			wcp, err := ds.NewMDMWindowsConfigProfile(context.Background(), fleet.MDMWindowsConfigProfile{
+				Name:   "abc",
+				TeamID: &team.ID,
+				SyncML: []byte(`<Replace></Replace>`),
+			})
+			require.NoError(t, err)
+
+			dec, err := ds.NewMDMAppleDeclaration(context.Background(), &fleet.MDMAppleDeclaration{
+				Identifier: "decl-1",
+				Name:       "decl-1",
+				TeamID:     &team.ID,
+			})
+			require.NoError(t, err)
+
 			err = ds.DeleteTeam(context.Background(), team.ID)
 			require.NoError(t, err)
 
@@ -96,8 +114,14 @@ func testTeamsGetSetDelete(t *testing.T, ds *Datastore) {
 			_, err = ds.TeamByName(context.Background(), tt.name)
 			require.Error(t, err)
 
-			_, err = ds.GetMDMAppleConfigProfile(context.Background(), cp.ProfileID)
+			_, err = ds.GetMDMAppleConfigProfile(context.Background(), cp.ProfileUUID)
 			var nfe fleet.NotFoundError
+			require.ErrorAs(t, err, &nfe)
+
+			_, err = ds.GetMDMWindowsConfigProfile(context.Background(), wcp.ProfileUUID)
+			require.ErrorAs(t, err, &nfe)
+
+			_, err = ds.GetMDMAppleConfigProfile(context.Background(), dec.DeclarationUUID)
 			require.ErrorAs(t, err, &nfe)
 
 			require.NoError(t, ds.DeletePack(context.Background(), newP.Name))
@@ -193,13 +217,13 @@ func testTeamsList(t *testing.T, ds *Datastore) {
 		{User: user1, Role: "maintainer"},
 		{User: user2, Role: "observer"},
 	}
-	team1, err = ds.SaveTeam(context.Background(), team1)
+	_, err = ds.SaveTeam(context.Background(), team1)
 	require.NoError(t, err)
 
 	team2.Users = []fleet.TeamUser{
 		{User: user1, Role: "maintainer"},
 	}
-	team1, err = ds.SaveTeam(context.Background(), team2)
+	_, err = ds.SaveTeam(context.Background(), team2)
 	require.NoError(t, err)
 
 	teams, err = ds.ListTeams(context.Background(), fleet.TeamFilter{User: &user1}, fleet.ListOptions{})
@@ -567,13 +591,28 @@ func testTeamsMDMConfig(t *testing.T, ds *Datastore) {
 			Name: "team1",
 			Config: fleet.TeamConfig{
 				MDM: fleet.TeamMDM{
-					MacOSUpdates: fleet.MacOSUpdates{
+					MacOSUpdates: fleet.AppleOSUpdateSettings{
 						MinimumVersion: optjson.SetString("10.15.0"),
 						Deadline:       optjson.SetString("2025-10-01"),
+					},
+					IOSUpdates: fleet.AppleOSUpdateSettings{
+						MinimumVersion: optjson.SetString("11.11.11"),
+						Deadline:       optjson.SetString("2024-04-04"),
+					},
+					IPadOSUpdates: fleet.AppleOSUpdateSettings{
+						MinimumVersion: optjson.SetString("12.12.12"),
+						Deadline:       optjson.SetString("2023-03-03"),
+					},
+					WindowsUpdates: fleet.WindowsUpdates{
+						DeadlineDays:    optjson.SetInt(7),
+						GracePeriodDays: optjson.SetInt(3),
 					},
 					MacOSSetup: fleet.MacOSSetup{
 						BootstrapPackage:    optjson.SetString("bootstrap"),
 						MacOSSetupAssistant: optjson.SetString("assistant"),
+					},
+					WindowsSettings: fleet.WindowsSettings{
+						CustomSettings: optjson.SetSlice([]fleet.MDMProfileSpec{{Path: "foo"}, {Path: "bar"}}),
 					},
 				},
 			},
@@ -583,14 +622,116 @@ func testTeamsMDMConfig(t *testing.T, ds *Datastore) {
 		require.NoError(t, err)
 
 		assert.Equal(t, &fleet.TeamMDM{
-			MacOSUpdates: fleet.MacOSUpdates{
+			MacOSUpdates: fleet.AppleOSUpdateSettings{
 				MinimumVersion: optjson.SetString("10.15.0"),
 				Deadline:       optjson.SetString("2025-10-01"),
 			},
+			IOSUpdates: fleet.AppleOSUpdateSettings{
+				MinimumVersion: optjson.SetString("11.11.11"),
+				Deadline:       optjson.SetString("2024-04-04"),
+			},
+			IPadOSUpdates: fleet.AppleOSUpdateSettings{
+				MinimumVersion: optjson.SetString("12.12.12"),
+				Deadline:       optjson.SetString("2023-03-03"),
+			},
+			WindowsUpdates: fleet.WindowsUpdates{
+				DeadlineDays:    optjson.SetInt(7),
+				GracePeriodDays: optjson.SetInt(3),
+			},
 			MacOSSetup: fleet.MacOSSetup{
-				BootstrapPackage:    optjson.SetString("bootstrap"),
-				MacOSSetupAssistant: optjson.SetString("assistant"),
+				BootstrapPackage:            optjson.SetString("bootstrap"),
+				MacOSSetupAssistant:         optjson.SetString("assistant"),
+				EnableReleaseDeviceManually: optjson.SetBool(false),
+				Script:                      optjson.String{Set: true},
+				Software:                    optjson.Slice[*fleet.MacOSSetupSoftware]{Set: true, Value: []*fleet.MacOSSetupSoftware{}},
+			},
+			WindowsSettings: fleet.WindowsSettings{
+				CustomSettings: optjson.SetSlice([]fleet.MDMProfileSpec{{Path: "foo"}, {Path: "bar"}}),
 			},
 		}, mdm)
 	})
+}
+
+func testTeamsNameUnicode(t *testing.T, ds *Datastore) {
+	var equivalentNames []string
+	item, _ := strconv.Unquote(`"\uAC00"`) // 가
+	equivalentNames = append(equivalentNames, item)
+	item, _ = strconv.Unquote(`"\u1100\u1161"`) // ᄀ + ᅡ
+	equivalentNames = append(equivalentNames, item)
+
+	// Save team
+	team, err := ds.NewTeam(context.Background(), &fleet.Team{Name: equivalentNames[0]})
+	require.NoError(t, err)
+	assert.Equal(t, equivalentNames[0], team.Name)
+
+	// Try to create team with equivalent name
+	_, err = ds.NewTeam(context.Background(), &fleet.Team{Name: equivalentNames[1]})
+	assert.True(t, IsDuplicate(err), err)
+
+	// Try to update a different team with equivalent name -- not allowed
+	teamEmoji, err := ds.NewTeam(context.Background(), &fleet.Team{Name: "💻"})
+	require.NoError(t, err)
+	_, err = ds.SaveTeam(context.Background(), &fleet.Team{ID: teamEmoji.ID, Name: equivalentNames[1]})
+	assert.True(t, IsDuplicate(err), err)
+
+	// Try to find team with equivalent name
+	teamFilter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
+	results, err := ds.ListTeams(context.Background(), teamFilter, fleet.ListOptions{MatchQuery: equivalentNames[1]})
+	assert.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, equivalentNames[0], results[0].Name)
+
+	results, err = ds.SearchTeams(context.Background(), teamFilter, equivalentNames[1])
+	assert.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, equivalentNames[0], results[0].Name)
+
+	result, err := ds.TeamByName(context.Background(), equivalentNames[1])
+	assert.NoError(t, err)
+	assert.Equal(t, equivalentNames[0], result.Name)
+}
+
+func testTeamsNameEmoji(t *testing.T, ds *Datastore) {
+	// Try to save teams with emojis
+	emoji0 := "🔥"
+	_, err := ds.NewTeam(context.Background(), &fleet.Team{Name: emoji0})
+	require.NoError(t, err)
+	emoji1 := "💻"
+	teamEmoji, err := ds.NewTeam(context.Background(), &fleet.Team{Name: emoji1})
+	require.NoError(t, err)
+	assert.Equal(t, emoji1, teamEmoji.Name)
+
+	// Try to find team with emoji0
+	teamFilter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
+	results, err := ds.ListTeams(context.Background(), teamFilter, fleet.ListOptions{MatchQuery: emoji0})
+	assert.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, emoji0, results[0].Name)
+
+	// Try to find team with emoji1
+	results, err = ds.SearchTeams(context.Background(), teamFilter, emoji1)
+	assert.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, emoji1, results[0].Name)
+}
+
+// Ensure case-insensitive sort order for ames
+func testTeamsNameSort(t *testing.T, ds *Datastore) {
+	var teams [3]*fleet.Team
+	var err error
+	// Save teams
+	teams[1], err = ds.NewTeam(context.Background(), &fleet.Team{Name: "В"})
+	require.NoError(t, err)
+	teams[2], err = ds.NewTeam(context.Background(), &fleet.Team{Name: "о"})
+	require.NoError(t, err)
+	teams[0], err = ds.NewTeam(context.Background(), &fleet.Team{Name: "а"})
+	require.NoError(t, err)
+
+	teamFilter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
+	results, err := ds.ListTeams(context.Background(), teamFilter, fleet.ListOptions{OrderKey: "name"})
+	assert.NoError(t, err)
+	require.Len(t, teams, 3)
+	for i, item := range teams {
+		assert.Equal(t, item.Name, results[i].Name)
+	}
 }

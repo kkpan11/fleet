@@ -1,6 +1,6 @@
 import React from "react";
 import { noop } from "lodash";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 
 import createMockOsqueryTable from "__mocks__/osqueryTableMock";
 import QuerySidePanel from "./QuerySidePanel";
@@ -10,7 +10,7 @@ describe("QuerySidePanel - component", () => {
     render(
       <QuerySidePanel
         selectedOsqueryTable={createMockOsqueryTable()}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );
@@ -23,7 +23,7 @@ describe("QuerySidePanel - component", () => {
     const { container } = render(
       <QuerySidePanel
         selectedOsqueryTable={createMockOsqueryTable()}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );
@@ -38,27 +38,40 @@ describe("QuerySidePanel - component", () => {
     expect(platformCompatibility).toHaveTextContent(/chromeos/i);
   });
 
-  it("renders the correct number of columns including hiding columns set to hidden", () => {
+  it("renders the correct number of columns including rendering hidden columns", () => {
     const { container } = render(
       <QuerySidePanel
         selectedOsqueryTable={createMockOsqueryTable()}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );
 
     const platformList = container.getElementsByClassName("column-list-item");
-    expect(platformList.length).toBe(11); // 2 columns are set to hidden
+    expect(platformList.length).toBe(13); // 2 of 13 columns are set to hidden but still show
   });
-
-  it("renders the platform specific column tooltip", () => {
+  it("renders the hidden column tooltip", async () => {
     render(
       <QuerySidePanel
         selectedOsqueryTable={createMockOsqueryTable()}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );
+    await fireEvent.mouseEnter(screen.getByText("type"));
+
+    const tooltip = screen.getByText(/Not returned in SELECT */i);
+    expect(tooltip).toBeInTheDocument();
+  });
+  it("renders the platform specific column tooltip", async () => {
+    render(
+      <QuerySidePanel
+        selectedOsqueryTable={createMockOsqueryTable()}
+        onOsqueryTableSelect={() => noop}
+        onClose={noop}
+      />
+    );
+    await fireEvent.mouseEnter(screen.getByText("email"));
 
     const tooltip = screen.getByText(/only available on chrome/i);
     expect(tooltip).toBeInTheDocument();
@@ -68,7 +81,7 @@ describe("QuerySidePanel - component", () => {
     render(
       <QuerySidePanel
         selectedOsqueryTable={createMockOsqueryTable()}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );
@@ -87,7 +100,7 @@ describe("QuerySidePanel - component", () => {
         selectedOsqueryTable={createMockOsqueryTable({
           notes: "This table is being used for testing.",
         })}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );
@@ -102,7 +115,7 @@ describe("QuerySidePanel - component", () => {
     render(
       <QuerySidePanel
         selectedOsqueryTable={createMockOsqueryTable()}
-        onOsqueryTableSelect={(tableName: string) => noop}
+        onOsqueryTableSelect={() => noop}
         onClose={noop}
       />
     );

@@ -30,12 +30,12 @@ Continuing Fleet’s 🟣 Openness and GitOps forward approach to MDM, we are ex
 
 With this addition, administrators can have different setup experiences for each team—allowing a conference room computer to skip all setup screens while users see the screens they need. Controlling the macOS Setup Assistant using a JSON file allows for version control, review, and approval using a GitOps workflow. Additionally, when Apple releases new features (keys), administrators do not need to wait for a Fleet release to support these new features.
 
-Learn more about customizing the [macOS Setup Assistant](https://fleetdm.com/docs/using-fleet/mdm-macos-setup#macos-setup-assistant) experience.
+Learn more about customizing the [macOS Setup Assistant](https://fleetdm.com/docs/using-fleet/mdm-macos-setup-experience#macos-setup-assistant) experience.
 
 
 ## More new features, improvements, and bug fixes
 
-* Added support to add a EULA as part of the AEP/DEP unboxing flow.
+* Added support to add an EULA as part of the AEP/DEP unboxing flow.
 * DEP enrollments configured with SSO now pre-populate the username/fullname fields during account creation.
 * Integrated the macOS setup assistant feature with Apple DEP so that the setup assistants are assigned to the enrolled devices.
 * Re-assign and update the macOS setup assistants (and the default one) whenever required, such as when it is modified, when a host is transferred, a team is deleted, etc.

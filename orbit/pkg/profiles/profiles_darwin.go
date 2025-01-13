@@ -4,7 +4,6 @@ package profiles
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -13,39 +12,76 @@ import (
 
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mdm/apple/mobileconfig"
+	"github.com/groob/plist"
 )
 
-// GetFleetdConfig reads a system level setting set with Fleet's payload identifier.
-func GetFleetdConfig() (*fleet.MDMAppleFleetdConfig, error) {
-	readFleetdConfigAppleScript := fmt.Sprintf(`
-           const config = $.NSUserDefaults.alloc.initWithSuiteName("%s");
-           const enrollSecret = config.objectForKey("EnrollSecret");
-           const fleetURL = config.objectForKey("FleetURL");
-           const enableScripts = config.objectForKey("EnableScripts");
-           JSON.stringify({
-             EnrollSecret: ObjC.deepUnwrap(enrollSecret),
-             FleetURL: ObjC.deepUnwrap(fleetURL),
-             EnableScripts: ObjC.deepUnwrap(enableScripts),
-           });
-         `, mobileconfig.FleetdConfigPayloadIdentifier)
+type profileItem[T any] struct {
+	PayloadContent    T
+	PayloadType       string
+	PayloadIdentifier string
+}
 
-	outBuf, err := execScript(readFleetdConfigAppleScript)
+type profilePayload[T any] struct {
+	ProfileItems []profileItem[T]
+}
+
+type profilesOutput[T any] struct {
+	ComputerLevel []profilePayload[T] `plist:"_computerlevel"`
+}
+
+// GetFleetdConfig searches and parses a device level configuration profile
+// with Fleet's payload identifier.
+func GetFleetdConfig() (*fleet.MDMAppleFleetdConfig, error) {
+	pc, err := getProfilePayloadContent[fleet.MDMAppleFleetdConfig](mobileconfig.FleetdConfigPayloadIdentifier)
+	if err != nil {
+		if err == ErrNotFound {
+			return &fleet.MDMAppleFleetdConfig{}, nil
+		}
+
+		return nil, err
+	}
+
+	return pc, nil
+}
+
+func GetCustomEnrollmentProfileEndUserEmail() (string, error) {
+	pc, err := getProfilePayloadContent[fleet.MDMCustomEnrollmentProfileItem](mobileconfig.FleetEnrollmentPayloadIdentifier)
+	if err != nil {
+		return "", err
+	}
+	if pc == nil || pc.EndUserEmail == "" {
+		return "", ErrNotFound
+	}
+	return pc.EndUserEmail, nil
+}
+
+func getProfilePayloadContent[T any](identifier string) (*T, error) {
+	outBuf, err := execProfileCmd()
 	if err != nil {
 		return nil, fmt.Errorf("get profile: %w", err)
 	}
 
-	var cfg fleet.MDMAppleFleetdConfig
-	if err = json.Unmarshal(outBuf.Bytes(), &cfg); err != nil {
-		return nil, fmt.Errorf("unmarshaling configuration: %w", err)
+	var profiles profilesOutput[T]
+	if err := plist.Unmarshal(outBuf.Bytes(), &profiles); err != nil {
+		return nil, fmt.Errorf("get profile: %w", err)
 	}
 
-	return &cfg, err
+	for _, profile := range profiles.ComputerLevel {
+		for _, item := range profile.ProfileItems {
+			if item.PayloadIdentifier == identifier {
+				return &item.PayloadContent, nil
+			}
+		}
+	}
+
+	return nil, ErrNotFound
 }
 
-// execScript is declared as a variable so it can be overwritten by tests.
-var execScript = func(script string) (*bytes.Buffer, error) {
+// execProfileCmd is declared as a variable so it can be overwritten by tests.
+var execProfileCmd = func() (*bytes.Buffer, error) {
 	var outBuf bytes.Buffer
-	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", script)
+	// TODO: check if there is a reason to prefer -L over -C in some cases
+	cmd := exec.Command("/usr/bin/profiles", "-C", "-o", "stdout-xml")
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &outBuf
 	if err := cmd.Run(); err != nil {
@@ -89,6 +125,37 @@ func IsEnrolledInMDM() (bool, string, error) {
 	enrollmentURL := string(bytes.TrimSpace(parts[1]))
 
 	return true, enrollmentURL, nil
+}
+
+func IsManuallyEnrolledInMDM() (bool, error) {
+	out, err := getMDMInfoFromProfilesCmd()
+	if err != nil {
+		return false, fmt.Errorf("calling /usr/bin/profiles: %w", err)
+	}
+
+	// The output of the command is in the form:
+	//
+	// ```
+	// Enrolled via DEP: No
+	// MDM enrollment: Yes (User Approved)
+	// MDM server: https://test.example.com/mdm/apple/mdm
+	// ```
+	//
+	// If the host is not enrolled into an MDM, the last line is ommitted,
+	// so we need to check that:
+	//
+	// 1. We've got three rows
+	// 2. Whether the first line contains "Yes" or "No"
+	lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
+	if len(lines) < 3 {
+		return false, nil
+	}
+
+	if strings.Contains(string(lines[0]), "Yes") {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 // getMDMInfoFromProfilesCmd is declared as a variable so it can be overwritten by tests.
@@ -211,6 +278,6 @@ func parseEnrollmentProfileValue(line []byte, key string) (string, bool) {
 
 // showEnrollmentProfileCmd is declared as a variable so it can be overwritten by tests.
 var showEnrollmentProfileCmd = func() ([]byte, error) {
-	cmd := exec.Command("/usr/bin/profiles", "show", "-type", "enrollment")
+	cmd := exec.Command("sh", "-c", `launchctl asuser $(id -u $(stat -f "%u" /dev/console)) profiles show -type enrollment`)
 	return cmd.Output()
 }

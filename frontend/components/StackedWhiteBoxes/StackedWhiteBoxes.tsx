@@ -14,7 +14,7 @@ interface IStackedWhiteBoxesProps {
   className?: string;
   leadText?: string;
   previousLocation?: string;
-  router: InjectedRouter;
+  router?: InjectedRouter;
 }
 
 const StackedWhiteBoxes = ({
@@ -29,7 +29,7 @@ const StackedWhiteBoxes = ({
 
   useEffect(() => {
     const closeWithEscapeKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && router) {
         router.push(paths.LOGIN);
       }
     };
@@ -47,7 +47,7 @@ const StackedWhiteBoxes = ({
     return (
       <div className={`${baseClass}__back`}>
         <Link to={previousLocation} className={`${baseClass}__back-link`}>
-          <Icon name="ex" color="core-fleet-black" />
+          <Icon name="close" color="core-fleet-black" />
         </Link>
       </div>
     );

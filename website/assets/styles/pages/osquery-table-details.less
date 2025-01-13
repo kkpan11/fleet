@@ -3,10 +3,13 @@
     margin: 0;
     width: 100vw;
     height: 1px;
-    border-top: 1px solid @border-lt-gray;
+    border-top: 1px solid @core-fleet-black-25;
   }
 
   [purpose='search-and-filters'] {
+    hr {
+      display: none;
+    }
     [purpose='filter-row'] {
       max-width: 1200px;
       padding-left: 40px;
@@ -43,8 +46,8 @@
         border-bottom-right-radius: 6px;
         border: 1px solid @core-fleet-black-25;
         background-color: #FFF;
-        height: 42px;
-        padding: 8px 15px;
+        height: 40px;
+        padding: 9px 16px;
         margin: 0;
       }
       .DocSearch-Button:hover {
@@ -129,10 +132,8 @@
     -ms-overflow-style: none;
     min-width: 245px;
     max-width: 250px;
-    padding-top: 60px;
+    padding-top: 24px;
     height: 100%;
-    border-right: 1px #EEE solid;
-    padding-right: 16px;
     margin-right: 16px;
     h4 {
       line-height: 24px;
@@ -143,7 +144,7 @@
     padding-top: 16px;
     padding-bottom: 120px;
     margin-top: 16px;
-    border-top: 1px #EEE solid;
+    border-top: 1px solid @core-fleet-black-25;
     position: relative;
     a {
       font-size: 14px;
@@ -159,7 +160,7 @@
     }
     min-height: calc(~'100vh - 565px');
     overflow-y: scroll;
-    overflow-x: show;
+    overflow-x: visible;
   }
   [purpose='evented-table-icon'] {
     margin-left: 4px;
@@ -177,6 +178,7 @@
   }
   [purpose='table-container'] {
     height: min-content;
+    max-width: 860px;
   }
 
   [purpose='overflow-shadow'] {
@@ -231,28 +233,30 @@
   [purpose='schema-table'] {
     width: 100%;
     position: relative;
-    padding-top: 60px;
+    padding-top: 24px;
     margin-bottom: 40px;
     [purpose='platform-logos'] {
       height: 0px;
       position: absolute;
       right: 0;
-      top: 76px;
+      top: 40px;
     }
     a:not(.btn):not([purpose='evented-table-label']) {
       color: @core-vibrant-blue;
       padding-right: 7px;
     }
-    a:not(.markdown-link):not([purpose='evented-table-label']):after {
-      background-image: url('/images/icon-arrow-upper-right-7x7@2x.png');
-      background-size: 7px 7px;
-      display: inline-block;
-      position: relative;
-      top: -4px;
-      left: 4px;
-      width: 7px;
-      height: 7px;
-      content: '';
+    a:not(.markdown-link):not([purpose='evented-table-label']) {
+      &:after {
+        background-image: url('/images/icon-arrow-upper-right-7x7@2x.png');
+        background-size: 7px 7px;
+        display: inline-block;
+        position: relative;
+        top: -4px;
+        left: 4px;
+        width: 7px;
+        height: 7px;
+        content: '';
+      }
     }
     pre {
       width: 100%;
@@ -274,25 +278,31 @@
           .hljs-keyword {
             color: #FFF;
           }
+          .hljs-string { // For words wrapped in quotation marks
+            color: #FFF;
+          }
           color: #FFF;
           background-color: #AE6DDF;
-          border-radius: 4px;
-          padding: 4px 4px 4px 4px;
+          border-radius: 3px;
           white-space: pre;
           vertical-align: baseline;
-          line-height: 16px;
           span {
             padding: 0;
           }
         }
+        .hljs-number {
+          color: #f5871f;
+        }
         .hljs-string { // For words wrapped in quotation marks
-          color: #3DB67B;
-          white-space: pre;
+          color: #4fd061;
+          .hljs-keyword {
+            color: #4fd061;
+          }
         }
         background-color: @ui-off-white;
         border: none;
         word-break: break-word;
-        white-space: normal;
+        text-wrap: wrap;
         padding: 0;
         font-size: 13px;
         line-height: 24px;
@@ -313,13 +323,13 @@
       th {
         font-weight: @bold;
         font-family: @header-font;
-        border: 1px solid @border-lt-gray;
+        border: 1px solid @core-fleet-black-25;
         padding: 8px;
       }
       td {
         vertical-align: middle;
         font-family: @main-font;
-        border: 1px solid @border-lt-gray;
+        border: 1px solid @core-fleet-black-25;
         padding: 8px;
         max-height: 100px;
         strong {
@@ -405,6 +415,9 @@
   }
 
   @media (max-width: 991px) {
+    [purpose='table-container'] {
+      max-width: unset;
+    }
     [purpose='schema-table'] {
       padding-top: 40px;
       [purpose='platform-logos'] {
@@ -412,6 +425,11 @@
       }
       [purpose='description-column'] {
         word-break: break-word;
+      }
+    }
+    [purpose='search-and-filters'] {
+      hr {
+        display: block;
       }
     }
     [purpose='filter-row'] {
@@ -449,6 +467,7 @@
       padding-right: 24px;
     }
     [purpose='search-and-filters'] {
+
       [purpose='filter-row'] {
         padding-left: 24px;
         padding-right: 24px;
@@ -467,6 +486,7 @@
           width: 100%;
         }
       }
+
     }
     [purpose='schema-table'] {
       h2 {

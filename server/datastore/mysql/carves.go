@@ -179,7 +179,7 @@ func (ds *Datastore) Carve(ctx context.Context, carveId int64) (*fleet.CarveMeta
 	var metadata fleet.CarveMetadata
 	if err := sqlx.GetContext(ctx, ds.reader(ctx), &metadata, stmt, carveId); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, ctxerr.Wrap(ctx, notFound("Carve").WithID(uint(carveId)))
+			return nil, ctxerr.Wrap(ctx, notFound("Carve").WithID(uint(carveId))) //nolint:gosec // dismiss G115
 		}
 		return nil, ctxerr.Wrap(ctx, err, "get carve by ID")
 	}
@@ -234,9 +234,9 @@ func (ds *Datastore) ListCarves(ctx context.Context, opt fleet.CarveListOptions)
 	if !opt.Expired {
 		stmt += ` WHERE NOT expired `
 	}
-	stmt = appendListOptionsToSQL(stmt, &opt.ListOptions)
+	stmt, params := appendListOptionsToSQL(stmt, &opt.ListOptions)
 	carves := []*fleet.CarveMetadata{}
-	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &carves, stmt); err != nil && err != sql.ErrNoRows {
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &carves, stmt, params...); err != nil && err != sql.ErrNoRows {
 		return nil, ctxerr.Wrap(ctx, err, "list carves")
 	}
 
@@ -280,7 +280,7 @@ func (ds *Datastore) GetBlock(ctx context.Context, metadata *fleet.CarveMetadata
 	var data []byte
 	if err := sqlx.GetContext(ctx, ds.reader(ctx), &data, stmt, metadata.ID, blockId); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, ctxerr.Wrap(ctx, notFound("CarveBlock").WithID(uint(blockId)))
+			return nil, ctxerr.Wrap(ctx, notFound("CarveBlock").WithID(uint(blockId))) //nolint:gosec // dismiss G115
 		}
 		return nil, ctxerr.Wrap(ctx, err, "select data")
 	}

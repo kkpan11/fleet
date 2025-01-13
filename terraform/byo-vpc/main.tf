@@ -13,7 +13,9 @@ module "byo-db" {
       address = "${module.redis.endpoint}:${module.redis.port}"
     }
     networking = {
-      subnets = var.vpc_config.networking.subnets
+      subnets         = var.vpc_config.networking.subnets
+      security_groups = var.fleet_config.networking.security_groups
+      ingress_sources = var.fleet_config.networking.ingress_sources
     }
   })
   ecs_cluster      = var.ecs_cluster
@@ -62,6 +64,8 @@ module "rds" {
   skip_final_snapshot             = true
   snapshot_identifier             = var.rds_config.snapshot_identifier
 
+  preferred_maintenance_window = var.rds_config.preferred_maintenance_window
+
   cluster_tags = var.rds_config.cluster_tags
 }
 
@@ -72,7 +76,7 @@ data "aws_subnet" "redis" {
 
 module "redis" {
   source  = "cloudposse/elasticache-redis/aws"
-  version = "0.48.0"
+  version = "0.53.0"
 
   name                          = var.redis_config.name
   replication_group_id          = var.redis_config.replication_group_id == null ? var.redis_config.name : var.redis_config.replication_group_id
@@ -97,7 +101,7 @@ module "redis" {
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
+    cidr_blocks = var.redis_config.allowed_cidrs
   }]
   tags = var.redis_config.tags
 }

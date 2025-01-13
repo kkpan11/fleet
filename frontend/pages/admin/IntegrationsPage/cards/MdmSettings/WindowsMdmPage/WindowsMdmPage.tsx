@@ -1,26 +1,32 @@
-import React, { useContext } from "react";
+import React, { useContext, useState } from "react";
 import { InjectedRouter } from "react-router";
+import { isAxiosError } from "axios";
 
 import PATHS from "router/paths";
 import configAPI from "services/entities/config";
+import { getErrorReason } from "interfaces/errors";
 import { NotificationContext } from "context/notification";
 import { AppContext } from "context/app";
 
 import MainContent from "components/MainContent/MainContent";
 import Button from "components/buttons/Button";
 import BackLink from "components/BackLink/BackLink";
+import Slider from "components/forms/fields/Slider";
+import Checkbox from "components/forms/fields/Checkbox";
 
 const baseClass = "windows-mdm-page";
 
 interface ISetWindowsMdmOptions {
-  enable: boolean;
+  enableMdm: boolean;
+  enableAutoMigration: boolean;
   successMessage: string;
   errorMessage: string;
   router: InjectedRouter;
 }
 
 const useSetWindowsMdm = ({
-  enable,
+  enableMdm,
+  enableAutoMigration,
   successMessage,
   errorMessage,
   router,
@@ -29,69 +35,36 @@ const useSetWindowsMdm = ({
   const { renderFlash } = useContext(NotificationContext);
 
   const turnOnWindowsMdm = async () => {
+    let flashErrMsg = "";
     try {
-      const updatedConfig = await configAPI.update({
-        mdm: {
-          windows_enabled_and_configured: enable,
+      const updatedConfig = await configAPI.updateMDMConfig(
+        {
+          windows_enabled_and_configured: enableMdm,
+          windows_migration_enabled: enableAutoMigration,
         },
-      });
+        true
+      );
       setConfig(updatedConfig);
-      renderFlash("success", successMessage);
-    } catch {
-      renderFlash("error", errorMessage);
+    } catch (e) {
+      if (enableMdm && isAxiosError(e) && e.response?.status === 422) {
+        flashErrMsg =
+          getErrorReason(e, {
+            nameEquals: "mdm.windows_enabled_and_configured",
+          }) || errorMessage;
+      } else {
+        flashErrMsg = errorMessage;
+      }
     } finally {
       router.push(PATHS.ADMIN_INTEGRATIONS_MDM);
+      if (flashErrMsg) {
+        renderFlash("error", flashErrMsg);
+      } else {
+        renderFlash("success", successMessage);
+      }
     }
   };
 
   return turnOnWindowsMdm;
-};
-
-interface IWindowsMdmOnContentProps {
-  router: InjectedRouter;
-}
-
-const WindowsMdmOnContent = ({ router }: IWindowsMdmOnContentProps) => {
-  const turnOnWindowsMdm = useSetWindowsMdm({
-    enable: true,
-    successMessage: "Windows MDM turned on (servers excluded).",
-    errorMessage: "Unable to turn on Windows MDM. Please try again.",
-    router,
-  });
-
-  return (
-    <>
-      <h1>Turn on Windows MDM</h1>
-      <p>This will turn MDM on for Windows hosts with fleetd.</p>
-      <p>Hosts connected to another MDM solution won&apos;t be migrated.</p>
-      <p>MDM won&apos;t be turned on for Windows servers.</p>
-      <Button onClick={turnOnWindowsMdm}>Turn on</Button>
-    </>
-  );
-};
-
-interface IWindowsMdmOffContentProps {
-  router: InjectedRouter;
-}
-
-const WindowsMdmOffContent = ({ router }: IWindowsMdmOffContentProps) => {
-  const turnOffWindowsMdm = useSetWindowsMdm({
-    enable: false,
-    successMessage: "Windows MDM turned off.",
-    errorMessage: "Unable to turn off Windows MDM. Please try again.",
-    router,
-  });
-
-  return (
-    <>
-      <h1>Turn off Windows MDM</h1>
-      <p>
-        MDM will no longer be turned on for Windows hosts that enroll to Fleet.
-      </p>
-      <p>Hosts with MDM already turned on MDM will not have MDM removed.</p>
-      <Button onClick={turnOffWindowsMdm}>Turn off MDM</Button>
-    </>
-  );
 };
 
 interface IWindowsMdmPageProps {
@@ -99,16 +72,39 @@ interface IWindowsMdmPageProps {
 }
 
 const WindowsMdmPage = ({ router }: IWindowsMdmPageProps) => {
-  const { config } = useContext(AppContext);
+  const { config, isPremiumTier } = useContext(AppContext);
 
-  // TODO: remove when windows MDM is fully released. This is a temporary redirect
-  // when the feature is not enabled.
-  if (!config?.mdm_enabled) {
-    router.replace(PATHS.ADMIN_INTEGRATIONS_MDM);
-  }
+  const [mdmOn, setMdmOn] = useState(
+    config?.mdm?.windows_enabled_and_configured ?? false
+  );
+  const [autoMigration, setAutoMigration] = useState(
+    config?.mdm?.windows_migration_enabled ?? false
+  );
 
-  const isWindowsMdmEnabled =
-    config?.mdm?.windows_enabled_and_configured ?? false;
+  const updateWindowsMdm = useSetWindowsMdm({
+    enableMdm: mdmOn,
+    enableAutoMigration: autoMigration,
+    successMessage: "Windows MDM settings successfully updated.",
+    errorMessage: "Unable to update Windows MDM. Please try again.",
+    router,
+  });
+
+  const onChangeMdmOn = () => {
+    setMdmOn(!mdmOn);
+    mdmOn && setAutoMigration(false);
+  };
+
+  const onChangeAutoMigration = () => {
+    setAutoMigration(!autoMigration);
+  };
+
+  const onSaveMdm = () => {
+    updateWindowsMdm();
+  };
+
+  const descriptionText = mdmOn
+    ? "Turns on MDM for Windows hosts that enroll to Fleet (excluding servers)."
+    : "Hosts with MDM already turned on will not have MDM removed.";
 
   return (
     <MainContent className={baseClass}>
@@ -118,11 +114,30 @@ const WindowsMdmPage = ({ router }: IWindowsMdmPageProps) => {
           path={PATHS.ADMIN_INTEGRATIONS_MDM}
           className={`${baseClass}__back-to-mdm`}
         />
-        {isWindowsMdmEnabled ? (
-          <WindowsMdmOffContent router={router} />
-        ) : (
-          <WindowsMdmOnContent router={router} />
-        )}
+        <h1>Manage Windows MDM</h1>
+        <form>
+          <Slider
+            value={mdmOn}
+            activeText="Windows MDM on"
+            inactiveText="Windows MDM off"
+            onChange={onChangeMdmOn}
+          />
+          <p>{descriptionText}</p>
+          <Checkbox
+            disabled={!isPremiumTier || !mdmOn}
+            value={autoMigration}
+            onChange={onChangeAutoMigration}
+            tooltipContent={
+              isPremiumTier ? "" : "This feature is included in Fleet Premium."
+            }
+          >
+            Automatically migrate hosts connected to another MDM solution
+          </Checkbox>
+
+          <Button variant="brand" onClick={onSaveMdm}>
+            Save
+          </Button>
+        </form>
       </>
     </MainContent>
   );
