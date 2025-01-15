@@ -59,9 +59,9 @@ the account verification message.)`,
 
     signupReason: {
       type: 'string',
-      isIn: ['Buy a license', 'Try Fleet Sandbox'],
+      isIn: ['Buy a license', 'Try Fleet'],
       defaultsTo: 'Buy a license',
-    }
+    },
 
   },
 
@@ -79,34 +79,31 @@ the account verification message.)`,
       'parameters should have been validated/coerced _before_ they were sent.'
     },
 
-    requestToProvisionerTimedOut: {
-      statusCode: 408,
-      description: 'The request to the cloud provisioner exceeded the set timeout.',
-    },
-
     emailAlreadyInUse: {
       statusCode: 409,
       description: 'The provided email address is already in use.',
+    },
+
+    invalidEmailDomain: {
+      description: 'This email address is on a denylist of domains and cannot be used to signup for a fleetdm.com account.',
+      responseType: 'badRequest'
     },
 
 
   },
 
   fn: async function ({emailAddress, password, firstName, lastName, organization, signupReason}) {
-
-    if(!sails.config.custom.cloudProvisionerSecret){
-      throw new Error('The authorization token for the cloud provisioner API (sails.config.custom.cloudProvisionerSecret) is missing! If you just want to test aspects of fleetdm.com locally, and are OK with the cloud provisioner failing if you try to use it, you can set a fake secret when starting a local server by lifting the server with "sails_custom__cloudProvisionerSecret=test sails lift"');
-    }
-
-    if(sails.config.custom.fleetSandboxWaitlistEnabled === undefined){
-      throw new Error(`The Fleet Sandbox waitlist configuration variable (sails.config.custom.fleetSandboxWaitlistEnabled) is missing!`);
-    }
+    // Note: in Oct. 2023, the Fleet Sandbox related code was removed from this action. For more details, see https://github.com/fleetdm/fleet/pull/14638/files
 
     var newEmailAddress = emailAddress.toLowerCase();
-
     // Checking if a user with this email address exists in our database before we send a request to the cloud provisioner.
     if(await User.findOne({emailAddress: newEmailAddress})) {
       throw 'emailAlreadyInUse';
+    }
+    // Check the user's email address and return an 'invalidEmailDomain' response if the domain is in the sails.config.custom.bannedEmailDomainsForWebsiteSubmissions array.
+    let emailDomain = newEmailAddress.split('@')[1];
+    if(_.includes(sails.config.custom.bannedEmailDomainsForWebsiteSubmissions, emailDomain)){
+      throw 'invalidEmailDomain';
     }
 
 
@@ -123,94 +120,50 @@ the account verification message.)`,
     .intercept((error)=>{
       return new Error(`An error occurred when trying to create a Stripe Customer for a new user with the using the email address ${newEmailAddress}. The incomplete user record has not been saved in the database, and the user will be asked to try signing up again. Full error: ${error.raw}`);
     });
+    let newUserRecord = await User.create(_.extend({
+      firstName,
+      lastName,
+      organization,
+      emailAddress: newEmailAddress,
+      signupReason,
+      password: await sails.helpers.passwords.hashPassword(password),
+      stripeCustomerId,
+      tosAcceptedByIp: this.req.ip
+    }, sails.config.custom.verifyEmailAddresses? {
+      emailProofToken: await sails.helpers.strings.random('url-friendly'),
+      emailProofTokenExpiresAt: Date.now() + sails.config.custom.emailProofTokenTTL,
+      emailStatus: 'unconfirmed'
+    }:{}))
+    .intercept('E_UNIQUE', 'emailAlreadyInUse')
+    .intercept({name: 'UsageError'}, 'invalid')
+    .fetch();
 
-    let newUserRecord;
+    let psychologicalStageChangeReason;
+    if(this.req.session.adAttributionString && this.req.session.visitedSiteFromAdAt) {
+      let sevenDaysAgoAt = Date.now() - (1000 * 60 * 60 * 24 * 7);
+      // If this user visited the website from an ad, set the psychologicalStageChangeReason to be the adCampaignId stored in their session.
+      if(this.req.session.visitedSiteFromAdAt > sevenDaysAgoAt) {
+        psychologicalStageChangeReason = this.req.session.adAttributionString;
+      }
+    }
+    sails.helpers.salesforce.updateOrCreateContactAndAccount.with({
+      emailAddress: newEmailAddress,
+      firstName: firstName,
+      lastName: lastName,
+      organization: organization,
+      contactSource: 'Website - Sign up',
+      psychologicalStageChangeReason,
+    }).exec((err)=>{
+      if(err){
+        sails.log.warn(`Background task failed: When a user (email: ${newEmailAddress} signed up for a fleetdm.com account, a Contact and Account record could not be created/updated in the CRM.`, err);
+      }
+      return;
+    });
 
-    // If the sandbox waitlist is enabled, we'll create a record without fleetSandboxURL,fleetSandboxExpiresAt,fleetSandboxDemoKey values and with inSandboxWaitlist set to true.
-    if(sails.config.custom.fleetSandboxWaitlistEnabled === true) {
-      newUserRecord = await User.create(_.extend({
-        firstName,
-        lastName,
-        organization,
-        emailAddress: newEmailAddress,
-        signupReason,
-        password: await sails.helpers.passwords.hashPassword(password),
-        stripeCustomerId,
-        inSandboxWaitlist: true,
-        tosAcceptedByIp: this.req.ip
-      }, sails.config.custom.verifyEmailAddresses? {
-        emailProofToken: await sails.helpers.strings.random('url-friendly'),
-        emailProofTokenExpiresAt: Date.now() + sails.config.custom.emailProofTokenTTL,
-        emailStatus: 'unconfirmed'
-      }:{}))
-      .intercept('E_UNIQUE', 'emailAlreadyInUse')
-      .intercept({name: 'UsageError'}, 'invalid')
-      .fetch();
-
-    } else {
-      // If the Fleet Sandbox waitlist is not enabled (sails.config.custom.fleetSandboxWaitlistEnabled) We'll provision a Sandbox instance BEFORE creating the new User record.
-      // This way, if this fails, we won't save the new record to the database, and the user will see an error on the signup form asking them to try again.
-
-      let sandboxInstanceDetails = await sails.helpers.fleetSandboxCloudProvisioner.provisionNewFleetSandboxInstance.with({
-        firstName: firstName,
-        lastName: lastName,
-        emailAddress: newEmailAddress,
-      })
-      .intercept('requestToProvisionerTimedOut', (err)=>{ // If the request to the Fleet Sandbox provisioner fails, we'll log a warning an return a requestToSandboxTimedOut response. This will tell the frontend to display a message asking the user to retry signing up.
-        sails.log.warn(`When attempting to provision a new Fleet Sandbox instance for a new user signing up (email: ${newEmailAddress}). The Fleet Sandbox provisioner returned a non 200 response. The incomplete user record has not been saved in the database, and the user will be asked to try signing up again. Full error: ${err}`);
-        return 'requestToProvisionerTimedOut';
-      })
-      .intercept((err)=>{ // For any other errors, we'll throw a 500 error.
-        return new Error(`When attempting to provision a new Fleet Sandbox instance for a new user signing up (email: ${newEmailAddress}), an error occured. The incomplete user record has not been saved in the database, and the user will be asked to try signing up again. Full error: ${err}`);
-      });
-
-      // Build up data for the new user record and save it to the database.
-      // (Also use `fetch` to retrieve the new ID so that we can use it below.)
-      newUserRecord = await User.create(_.extend({
-        firstName,
-        lastName,
-        organization,
-        emailAddress: newEmailAddress,
-        signupReason,
-        password: await sails.helpers.passwords.hashPassword(password),
-        fleetSandboxURL: sandboxInstanceDetails.fleetSandboxURL,
-        fleetSandboxExpiresAt: sandboxInstanceDetails.fleetSandboxExpiresAt,
-        fleetSandboxDemoKey: sandboxInstanceDetails.fleetSandboxDemoKey,
-        stripeCustomerId,
-        inSandboxWaitlist: false,
-        tosAcceptedByIp: this.req.ip
-      }, sails.config.custom.verifyEmailAddresses? {
-        emailProofToken: await sails.helpers.strings.random('url-friendly'),
-        emailProofTokenExpiresAt: Date.now() + sails.config.custom.emailProofTokenTTL,
-        emailStatus: 'unconfirmed'
-      }:{}))
-      .intercept('E_UNIQUE', 'emailAlreadyInUse')
-      .intercept({name: 'UsageError'}, 'invalid')
-      .fetch();
-
-      // Send a POST request to Zapier
-      await sails.helpers.http.post(
-        'https://hooks.zapier.com/hooks/catch/3627242/bqsf4rj/',
-        {
-          'emailAddress': newEmailAddress,
-          'organization': organization,
-          'firstName': firstName,
-          'lastName': lastName,
-          'signupReason': signupReason,
-          'webhookSecret': sails.config.custom.zapierSandboxWebhookSecret
-        }
-      )
-      .timeout(5000)
-      .tolerate(['non200Response', 'requestFailed', {name: 'TimeoutError'}], (err)=>{
-        // Note that Zapier responds with a 2xx status code even if something goes wrong, so just because this message is not logged doesn't mean everything is hunky dory.  More info: https://github.com/fleetdm/fleet/pull/6380#issuecomment-1204395762
-        sails.log.warn(`When a new user signed up, a lead/contact could not be verified in the CRM for this email address: ${newEmailAddress}. Raw error: ${err}`);
-        return;
-      });
-
-    }//ﬁ
 
     // Store the user's new id in their session.
     this.req.session.userId = newUserRecord.id;
+
 
     if (sails.config.custom.verifyEmailAddresses) {
       // Send "confirm account" email

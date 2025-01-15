@@ -8,7 +8,7 @@ import RESPONSES from "./responses";
 
 type IResponses = Record<string, Record<string, Record<string, unknown>>>;
 
-const DELAY = 1000;
+const DELAY = 5000;
 
 const ENDPOINT = "/latest/fleet";
 
@@ -23,6 +23,7 @@ const REQUEST_RESPONSE_MAPPINGS: IResponses = {
     // expensive data operations
     "targets?query={*}": RESPONSES.hosts,
     // "SchedulableQueries" to be used in developing frontend for #7765
+    "hosts/12345": RESPONSES.hostDetailsiOS,
     queries: RESPONSES.globalQueries,
     "queries/1": RESPONSES.globalQuery1,
     "queries/2": RESPONSES.globalQuery2,
@@ -33,6 +34,8 @@ const REQUEST_RESPONSE_MAPPINGS: IResponses = {
     "queries/7": RESPONSES.globalQuery6,
     "queries/8": RESPONSES.teamQuery2,
     "queries?team_id=13": RESPONSES.teamQueries,
+    "queries/113/report?order_key=host_name&order_direction=asc":
+      RESPONSES.queryReport,
   },
   POST: {
     // request body is ISelectedTargets
@@ -52,6 +55,7 @@ const REQUEST_RESPONSE_MAPPINGS: IResponses = {
       team_id: null,
       platform: "linux",
     },
+    "autofill/policies": RESPONSES.aiAutofillPolicy,
   },
 } as IResponses;
 

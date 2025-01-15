@@ -18,7 +18,7 @@ import EventedTableTag from "./EventedTableTag";
 interface IQuerySidePanel {
   selectedOsqueryTable: IOsQueryTable;
   onOsqueryTableSelect: (tableName: string) => void;
-  onClose?: () => void;
+  onClose: () => void;
 }
 
 const baseClass = "query-side-panel";
@@ -67,8 +67,13 @@ const QuerySidePanel = ({
         className={`${baseClass}__close-button`}
         tabIndex={0}
         onClick={onClose}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            onClose();
+          }
+        }}
       >
-        <Icon name="ex" color="ui-fleet-black-50" size="small" />
+        <Icon name="close" color="ui-fleet-black-50" size="small" />
       </div>
       <div className={`${baseClass}__choose-table`}>
         <h2 className={`${baseClass}__header`}>

@@ -5,6 +5,7 @@ import classnames from "classnames";
 import Icon from "components/Icon/Icon";
 import FleetIcon from "components/icons/FleetIcon";
 import TooltipWrapper from "components/TooltipWrapper";
+import Button from "components/buttons/Button";
 import InputField from "../InputField";
 
 const baseClass = "input-icon-field";
@@ -13,12 +14,14 @@ class InputFieldWithIcon extends InputField {
   static propTypes = {
     autofocus: PropTypes.bool,
     error: PropTypes.string,
-    hint: PropTypes.oneOfType([PropTypes.array, PropTypes.string]),
+    helpText: PropTypes.oneOfType([PropTypes.array, PropTypes.string]),
     iconName: PropTypes.string,
     iconSvg: PropTypes.string,
     label: PropTypes.string,
     name: PropTypes.string,
     onChange: PropTypes.func,
+    onClick: PropTypes.func,
+    clearButton: PropTypes.func,
     placeholder: PropTypes.string,
     tabIndex: PropTypes.number,
     type: PropTypes.string,
@@ -27,6 +30,7 @@ class InputFieldWithIcon extends InputField {
     iconPosition: PropTypes.oneOf(["start", "end"]),
     inputOptions: PropTypes.object, // eslint-disable-line react/forbid-prop-types
     tooltip: PropTypes.string,
+    ignore1Password: PropTypes.bool,
   };
 
   renderHeading = () => {
@@ -44,7 +48,7 @@ class InputFieldWithIcon extends InputField {
         data-has-tooltip={!!tooltip}
       >
         {tooltip && !error ? (
-          <TooltipWrapper position="top" tipContent={tooltip}>
+          <TooltipWrapper position="bottom-start" tipContent={tooltip}>
             {label}
           </TooltipWrapper>
         ) : (
@@ -54,11 +58,15 @@ class InputFieldWithIcon extends InputField {
     );
   };
 
-  renderHint = () => {
-    const { hint } = this.props;
+  renderHelpText = () => {
+    const { helpText } = this.props;
 
-    if (hint) {
-      return <span className={`${baseClass}__hint`}>{hint}</span>;
+    if (helpText) {
+      return (
+        <span className={`${baseClass}__help-text form-field__help-text`}>
+          {helpText}
+        </span>
+      );
     }
 
     return false;
@@ -78,10 +86,14 @@ class InputFieldWithIcon extends InputField {
       disabled,
       iconPosition,
       inputOptions,
+      ignore1Password,
+      onClick,
+      onChange,
+      clearButton,
     } = this.props;
-    const { onInputChange, renderHint } = this;
+    const { onInputChange, renderHelpText } = this;
 
-    const wrapperClasses = classnames(baseClass, {
+    const wrapperClasses = classnames(baseClass, "form-field", {
       [`${baseClass}--icon-start`]: iconPosition && iconPosition === "start",
     });
 
@@ -103,27 +115,44 @@ class InputFieldWithIcon extends InputField {
       { [`${baseClass}__icon--active`]: value }
     );
 
+    const handleClear = () => {
+      onChange("");
+    };
+
     return (
       <div className={wrapperClasses}>
         {this.props.label && this.renderHeading()}
-        <input
-          id={name}
-          name={name}
-          onChange={onInputChange}
-          className={inputClasses}
-          placeholder={placeholder}
-          ref={(r) => {
-            this.input = r;
-          }}
-          tabIndex={tabIndex}
-          type={type}
-          value={value}
-          disabled={disabled}
-          {...inputOptions}
-        />
-        {iconSvg && <Icon name={iconSvg} className={iconClasses} />}
-        {iconName && <FleetIcon name={iconName} className={iconClasses} />}
-        {renderHint()}
+        <div className={`${baseClass}__input-wrapper`}>
+          <input
+            id={name}
+            name={name}
+            onChange={onInputChange}
+            onClick={onClick}
+            className={inputClasses}
+            placeholder={placeholder}
+            ref={(r) => {
+              this.input = r;
+            }}
+            tabIndex={tabIndex}
+            type={type}
+            value={value}
+            disabled={disabled}
+            {...inputOptions}
+            data-1p-ignore={ignore1Password}
+          />
+          {iconSvg && <Icon name={iconSvg} className={iconClasses} />}
+          {iconName && <FleetIcon name={iconName} className={iconClasses} />}
+          {clearButton && !!value && (
+            <Button
+              onClick={() => handleClear()}
+              variant="icon"
+              className={`${baseClass}__clear-button`}
+            >
+              <Icon name="close-filled" color="core-fleet-black" />
+            </Button>
+          )}
+        </div>
+        {renderHelpText()}
       </div>
     );
   }

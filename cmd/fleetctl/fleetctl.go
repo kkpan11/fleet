@@ -12,7 +12,7 @@ import (
 	"time"
 
 	eefleetctl "github.com/fleetdm/fleet/v4/ee/fleetctl"
-	"github.com/kolide/kit/version"
+	"github.com/fleetdm/fleet/v4/server/version"
 	"github.com/urfave/cli/v2"
 )
 
@@ -70,6 +70,7 @@ func createApp(
 	app.ErrWriter = stderr
 
 	app.Commands = []*cli.Command{
+		apiCommand(),
 		applyCommand(),
 		deleteCommand(),
 		setupCommand(),
@@ -107,6 +108,8 @@ func createApp(
 		triggerCommand(),
 		mdmCommand(),
 		upgradePacksCommand(),
+		runScriptCommand(),
+		gitopsCommand(),
 	}
 	return app
 }

@@ -1,37 +1,5 @@
 .mdm-settings {
   display: flex;
   flex-direction: column;
-  width: 65%;
-  gap: 80px;
-
-  &__section {
-
-    h2 {
-      margin-bottom: 0;
-      padding-bottom: $pad-small;
-      max-width: 100%;
-      font-size: $medium;
-      font-weight: $regular;
-      color: $core-fleet-black;
-      border-bottom: solid 1px $ui-fleet-black-10;
-    }
-
-    .mdm-settings-team-btn {
-      margin-left: 12px;
-
-      .children-wrapper {
-        gap: $pad-small;
-      }
-    }
-
-    .component__tooltip-wrapper__tip-text {
-      max-width: initial;
-    }
-  }
-
-  &__mdm-section {
-    display: flex;
-    flex-direction: column;
-    gap: 40px;
-  }
+  gap: $pad-xxxlarge;
 }

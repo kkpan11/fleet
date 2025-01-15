@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/fleetdm/fleet/v4/server/sso"
 	"github.com/fleetdm/fleet/v4/server/test"
+	kitlog "github.com/go-kit/log"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +36,11 @@ func (s *integrationSSOTestSuite) SetupSuite() {
 	s.withDS.SetupSuite("integrationSSOTestSuite")
 
 	pool := redistest.SetupRedis(s.T(), "zz", false, false, false)
-	users, server := RunServerForTestsWithDS(s.T(), s.ds, &TestServerOpts{Pool: pool})
+	opts := &TestServerOpts{Pool: pool}
+	if os.Getenv("FLEET_INTEGRATION_TESTS_DISABLE_LOG") != "" {
+		opts.Logger = kitlog.NewNopLogger()
+	}
+	users, server := RunServerForTestsWithDS(s.T(), s.ds, opts)
 	s.server = server
 	s.users = users
 	s.token = s.getTestAdminToken()
@@ -81,6 +87,61 @@ func (s *integrationSSOTestSuite) TestGetSSOSettings() {
 	assert.Equal(t, "https://localhost:8080", authReq.Issuer.Url)
 	assert.Equal(t, "Fleet", authReq.ProviderName)
 	assert.True(t, strings.HasPrefix(authReq.ID, "id"), authReq.ID)
+}
+
+func (s *integrationSSOTestSuite) TestSSOInvalidMetadataURL() {
+	t := s.T()
+
+	badMetadataUrl := "https://www.fleetdm.com"
+	acResp := appConfigResponse{}
+	s.DoJSON(
+		"PATCH", "/api/latest/fleet/config", json.RawMessage(
+			`{
+		"sso_settings": {
+			"enable_sso": true,
+			"entity_id": "https://localhost:8080",
+			"issuer_uri": "http://localhost:8080/simplesaml/saml2/idp/SSOService.php",
+			"idp_name": "SimpleSAML",
+			"metadata_url": "`+badMetadataUrl+`",
+			"enable_jit_provisioning": false
+		}
+	}`,
+		), http.StatusOK, &acResp,
+	)
+	require.NotNil(t, acResp)
+
+	var resIni initiateSSOResponse
+	expectedStatus := http.StatusBadRequest
+	t.Logf("Expecting 400 %v status when bad SSO metadata_url is set: %v", expectedStatus, badMetadataUrl)
+	s.DoJSON("POST", "/api/v1/fleet/sso", map[string]string{}, expectedStatus, &resIni)
+}
+
+func (s *integrationSSOTestSuite) TestSSOInvalidMetadata() {
+	t := s.T()
+
+	badMetadata := "<EntityDescriptor>foo</EntityDescriptor>"
+	acResp := appConfigResponse{}
+	s.DoJSON(
+		"PATCH", "/api/latest/fleet/config", json.RawMessage(
+			`{
+		"sso_settings": {
+			"enable_sso": true,
+			"entity_id": "https://localhost:8080",
+			"issuer_uri": "http://localhost:8080/simplesaml/saml2/idp/SSOService.php",
+			"idp_name": "SimpleSAML",
+			"metadata": "`+badMetadata+`",
+			"metadata_url": "",
+			"enable_jit_provisioning": false
+		}
+	}`,
+		), http.StatusOK, &acResp,
+	)
+	require.NotNil(t, acResp)
+
+	var resIni initiateSSOResponse
+	expectedStatus := http.StatusBadRequest
+	t.Logf("Expecting %v status when bad SSO metadata is provided: %v", expectedStatus, badMetadata)
+	s.DoJSON("POST", "/api/v1/fleet/sso", map[string]string{}, expectedStatus, &resIni)
 }
 
 func (s *integrationSSOTestSuite) TestSSOValidation() {

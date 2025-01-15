@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/facebookincubator/nvdtools/wfn"
+	"github.com/fleetdm/fleet/v4/server/vulnerabilities/nvd/tools/wfn"
 	"github.com/stretchr/testify/require"
 )
 
@@ -241,4 +241,24 @@ func TestCPEProcessingRule(t *testing.T) {
 			require.Equal(t, tc.err, result)
 		}
 	})
+}
+
+func TestGetKnownNVDBugRules(t *testing.T) {
+	cpeMatchingRules, err := GetKnownNVDBugRules()
+	require.NoError(t, err)
+
+	cpeMeta, err := wfn.Parse("cpe:2.3:a:microsoft:teams:*:*:*:*:*:*:*:*")
+	require.NoError(t, err)
+
+	// Test that CVE-2020-10146 never matches (i.e. is ignored).
+	rule, ok := cpeMatchingRules.FindMatch("CVE-2020-10146")
+	require.True(t, ok)
+	ok = rule.CPEMatches(cpeMeta)
+	require.False(t, ok)
+
+	// Test that CVE-2013-0340 never matches (i.e. is ignored).
+	rule, ok = cpeMatchingRules.FindMatch("CVE-2013-0340")
+	require.True(t, ok)
+	ok = rule.CPEMatches(cpeMeta)
+	require.False(t, ok)
 }

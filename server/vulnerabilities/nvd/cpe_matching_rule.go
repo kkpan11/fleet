@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver"
-	"github.com/facebookincubator/nvdtools/wfn"
+	"github.com/fleetdm/fleet/v4/server/vulnerabilities/nvd/tools/wfn"
 )
 
 // CPEMatchingRuleSpec allows you to match against a CPE. Version ranges are supported via SemVer constraints.
@@ -35,15 +35,29 @@ func (rule CPEMatchingRuleSpec) getCPEMeta() *wfn.Attributes {
 // cpe:2.3:a:apple:icloud:*:*:*:*:*:*:*:* which will match with any iCloud installation, but the
 // vulnerability in question only affects iCloud on Windows up to 7.0.x.
 type CPEMatchingRule struct {
+	// CPESpecs are the rules that will be used to match a CPE.
 	CPESpecs []CPEMatchingRuleSpec
-	// Set of CVEs that this rule targets
+	// CVEs is the set of CVEs that this rule targets.
 	CVEs map[string]struct{}
+	// IgnoreAll will cause all CPEs to not match hence ignoring a CVE.
+	IgnoreAll bool
+	// IgnoreIf is a function that can determine if a CPE matching rule should be ignored or not.
+	// If IgnoreIf is set, CPESpecs will not be evaluated.
+	IgnoreIf func(cpeMeta *wfn.Attributes) bool
 }
 
-// CPEMatches returns true if both the provided CPE match the rule.
+// CPEMatches returns true if the provided CPE matches the rule.
 func (rule CPEMatchingRule) CPEMatches(cpeMeta *wfn.Attributes) bool {
 	if cpeMeta == nil {
 		return false
+	}
+
+	if rule.IgnoreAll {
+		return false
+	}
+
+	if rule.IgnoreIf != nil {
+		return !rule.IgnoreIf(cpeMeta)
 	}
 
 	ver, err := semver.NewVersion(wfn.StripSlashes(cpeMeta.Version))

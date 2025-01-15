@@ -31,6 +31,11 @@ jobs:
       subdomain: ${{ steps.gen.outputs.subdomain }}
       address: ${{ steps.gen.outputs.address }}
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - id: gen
       run: |
         UUID=$(uuidgen)
@@ -41,6 +46,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: gen
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - name: Start tunnel
       env:
         CERT_PEM: ${{ secrets.CLOUDFLARE_TUNNEL_FLEETUEM_CERT_B64 }}
@@ -75,10 +85,7 @@ jobs:
         check_artifacts: true
 
     - name: Run Fleet server
-      timeout-minutes: 15
-      env:
-        # Use instance identifier to allow for duplicate UUIDs
-        FLEET_OSQUERY_HOST_IDENTIFIER: instance
+      timeout-minutes: 10
       run: |
         chmod +x ./build/fleetctl
         ./build/fleetctl preview --no-hosts
@@ -86,15 +93,19 @@ jobs:
         ./build/fleetctl get enroll-secret
         docker compose -f ~/.fleet/preview/docker-compose.yml logs --follow fleet01 fleet02 &
         # Wait for all of the hosts to be enrolled
-        EXPECTED=12
+        EXPECTED=3
         until [ $(./build/fleetctl get hosts --json | wc -l | tee hostcount) -ge $EXPECTED ]; do
           echo -n "Waiting for hosts to enroll: "
           cat hostcount | xargs echo -n
           echo " / $EXPECTED"
-          sleep 10
+          sleep 20
         done
-        ./build/fleetctl get hosts --json
         echo "Success! $EXPECTED hosts enrolled."
+
+    - name: Show enrolled hosts
+      if: always()
+      run: |
+        ./build/fleetctl get hosts --json
 
     - name: Slack Notification
       if: failure()
@@ -123,7 +134,7 @@ jobs:
 
     - name: Upload cloudflared logs
       if: always()
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v2
+      uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
       with:
         name: cloudflared.log
         path: cloudflared.log
@@ -135,6 +146,11 @@ jobs:
      token: ${{ steps.login.outputs.token }}
    steps:
     # Download fleet and fleetctl binaries from last successful build on main
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - name: Download binaries
       uses: dawidd6/action-download-artifact@5e780fc7bbd0cac69fc73271ed86edf5dcb72d67
       with:
@@ -163,11 +179,25 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        orbit-channel: [ 'stable', 'edge' ]
-        osqueryd-channel: ['stable', 'edge' ]
+        # To run multiple VMs that have the same UUID we need to implement
+        # https://github.com/fleetdm/fleet/issues/8021 (otherwise orbit and osqueryd
+        # in the same host are enrolled as two hosts in Fleet).
+        # Until then we will just test the `stable` channel in all components.
+        #
+        # Alternatively, we can bring back the `edge` channel when we decide to upgrade
+        # our worker to macOS 13 in the future, as they changed the virtualization
+        # layer for 13 and now it has random UUIDs (https://github.com/actions/runner-images/issues/7591).
+        orbit-channel: [ 'stable' ]
+        osqueryd-channel: [ 'stable' ]
+        desktop-channel: [ 'stable' ]
     runs-on: macos-latest
     needs: [gen, login]
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - name: Checkout Code
       uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
 
@@ -184,7 +214,7 @@ jobs:
         SECRET=$(echo $SECRET_JSON | jq -r '.spec.secrets[0].secret')
         echo "Secret: $SECRET"
         echo "Hostname: $(hostname -s)"
-        fleetctl package --type pkg --fleet-url=${{ needs.gen.outputs.address }} --enroll-secret=$SECRET --orbit-channel=${{ matrix.orbit-channel }} --osqueryd-channel=${{ matrix.osqueryd-channel }} --fleet-desktop
+        fleetctl package --type pkg --fleet-url=${{ needs.gen.outputs.address }} --enroll-secret=$SECRET --orbit-channel=${{ matrix.orbit-channel }} --osqueryd-channel=${{ matrix.osqueryd-channel }} --desktop-channel=${{ matrix.desktop-channel }} --fleet-desktop --debug
         sudo installer -pkg fleet-osquery.pkg -target /
         until fleetctl get hosts | grep -iF $(hostname -s);
         do
@@ -200,37 +230,47 @@ jobs:
 
     - name: Upload Orbit logs
       if: always()
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v2
+      uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
       with:
-        name: orbit-macos-${{ matrix.orbit-channel }}-${{ matrix.osqueryd-channel }}-logs
+        name: orbit-macos-${{ matrix.orbit-channel }}-${{ matrix.osqueryd-channel }}-${{ matrix.desktop-channel }}-logs
         path: |
           orbit-logs
 
     - name: Uninstall Orbit
       run: |
-        ./orbit/tools/cleanup/cleanup_macos.sh
+        sudo ./orbit/tools/cleanup/cleanup_macos.sh
 
   orbit-ubuntu:
     timeout-minutes: 10
     strategy:
       matrix:
-        orbit-channel: [ 'stable', 'edge' ]
-        osqueryd-channel: ['stable', 'edge' ]
+        # To run multiple VMs that have the same UUID we need to implement
+        # https://github.com/fleetdm/fleet/issues/8021 (otherwise orbit and osqueryd
+        # in the same host are enrolled as two hosts in Fleet).
+        # Until then we will just test the `stable` channel in all components.
+        orbit-channel: [ 'stable' ]
+        osqueryd-channel: [ 'stable' ]
+        desktop-channel: [ 'stable' ]
     runs-on: ubuntu-latest
     needs: [gen, login]
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - name: Install dependencies
       run: |
         npm install -g fleetctl
         fleetctl config set --address ${{ needs.gen.outputs.address }} --token ${{ needs.login.outputs.token }}
 
+    - name: Checkout Code
+      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+
     - name: Install Go
       uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
       with:
-        go-version: '^1.19.12'
-
-    - name: Checkout Code
-      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+        go-version-file: 'go.mod'
 
     - name: Build Fleetctl
       run: make fleetctl
@@ -244,7 +284,7 @@ jobs:
         SECRET=$(echo $SECRET_JSON | jq -r '.spec.secrets[0].secret')
         echo "Secret: $SECRET"
         echo "Hostname: $(hostname -s)"
-        ./build/fleetctl package --type deb --fleet-url=${{ needs.gen.outputs.address }} --enroll-secret=$SECRET  --orbit-channel=${{ matrix.orbit-channel }} --osqueryd-channel=${{ matrix.osqueryd-channel }}
+        ./build/fleetctl package --type deb --fleet-url=${{ needs.gen.outputs.address }} --enroll-secret=$SECRET  --orbit-channel=${{ matrix.orbit-channel }} --osqueryd-channel=${{ matrix.osqueryd-channel }} --desktop-channel=${{ matrix.desktop-channel }} --fleet-desktop --debug
         sudo dpkg -i fleet-osquery*
         until fleetctl get hosts | grep -iF $(hostname -s);
         do
@@ -260,9 +300,9 @@ jobs:
 
     - name: Upload Orbit logs
       if: always()
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v2
+      uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
       with:
-        name: orbit-ubuntu-${{ matrix.orbit-channel }}-${{ matrix.osqueryd-channel }}-logs
+        name: orbit-ubuntu-${{ matrix.orbit-channel }}-${{ matrix.osqueryd-channel }}-${{ matrix.desktop-channel }}-logs
         path: |
           orbit-logs
 
@@ -274,11 +314,21 @@ jobs:
     timeout-minutes: 10
     strategy:
       matrix:
-        orbit-channel: [ 'stable', 'edge' ]
-        osqueryd-channel: ['stable', 'edge' ]
+        # To run multiple VMs that have the same UUID we need to implement
+        # https://github.com/fleetdm/fleet/issues/8021 (otherwise orbit and osqueryd
+        # in the same host are enrolled as two hosts in Fleet).
+        # Until then we will just test the `stable` channel in all components.
+        orbit-channel: [ 'stable' ]
+        osqueryd-channel: [ 'stable' ]
+        desktop-channel: [ 'stable' ]
     runs-on: ubuntu-latest
     needs: [gen, login]
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - name: Install dependencies
       run: |
         docker pull fleetdm/wix:latest &
@@ -292,24 +342,34 @@ jobs:
         SECRET=$(echo $SECRET_JSON | jq -r '.spec.secrets[0].secret')
         echo "Secret: $SECRET"
         echo "Hostname: $(hostname -s)"
-        fleetctl package --type msi --fleet-url=${{ needs.gen.outputs.address }} --enroll-secret=$SECRET --orbit-channel=${{ matrix.orbit-channel }} --osqueryd-channel=${{ matrix.osqueryd-channel }} --fleet-desktop
-        mv fleet-osquery.msi orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}.msi
+        fleetctl package --type msi --fleet-url=${{ needs.gen.outputs.address }} --enroll-secret=$SECRET --orbit-channel=${{ matrix.orbit-channel }} --osqueryd-channel=${{ matrix.osqueryd-channel }} --desktop-channel=${{ matrix.desktop-channel }} --fleet-desktop --debug
+        mv fleet-osquery.msi orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}-desktop-${{ matrix.desktop-channel }}.msi
 
     - name: Upload MSI
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v2
+      uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
       with:
-        name: orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}.msi
-        path: orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}.msi
+        name: orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}-desktop-${{ matrix.desktop-channel }}.msi
+        path: orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}-desktop-${{ matrix.desktop-channel }}.msi
 
   orbit-windows:
     timeout-minutes: 10
     strategy:
       matrix:
-        orbit-channel: [ 'stable', 'edge' ]
-        osqueryd-channel: ['stable', 'edge' ]
+        # To run multiple VMs that have the same UUID we need to implement
+        # https://github.com/fleetdm/fleet/issues/8021 (otherwise orbit and osqueryd
+        # in the same host are enrolled as two hosts in Fleet).
+        # Until then we will just test the `stable` channel in all components.
+        orbit-channel: [ 'stable' ]
+        osqueryd-channel: [ 'stable' ]
+        desktop-channel: [ 'stable' ]
     needs: [gen, login, orbit-windows-build]
     runs-on: windows-latest
     steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+      with:
+        egress-policy: audit
+
     - name: Install dependencies
       shell: bash
       run: |
@@ -318,14 +378,14 @@ jobs:
 
     - name: Download MSI
       id: download
-      uses: actions/download-artifact@fb598a63ae348fa914e94cd0ff38f362e927b741 # v2
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
       with:
-        name: orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}.msi
+        name: orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}-desktop-${{ matrix.desktop-channel }}.msi
 
     - name: Install Orbit
       shell: cmd
       run: |
-        msiexec /i ${{steps.download.outputs.download-path}}\orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}.msi /quiet /passive /lv log.txt
+        msiexec /i ${{steps.download.outputs.download-path}}\orbit-${{ matrix.orbit-channel }}-osqueryd-${{ matrix.osqueryd-channel }}-desktop-${{ matrix.desktop-channel }}.msi /quiet /passive /lv log.txt
         sleep 30
 
     # We can't very accurately check the install on these Windows hosts since the hostnames tend to
@@ -334,14 +394,14 @@ jobs:
 
     - name: Upload orbit install log
       if: always()
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v2
+      uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
       with:
         name: msiexec-install-log
         path: log.txt
 
     - name: Upload Orbit logs
       if: always()
-      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v2
+      uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
       with:
-        name: orbit-windows-${{ matrix.orbit-channel }}-${{ matrix.osqueryd-channel }}-logs
+        name: orbit-windows-${{ matrix.orbit-channel }}-${{ matrix.osqueryd-channel }}-${{ matrix.desktop-channel }}-logs
         path: C:\Windows\system32\config\systemprofile\AppData\Local\FleetDM\Orbit\Logs\orbit-osquery.log

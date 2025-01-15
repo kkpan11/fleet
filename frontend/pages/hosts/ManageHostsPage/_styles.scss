@@ -1,10 +1,7 @@
 .manage-hosts {
   .header-wrap {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    @include normalize-team-header;
     margin-bottom: $pad-medium;
-    height: 38px;
 
     .button-wrap {
       display: flex;
@@ -108,23 +105,18 @@
 
         .manage-hosts__filter-dropdowns {
           display: flex;
+          flex-direction: row;
           margin-left: $pad-medium;
+          align-items: center;
 
           // Dropdown height matches search bar height
-          .manage-hosts__status_dropdown {
+          .manage-hosts__status-filter {
             .Select-control,
             .Select-input {
               height: 33px;
             }
             .Select-value {
-              line-height: 38px;
-            }
-          }
-
-          .manage-hosts__status-dropdown-sandbox {
-            width: auto;
-            .Select-control {
-              width: 182px;
+              line-height: 40px;
             }
           }
         }
@@ -132,9 +124,7 @@
     }
 
     // table header content responsive styles
-    // NOTE: 1150px is a custom breakpoint to deal with responsiveness of the
-    // table controls. 990px doesnt work for us in this case.
-    @media (max-width: 1150px) {
+    @media (max-width: $table-controls-break) {
       &__header {
         flex-direction: column;
       }
@@ -168,10 +158,12 @@
         }
 
         .controls {
-          order: 1;
-          margin-bottom: $pad-medium;
+          order: -2;
+          margin-bottom: $pad-small;
 
           .manage-hosts__filter-dropdowns {
+            display: flex;
+            flex-direction: row;
             flex: 1;
 
             .form-field--dropdown,
@@ -179,14 +171,8 @@
               flex: 1;
             }
 
-            .manage-hosts__status_dropdown {
+            .manage-hosts__status-filter {
               width: auto;
-            }
-
-            .manage-hosts__status-dropdown-sandbox {
-              .Select-control {
-                width: 100%;
-              }
             }
           }
         }
@@ -197,37 +183,27 @@
       .data-table-block {
         .data-table {
           &__wrapper {
-            overflow-x: scroll;
+            overflow-x: auto;
           }
           &__table {
-            thead {
-              tr {
-                th {
-                  .last-col-header-with-tip {
-                    min-width: 90px;
-                    .component__tooltip-wrapper__tip-text {
-                      left: -126px;
-                    }
-                  }
-                  .status-header {
-                    .component__tooltip-wrapper__tip-text {
-                      left: -220px;
-                    }
+            tbody {
+              .issues {
+                &__cell {
+                  display: flex;
+                  align-items: center;
+                  gap: $pad-small;
+                  .issue-cell__icon {
+                    display: flex;
+                    align-items: center;
                   }
                 }
-              }
-            }
-
-            tbody {
-              .issues__cell {
-                display: flex;
-                align-items: center;
               }
 
               .device_mapping__cell,
               .mdm_enrollment_status__cell,
               .mdm_server_url__cell,
-              .public_ip__cell {
+              .public_ip__cell,
+              .issues__cell {
                 .text-cell {
                   display: inline;
                 }
@@ -246,16 +222,16 @@
     margin: 0;
   }
 
-  &__status_dropdown {
+  &__status-filter {
     width: 175px;
 
-    @media (min-width: 1150px) {
+    @media (min-width: $table-controls-break) {
       width: 190px;
     }
 
     .Select-menu-outer {
       width: 364px;
-      max-height: 325px;
+      max-height: min-content;
 
       .Select-menu {
         max-height: none;
@@ -285,19 +261,7 @@
     padding-bottom: $pad-large;
   }
 
-  .total-issues-count {
-    margin-left: $pad-small;
-  }
-
   &__export-btn {
-    margin-left: $pad-medium;
-
-    img {
-      width: 13px;
-      height: 13px;
-      margin-left: 8px;
-      position: relative;
-      top: -2px;
-    }
+    margin-left: $pad-xsmall;
   }
 }

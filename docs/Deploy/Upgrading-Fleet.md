@@ -8,6 +8,7 @@ There are three steps to perform a typical Fleet upgrade:
 2. [Preparing the database](#prepare-the-database)
 3. [Serving the new Fleet instance](#serve-the-new-version)
 
+
 ## Install the latest version of Fleet
 
 Fleet may be installed locally, or used in a Docker container. Follow the appropriate method for your environment. 
@@ -29,7 +30,7 @@ sudo cp fleet/linux/fleet* /usr/bin/
 
 Pull the latest Fleet docker image:
 
-```
+```sh
 docker pull fleetdm/fleet
 ```
 
@@ -41,11 +42,11 @@ It is always advised to [back up the database](https://dev.mysql.com/doc/refman/
 
 Database migrations in Fleet are intended to be run while the server is offline. Osquery is designed to be resilient to short downtime from the server, so no data will be lost from `osqueryd` clients in this process. Even on large Fleet installations, downtime during migrations is usually only seconds to minutes.
 
-First, take the existing servers offline.
+> First, take the existing servers offline.
 
 Run database migrations:
 
-```
+```sh
 fleet prepare db
 ```
 
@@ -53,9 +54,22 @@ fleet prepare db
 
 Once Fleet has been replaced with the newest version and the database migrations have completed, serve the newly upgraded Fleet instance:
 
-```
+```sh
 fleet serve
 ```
 
-<meta name="pageOrderInSection" value="700">
+## AWS with Terraform
+
+If you are using Fleet's Terraform modules to manage your Fleet deployment to AWS, update the version in `main.tf`:
+
+```tf
+  fleet_config = {
+    image = "fleetdm/fleet:<version>" 
+    [...]
+  }
+```
+
+Run `terraform apply` to apply the changes.
+
+<meta name="pageOrderInSection" value="300">
 <meta name="description" value="Learn how to upgrade your Fleet instance to the latest version.">
