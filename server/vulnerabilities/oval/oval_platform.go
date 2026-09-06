@@ -25,6 +25,17 @@ var SupportedGovalPlatforms = []string{
 	"amzn_02",
 	"amzn_2022",
 	"amzn_2023",
+	"rhel_07",
+	"rhel_08",
+	"rhel_09",
+}
+
+// GovalKernelOnlyPlatforms are platforms where goval-dictionary is used only for kernel vulnerability scanning.
+// These platforms use the regular OVAL scanning for non-kernel packages.
+var GovalKernelOnlyPlatforms = []string{
+	"rhel_07",
+	"rhel_08",
+	"rhel_09",
 }
 
 // getMajorMinorVer returns the major and minor version of an 'os_version'.
@@ -55,6 +66,20 @@ func getMajorMinorVer(osVersion string) (string, string) {
 }
 
 func format(platform string, major string, minor string) string {
+	if platform == "zorin" {
+		// Zorin OS is Ubuntu-based; map to the underlying Ubuntu LTS OVAL feed.
+		// Unknown future versions fall through to "zorin_<major>", which
+		// IsSupported() rejects so vuln scanning is skipped rather than served
+		// stale data from an aging LTS feed.
+		switch major {
+		case "16":
+			return "ubuntu_2004"
+		case "17":
+			return "ubuntu_2204"
+		case "18":
+			return "ubuntu_2404"
+		}
+	}
 	if platform == "ubuntu" {
 		return fmt.Sprintf("%s_%s%s", platform, major, minor)
 	}
@@ -122,6 +147,17 @@ func (op Platform) IsSupported() bool {
 
 func (op Platform) IsGovalDictionarySupported() bool {
 	for _, p := range SupportedGovalPlatforms {
+		if strings.HasPrefix(string(op), p) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsGovalDictionaryKernelOnly returns true if this platform uses goval-dictionary
+// only for kernel vulnerability scanning (non-kernel packages use regular OVAL).
+func (op Platform) IsGovalDictionaryKernelOnly() bool {
+	for _, p := range GovalKernelOnlyPlatforms {
 		if strings.HasPrefix(string(op), p) {
 			return true
 		}

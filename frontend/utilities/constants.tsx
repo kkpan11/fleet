@@ -4,9 +4,13 @@ import { ISchedulableQuery } from "interfaces/schedulable_query";
 import React from "react";
 import { IDropdownOption } from "interfaces/dropdownOption";
 import { ICampaign } from "interfaces/campaign";
+import { MdmEnrollmentStatus } from "interfaces/mdm";
+import { IHost } from "interfaces/host";
 
 const { origin } = global.window.location;
 export const BASE_URL = `${origin}${URL_PREFIX}/api`;
+
+export const UNCHANGED_PASSWORD_API_RESPONSE = "********";
 
 export enum PolicyResponse {
   PASSING = "passing",
@@ -14,13 +18,13 @@ export enum PolicyResponse {
 }
 
 export const DEFAULT_GRAVATAR_LINK =
-  "https://fleetdm.com/images/permanent/icon-avatar-default-transparent-64x64%402x.png";
+  "https://fleetdm.com/images/permanent/icon-avatar-default-gray-transparent-64x64@2x.png";
 
 export const DEFAULT_GRAVATAR_LINK_DARK =
   "https://fleetdm.com/images/permanent/icon-avatar-default-dark-24x24%402x.png";
 
 export const DEFAULT_GRAVATAR_LINK_FALLBACK =
-  "/assets/images/icon-avatar-default-transparent-64x64%402x.png";
+  "/assets/images/icon-avatar-default-gray-transparent-64x64@2x.png";
 
 export const DEFAULT_GRAVATAR_LINK_DARK_FALLBACK =
   "/assets/images/icon-avatar-default-dark-24x24%402x.png";
@@ -67,6 +71,8 @@ export const SUPPORT_LINK = `${FLEET_WEBSITE_URL}/support`;
 export const CONTACT_FLEET_LINK = `${FLEET_WEBSITE_URL}/contact`;
 export const LEARN_MORE_ABOUT_BASE_LINK = `${FLEET_WEBSITE_URL}/learn-more-about`;
 export const FLEET_GUIDES_BASE_LINK = `${FLEET_WEBSITE_URL}/guides`;
+export const ANDROID_PLAY_STORE_URL =
+  "https://play.google.com/store/apps/details";
 
 /**  July 28, 2016 is the date of the initial commit to fleet/fleet. */
 export const INITIAL_FLEET_DATE = "2016-07-28T00:00:00Z";
@@ -82,8 +88,23 @@ export const LOGGING_TYPE_OPTIONS = [
 
 export const MAX_OSQUERY_SCHEDULED_QUERY_INTERVAL = 604800;
 
+// Max character length for most user-supplied free-text fields (name, title,
+// description) — matches the varchar(255) column shared across policies,
+// reports, teams (fleets), labels, software categories, custom variables,
+// certificate authorities, etc. Use on any `InputField` bound to such a
+// column: `inputOptions={{ maxLength: MAX_ENTITY_CHAR_LENGTH }}`.
+export const MAX_ENTITY_CHAR_LENGTH = 255;
+
 export const MIN_OSQUERY_VERSION_OPTIONS = [
   { label: "All", value: "" },
+  { label: "5.23.1 +", value: "5.23.1" },
+  { label: "5.23.0 +", value: "5.23.0" },
+  { label: "5.22.1 +", value: "5.22.1" },
+  { label: "5.21.0 +", value: "5.21.0" },
+  { label: "5.20.0 +", value: "5.20.0" },
+  { label: "5.19.0 +", value: "5.19.0" },
+  { label: "5.18.1 +", value: "5.18.1" },
+  { label: "5.18.0 +", value: "5.18.0" },
   { label: "5.17.0 +", value: "5.17.0" },
   { label: "5.16.0 +", value: "5.16.0" },
   { label: "5.15.0 +", value: "5.15.0" },
@@ -325,35 +346,54 @@ export const SCHEDULE_PLATFORM_DROPDOWN_OPTIONS = [
 ] as const;
 
 export const HOSTS_SEARCH_BOX_PLACEHOLDER =
-  "Search name, hostname, UUID, serial number, or private IP address";
+  "Search name, user email, hostname, UUID, serial number, or IP address";
 
-export const HOSTS_SEARCH_BOX_TOOLTIP =
-  "Search hosts by name, hostname, UUID, serial number, or private IP address";
+export const HOSTS_SEARCH_BOX_TOOLTIP = (
+  <>
+    Search hosts by name, user email, hostname,
+    <br />
+    UUID, serial number, or IP address.
+  </>
+);
 
-export const VULNERABILITIES_SEARCH_BOX_TOOLTIP =
-  'To search for an exact CVE, surround the string in double quotes (e.g. "CVE-2024-1234")';
+export const VULNERABILITIES_SEARCH_BOX_TOOLTIP = (
+  <>
+    To search for an exact CVE, surround the string
+    <br />
+    in double quotes (e.g. &quot;CVE-2024-1234&quot;).
+  </>
+);
 
 // Keys from API
-export const MDM_STATUS_TOOLTIP: Record<string, string | React.ReactNode> = {
+export const MDM_STATUS_TOOLTIP: Record<
+  MdmEnrollmentStatus,
+  React.ReactNode
+> = {
   "On (automatic)": (
     <span>
-      MDM was turned on automatically using Apple Automated Device Enrollment
-      (DEP), Windows Autopilot, or Windows Azure AD Join. Administrators can
-      block end users from turning MDM off.
+      MDM was turned on automatically (Apple ADE, Windows Autopilot, or
+      fully-managed Android). IT admins can block end users from turning MDM
+      off.
     </span>
   ),
   "On (manual)": (
     <span>
-      MDM was turned on manually (macOS), or hosts were automatically migrated
-      with fleetd (Windows). End users can turn MDM off.
+      Enrolled with a manual enrollment profile as a company-owned device. IT
+      admins can wipe this device and enforce all MDM restrictions.
     </span>
   ),
+  "On (manual - personal)": (
+    <span>
+      Enrolled with a manual enrollment profile as a personal (BYOD) device. IT
+      admins cannot wipe this device or lock the end user out.
+    </span>
+  ),
+  "On (company-owned)": null,
   Off: undefined, // no tooltip specified
   Pending: (
     <span>
-      Hosts ordered via Apple Business Manager <br /> (ABM). These will
-      automatically enroll to Fleet <br /> and turn on MDM when they&apos;re
-      unboxed.
+      Hosts ordered via Apple Business (AB). These will automatically enroll to
+      Fleet and turn on MDM when they&apos;re unboxed.
     </span>
   ),
 };
@@ -379,7 +419,7 @@ export const BATTERY_TOOLTIP: Record<string, string | React.ReactNode> = {
   ),
 };
 
-export const PRIMO_TOOLTIP = "Teams are disabled while using Primo";
+export const PRIMO_TOOLTIP = "Fleets are disabled while using Primo";
 
 /** Must pass agent options config as empty object */
 export const EMPTY_AGENT_OPTIONS = {
@@ -390,32 +430,27 @@ export const DEFAULT_EMPTY_CELL_VALUE = "---";
 
 export const DOCUMENT_TITLE_SUFFIX = "Fleet";
 
-export const HOST_SUMMARY_DATA = [
+export const HOST_SUMMARY_DATA: (keyof IHost)[] = [
   "id",
   "status",
   "issues",
-  "memory",
-  "cpu_type",
   "platform",
-  "os_version",
-  "osquery_version",
-  "orbit_version",
-  "fleet_desktop_version",
-  "enroll_secret_name",
   "detail_updated_at",
-  "percent_disk_space_available",
-  "gigs_disk_space_available",
+  "policy_updated_at",
   "team_name",
-  "disk_encryption_enabled",
   "display_name", // Not rendered on my device page
   "maintenance_window", // Not rendered on my device page
+  "os_version",
+  "mdm",
+  "last_mdm_checked_in_at",
 ];
 
-export const HOST_ABOUT_DATA = [
+export const HOST_VITALS_DATA = [
   "seen_time",
   "uptime",
   "last_enrolled_at",
   "hardware_model",
+  "hardware_marketing_name",
   "hardware_serial",
   "primary_ip",
   "public_ip",
@@ -424,6 +459,37 @@ export const HOST_ABOUT_DATA = [
   "detail_updated_at",
   "last_restarted_at",
   "platform",
+  "uuid",
+  "gigs_disk_space_available",
+  "percent_disk_space_available",
+  "gigs_total_disk_space",
+  "gigs_all_disk_space",
+  "disk_encryption_enabled",
+  "osquery_version",
+  "orbit_version",
+  "fleet_desktop_version",
+  "memory",
+  "cpu_type",
+  "os_version",
+  "timezone",
+  "mdm_enrollment_hardware_attested",
+  "primary_mac",
+  // Android-only vitals. Absent for every other platform, so they're simply
+  // dropped by the pick rather than needing a platform check here.
+  "adb_enabled",
+  "passcode_protected",
+  "play_protect_enabled",
+  "encryption_type",
+  "manufacturer",
+  "security_update_version",
+  "device_kernel_version",
+  "bootloader_version",
+  "system_update_status",
+  "security_posture",
+  "imei",
+  "meid",
+  "api_level",
+  "telephony_infos",
 ];
 
 export const HOST_OSQUERY_DATA = [
@@ -448,7 +514,7 @@ export const INVALID_PLATFORMS_REASON =
   "query payload verification: query's platform must be a comma-separated list of 'darwin', 'linux', 'windows', and/or 'chrome' in a single string";
 
 export const INVALID_PLATFORMS_FLASH_MESSAGE =
-  "Couldn't save query. Please update platforms and try again.";
+  "Couldn't save report. Please update platforms and try again.";
 
 export const DATE_FNS_FORMAT_STRINGS = {
   dateAtTime: "E, MMM d 'at' p",

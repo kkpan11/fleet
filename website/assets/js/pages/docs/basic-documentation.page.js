@@ -200,12 +200,15 @@ parasails.registerPage('basic-documentation', {
     clickSwagRequestCTA: function () {
       if(window.gtag !== undefined){
         gtag('event','fleet_website__swag_request');
+        // Additional conversion tracking
+        gtag('event', 'conversion', {
+          'send_to': 'AW-10788733823/GvP3CNqYrPobEP-GvJgo',
+          'value': 1.0,
+          'currency': 'USD'
+        });
       }
       if(window.lintrk !== undefined) {
         window.lintrk('track', { conversion_id: 18587105 });// eslint-disable-line camelcase
-      }
-      if(window.analytics !== undefined) {
-        analytics.track('fleet_website__swag_request');
       }
       this.goto('https://kqphpqst851.typeform.com/to/ZfA3sOu0#from_page=docs');
     },

@@ -5,23 +5,20 @@ import { max } from "lodash";
 import paths from "router/paths";
 import { AppContext } from "context/app";
 import usersAPI from "services/entities/users";
-import local from "utilities/local";
+import logoAPI from "services/entities/logo";
+import authToken from "utilities/auth_token";
 
-import FlashMessage from "components/FlashMessage";
-import { INotification } from "interfaces/notification";
+import { notify } from "components/ToastNotification";
+import type { IRegistrationFormData } from "interfaces/registration_form_data";
+
+import AuthenticationFormWrapper from "components/AuthenticationFormWrapper";
 // @ts-ignore
 import RegistrationForm from "components/forms/RegistrationForm";
 // @ts-ignore
 import Breadcrumbs from "./Breadcrumbs";
-// @ts-ignore
-import fleetLogoText from "../../../assets/images/fleet-logo-text-white.svg";
 
-const ERROR_NOTIFICATION: INotification = {
-  alertType: "error",
-  isVisible: true,
-  message:
-    "We were unable to configure Fleet. If your Fleet server is behind a proxy, please ensure the server can be reached.",
-};
+const SETUP_ERROR_MESSAGE =
+  "We were unable to configure Fleet. If your Fleet server is behind a proxy, please ensure the server can be reached.";
 
 interface IRegistrationPageProps {
   router: InjectedRouter;
@@ -38,7 +35,6 @@ const RegistrationPage = ({ router }: IRegistrationPageProps) => {
   } = useContext(AppContext);
   const [page, setPage] = useState(1);
   const [pageProgress, setPageProgress] = useState(1);
-  const [showSetupError, setShowSetupError] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -55,13 +51,21 @@ const RegistrationPage = ({ router }: IRegistrationPageProps) => {
     setPageProgress(max([nextPage, pageProgress]) || 1);
   };
 
-  const onRegistrationFormSubmit = async (formData: any) => {
+  const onRegistrationFormSubmit = async (formData: IRegistrationFormData) => {
     const { DASHBOARD } = paths;
 
     setIsLoading(true);
     try {
       const { token } = await usersAPI.setup(formData);
-      local.setItem("auth_token", token);
+      authToken.save(token);
+
+      if (formData?.org_logo_file instanceof File) {
+        try {
+          await logoAPI.upload(formData.org_logo_file, "all");
+        } catch (logoErr) {
+          console.error("Failed to upload organization logo:", logoErr);
+        }
+      }
 
       const { user, available_teams, settings } = await usersAPI.me();
       setCurrentUser(user);
@@ -73,45 +77,45 @@ const RegistrationPage = ({ router }: IRegistrationPageProps) => {
       setIsLoading(false);
       setPage(1);
       setPageProgress(1);
-      setShowSetupError(true);
+      notify.error(SETUP_ERROR_MESSAGE, { response: error });
     }
   };
 
   const onSetPage = (pageNum: number) => {
     if (pageNum > pageProgress) {
-      return false;
+      return;
     }
 
     setPage(pageNum);
   };
 
+  const REGISTRATION_HEADERS: Record<number, string> = {
+    1: "Set up user",
+    2: "Organization details",
+    3: "Set Fleet URL",
+    4: "Confirm configuration",
+  };
+  const header = REGISTRATION_HEADERS[page];
+
   return (
-    <div className={baseClass}>
-      <img
-        alt="Fleet logo"
-        src={fleetLogoText}
-        className={`${baseClass}__logo`}
-      />
-      <Breadcrumbs
-        currentPage={page}
-        onSetPage={onSetPage}
-        pageProgress={pageProgress}
-      />
+    <AuthenticationFormWrapper
+      className={baseClass}
+      header={header}
+      breadcrumbs={
+        <Breadcrumbs
+          currentPage={page}
+          onSetPage={onSetPage}
+          pageProgress={pageProgress}
+        />
+      }
+    >
       <RegistrationForm
         page={page}
         onNextPage={onNextPage}
         onSubmit={onRegistrationFormSubmit}
         isLoading={isLoading}
       />
-      {showSetupError && (
-        <FlashMessage
-          className={`${baseClass}__flash-message`}
-          fullWidth={false}
-          notification={ERROR_NOTIFICATION}
-          onRemoveFlash={() => setShowSetupError(false)}
-        />
-      )}
-    </div>
+    </AuthenticationFormWrapper>
   );
 };
 

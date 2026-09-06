@@ -1,10 +1,10 @@
 Deploying Windows configurations profiles (aka Configuration Service Providers (CSPs)) for Windows devices can feel daunting, especially if you're new to the process or accustomed to ClickOps and other UI-driven approaches. The scarcity of straightforward documentation and guides can make it feel like you're venturing into a configuration rabbit hole.
 
-![Rabbit Hole](../website/assets/images/articles/down-the-rabbit-hole.png)
+![Rabbit Hole](../website/assets/images/articles/down-the-rabbit-hole-452x304@2x.png)
 
 This guide will help you understand the building blocks to crafting CSPs of varying complexity – from simple payloads to more complex ones that involve modification of ADMX underpinnings.
 
-> In Fleet, Windows CSPs are called "Custom OS settings." Learn more about Custom OS settings [here](https://fleetdm.com/guides/custom-os-settings).
+> In Fleet, Windows CSPs are called [**Custom OS settings**](https://fleetdm.com/guides/custom-os-settings).
 
 ## ADMX
 
@@ -29,12 +29,12 @@ Windows maps the name and category path of a Group Policy to an MDM policy by pa
 
 Unfortunately, to capture handling of ADMX the admin building the policies must use a UI, such as the Group Policy Editor, to gather the necessary data. For this example, we will use the ```WindowsPowerShell``` which controls PowerShell settings and is an ADMX-backed policy. [This](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-windowspowershell) is the official documentation that we will work from if you want to follow along. Notice this banner that indicates the ADMX requirement:
 
-![ADMX Tool Tip](../website/assets/images/articles/admx-tool-tip.png)
+![ADMX Tool Tip](../website/assets/images/articles/admx-tool-tip-672x230@2x.png)
 
 
 In the Windows documentation, you will notice a section called ADMX Mapping:
 
-![ADMX Mapping](../website/assets/images/articles/admx-mapping.png)
+![ADMX Mapping](../website/assets/images/articles/admx-mapping-618x293@2x.png)
 
 Pay attention to the line **ADMX File Name**, which will show you the name of the .admx file you need to open to help craft your CSP. All ADMX files are located at:
 ```C:\Windows\PolicyDefinitions\{ADMXFileName.admx}```
@@ -66,7 +66,7 @@ Values can take one of the following types:
 At this point in the build we know the ADMX keys for this specific policy, which values those keys accept, and now to translate that into a CSP that Fleet can interpret.
 You can also see in the group policy editor the values that are being modified by the profile.
 
-![GPEDIT](../website/assets/images/articles/gpedit-example.png)
+![GPEDIT](../website/assets/images/articles/gpedit-example-240x79@2x.png)
 
 In this example, we will modify the ExecutionPolicy value, which in group policy editor translates to “Turn on Script Execution”, the XML from the .admx looks like such:
 
@@ -143,13 +143,146 @@ Now that we have the data block, we can finally put it all together to generate 
 Since we’re working with an ADMX-backed setting, the `Format` section needs to be
 ```<Format xmlns="syncml:metinf">chr</Format>```
 
-The LocURL is listed in the CSP documentation and the `<Data>` block goe after in the CDATA format.
+The LocURI is listed in the CSP documentation and the `<Data>` block goes after in the CDATA format.
 
 Pay attention to the verbs `<Add>` vs `<Replace>` when creating as these need to match the system configuration we are targeting or it oftentimes will fail.
+
+## Ingesting custom ADMX templates (ADMXInstall)
+
+The section above covers ADMX policies that ship with Windows (like `WindowsPowerShell`). But many applications — Microsoft Edge, Google Chrome, Firefox, Adobe products, and others — ship their own ADMX templates that aren't included in the OS. To use these with MDM, you need to **ingest** the ADMX file to the device first, and then configure the policies it defines.
+
+This is a two-step process:
+1. **Ingest the ADMX file** — tell the device about the new policy definitions
+2. **Configure the policies** — set the actual values using the ingested definitions
+
+### Step 1: Get the ADMX file
+
+Download the ADMX template for the application you want to manage. Common sources:
+
+- **Microsoft Edge**: Download [Microsoft Edge policy templates](https://www.microsoft.com/en-us/edge/business/download) and extract the `.admx` file (e.g., `msedge.admx`)
+- **Google Chrome**: Download from [Chrome Enterprise](https://chromeenterprise.google/intl/en_us/browser/download/#manage-policies-tab) and extract `chrome.admx`
+- **Third-party apps**: Check the vendor's documentation for their ADMX templates
+
+### Step 2: Ingest the ADMX file
+
+The ADMX file content is sent to the device using the `ADMXInstall` URI:
+
+```
+./Device/Vendor/MSFT/Policy/ConfigOperations/ADMXInstall/{AppName}/Policy/{AdmxFileName}
+```
+
+Where:
+- `{AppName}` — a name you choose to identify the app (e.g., `MSEdge`, `Chrome`). This becomes part of the policy URI later, so keep it simple.
+- `{AdmxFileName}` — a name for this ADMX file (e.g., `EdgeAdmxFile`)
+
+The ADMX file content goes inside a CDATA block in the `<Data>` element. Here's the configuration profile XML:
+
+```xml
+<Add>
+  <Item>
+    <Meta>
+      <Format xmlns="syncml:metinf">chr</Format>
+      <Type>text/plain</Type>
+    </Meta>
+    <Target>
+      <LocURI>./Device/Vendor/MSFT/Policy/ConfigOperations/ADMXInstall/MSEdge/Policy/EdgeAdmxFile</LocURI>
+    </Target>
+    <Data><![CDATA[<policyDefinitions revision="1.0" schemaVersion="1.0">
+      ... paste the contents of msedge.admx here ...
+    </policyDefinitions>]]></Data>
+  </Item>
+</Add>
+```
+
+> The ADMX file can be large (Edge's is thousands of lines). That's expected — you're uploading the entire policy definition file so the device knows how to interpret the policies you'll configure in step 3.
+
+### Step 3: Configure policies from the ingested ADMX
+
+Once the ADMX is ingested, you configure policies using a special LocURI format that references the `{AppName}` you chose:
+
+```
+./Device/Vendor/MSFT/Policy/Config/{AppName}~Policy~{CategoryPath}/{PolicyName}
+```
+
+Where:
+- `{AppName}` — must match what you used in the `ADMXInstall` URI (e.g., `MSEdge`)
+- `{CategoryPath}` — the category hierarchy from the ADMX file, separated by `~` (e.g., `microsoft_edge`)
+- `{PolicyName}` — the `name` attribute of the `<policy>` element in the ADMX file
+
+For example, to configure an Edge policy after ingesting with `AppName` = `MSEdge`:
+
+```xml
+<Replace>
+  <Item>
+    <Meta>
+      <Format xmlns="syncml:metinf">chr</Format>
+    </Meta>
+    <Target>
+      <LocURI>./Device/Vendor/MSFT/Policy/Config/MSEdge~Policy~microsoft_edge/HomepageLocation</LocURI>
+    </Target>
+    <Data><![CDATA[<enabled/><data id="HomepageLocation" value="https://fleet.example.com"/>]]></Data>
+  </Item>
+</Replace>
+```
+
+### Putting it together with Fleet
+
+In Fleet, both the ADMX ingestion and the policy configuration go in the same configuration profile XML file. The ingestion `<Add>` block should come **before** any `<Replace>` blocks that reference the ingested policies:
+
+```xml
+<!-- Step 1: Ingest the ADMX template -->
+<Add>
+  <Item>
+    <Meta>
+      <Format xmlns="syncml:metinf">chr</Format>
+      <Type>text/plain</Type>
+    </Meta>
+    <Target>
+      <LocURI>./Device/Vendor/MSFT/Policy/ConfigOperations/ADMXInstall/MSEdge/Policy/EdgeAdmxFile</LocURI>
+    </Target>
+    <Data><![CDATA[... full ADMX file content ...]]></Data>
+  </Item>
+</Add>
+
+<!-- Step 2: Configure policies using the ingested template -->
+<Replace>
+  <Item>
+    <Meta>
+      <Format xmlns="syncml:metinf">chr</Format>
+    </Meta>
+    <Target>
+      <LocURI>./Device/Vendor/MSFT/Policy/Config/MSEdge~Policy~microsoft_edge/HomepageLocation</LocURI>
+    </Target>
+    <Data><![CDATA[<enabled/><data id="HomepageLocation" value="https://fleet.example.com"/>]]></Data>
+  </Item>
+</Replace>
+```
+
+### Tips for ADMX ingestion
+
+- **Finding the category path**: Open the `.admx` file and look at the `<categories>` section and the `<parentCategory>` references on the policy you want to configure. Walk the hierarchy and join with `~`.
+- **The `~Policy~` separator is required**: The LocURI always includes `~Policy~` between the `{AppName}` and the category path.
+- **Ingestion only needs to happen once**: After the ADMX is ingested, the device remembers it. Fleet will re-send the profile on each check-in, but the device handles this gracefully.
+- **Registry key restrictions**: Windows blocks custom ADMX policies from writing to most `Software\Microsoft` and `Software\Policies\Microsoft` registry locations, with [specific exceptions](https://learn.microsoft.com/en-us/windows/client-management/win32-and-centennial-app-policy-configuration) for apps like Edge, Office, and OneDrive.
 
 ## Migrating from Intune
 
 Intune uses Windows [CSPs](https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-configuration-service-provider) that set registry keys that tell your system(s) which configuration to enforce. Intune CSPs can mostly be found in the registry under the `HKLM:\SOFTWARE\Microsoft\Provisioning\NodeCache\CSP\Device\MS DM Server\Nodes\<id>` key.
+
+> **Note (Intune edge case):**  
+> In some instances, Intune doesn’t explicitly set a Boolean value in the NodeCache – leaving it **unset**, which will return `ExpectedValue : -1` instead of `0` or `1`. Running the PowerShell query shown in this guide and discovering `ExpectedValue` of `-1` is a signal the policy wasn’t enforced in the registry.  
+>
+> For example, querying the `EnableFirewall` policy yields:  
+>
+> ```powershell
+> NodeUri       : ./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/EnableFirewall
+> ExpectedValue : -1
+>
+> NodeUri       : ./Vendor/MSFT/Firewall/MdmStore/PublicProfile/EnableFirewall
+> ExpectedValue : -1
+> ```
+>
+> In these edge cases, you’ll need to verify the actual runtime state (e.g. via `Get‑NetFirewallProfile`) to ensure whether the setting is active.
 
 How to get the CSP from Intune and format it as a configuration profile for Fleet:
 
@@ -185,15 +318,15 @@ How to get the CSP from Intune and format it as a configuration profile for Flee
 
 2. Find the correct `<Data>` block, by logging into a Windows host enrolled to Intune, opening the Registry Editor, and heading to `HKLM:\SOFTWARE\Microsoft\Provisioning\NodeCache\CSP\Device\MS DM Server\Nodes`. Then, search for the `settingDefinitionId` (CSP) from your list in step 2:
  - The `NodeURI` of the Registry key will be the `LocURI` in the CSP XML
- - The `ExpectedValue` of the Registry key will be the `<Data>` block in the CSP XML[^1]
+ - The `ExpectedValue` of the Registry key will be the `<Data>` block in the CSP XML
+
+> If the `ExpectedValue` returns just an integer, then change the `<Data>` block just the integer (ex: `ExpectedValue = 1` then `<Data>1</Data>`) and change `<Format xmlns="syncml:metinf">chr</Format>` to `<Format xmlns="syncml:metinf">int</Format>`.
 
 Alternatively, you can use this PowerShell one-liner to get the CSPs from the Windows Registry, which you can script together to loop through every CSP:
 
   ```powershell
   $inputString = "disablefirstrunwizard"; Get-ChildItem -Path 'HKLM:\SOFTWARE\Microsoft\Provisioning\NodeCache\CSP\Device\MS DM Server\Nodes' -Recurse | Get-ItemProperty | Where-Object { $_.NodeUri -like "*$inputString*" } | Select-Object NodeUri, ExpectedValue | Format-List
   ```
-
-[^1]: If the `ExpectedValue` returns just an integer, then change the `<Data>` block just the integer (ex: `ExpectedValue = 1` then `<Data>1</Data>`) and change `<Format xmlns="syncml:metinf">chr</Format>` to `<Format xmlns="syncml:metinf">int</Format>`.
 
 ## Debugging
 
@@ -207,7 +340,7 @@ Applications and Service Logs > Microsoft > Windows > DeviceManagement-Enterpris
 
 The `Admin` logs will show you all profiles that have been pushed to the device and their status. It helps to use the `Find` function to look for keywords in your profile to narrow your search. Here is an example of the logs that show when the CSP we created here was deployed.
 
-![Windows Event Logs](../website/assets/images/articles/windows-event-log.png)
+![Windows Event Logs](../website/assets/images/articles/windows-event-log-314x222@2x.png)
 
 Alternatively, you can use this PowerShell one-liner to see errors from the MDM event log:
 
@@ -216,6 +349,8 @@ Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-DeviceManagement-Ente
 ```
 
 [This](https://blog.mindcore.dk/2022/09/intune-error-codes-and-solutions/) blog post can also help you translate error codes that are present here.
+
+> If you encounter the error: "The MDM protocol returned a success but the result couldn’t be verified by osquery", and the profile includes `[!CDATA []]` sections, [escape the XML](https://www.freeformatter.com/xml-escape.html) instead of using CDATA. For example, `[!CDATA[<enabled/>]]>` should be changed to `&lt;enabled/&gt;`.
 
 
 ## Conclusion

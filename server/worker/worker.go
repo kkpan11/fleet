@@ -4,25 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
-	kitlog "github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
-
-type ctxKey int
 
 const (
 	maxRetries = 5
 	// nvdCVEURL is the base link to a CVE on the NVD website, only the CVE code
 	// needs to be appended to make it a valid link.
 	nvdCVEURL = "https://nvd.nist.gov/vuln/detail/"
-
-	// context key for the retry number of a job, made available via the context
-	// to the job processor.
-	retryNumberCtxKey = ctxKey(0)
 )
 
 const (
@@ -41,6 +37,14 @@ type Job interface {
 	Run(ctx context.Context, argsJSON json.RawMessage) error
 }
 
+// FinalFailureNotifier is an optional interface a Job can implement to be
+// notified once, after the worker has exhausted all retries and marked the job
+// as permanently failed. This is the right place to record terminal-failure
+// side effects (e.g. an activity) without emitting one per intermediate retry.
+type FinalFailureNotifier interface {
+	OnFinalFailure(ctx context.Context, argsJSON json.RawMessage, jobErr string) error
+}
+
 // failingPolicyArgs are the args common to all integrations that can process
 // failing policies.
 type failingPolicyArgs struct {
@@ -48,7 +52,17 @@ type failingPolicyArgs struct {
 	PolicyName     string                `json:"policy_name"`
 	PolicyCritical bool                  `json:"policy_critical"`
 	Hosts          []fleet.PolicySetHost `json:"hosts"`
-	TeamID         *uint                 `json:"team_id,omitempty"`
+	TeamID         *uint                 `json:"team_id,omitempty"` //nolint:apiparamcheck // these are written to the db, changing likely requires migration
+}
+
+// hostIDs returns the IDs of the hosts targeted by the failing-policy job, used
+// to associate a failure activity with each affected host.
+func (a *failingPolicyArgs) hostIDs() []uint {
+	ids := make([]uint, len(a.Hosts))
+	for i, h := range a.Hosts {
+		ids[i] = h.ID
+	}
+	return ids
 }
 
 // vulnArgs are the args common to all integrations that can process
@@ -65,15 +79,19 @@ type vulnArgs struct {
 // Worker runs jobs. NOT SAFE FOR CONCURRENT USE.
 type Worker struct {
 	ds  fleet.Datastore
-	log kitlog.Logger
+	log *slog.Logger
 
 	// For tests only, allows ignoring unknown jobs instead of failing them.
 	TestIgnoreUnknownJobs bool
 
+	// delayPerRetry defines the delays between retries. If nil, the default
+	// delays are used.
+	delayPerRetry []time.Duration
+
 	registry map[string]Job
 }
 
-func NewWorker(ds fleet.Datastore, log kitlog.Logger) *Worker {
+func NewWorker(ds fleet.Datastore, log *slog.Logger) *Worker {
 	return &Worker{
 		ds:       ds,
 		log:      log,
@@ -120,12 +138,12 @@ func QueueJobWithDelay(ctx context.Context, ds fleet.Datastore, name string, arg
 	return ds.NewJob(ctx, job)
 }
 
-// this defines the delays to add between retries (i.e. how the "not_before"
-// timestamp of a job will be set for the next run). Keep in mind that at a
-// minimum, the job will not be retried before the next cron run of the worker,
-// but we want to ensure a minimum delay before retries to give a chance to
-// e.g. transient network issues to resolve themselves.
-var delayPerRetry = []time.Duration{
+// defaultDelayPerRetry defines the delays to add between retries (i.e. how
+// the "not_before" timestamp of a job will be set for the next run). Keep in
+// mind that at a minimum, the job will not be retried before the next cron run
+// of the worker, but we want to ensure a minimum delay before retries to give
+// a chance to e.g. transient network issues to resolve themselves.
+var defaultDelayPerRetry = []time.Duration{
 	1: 0, // i.e. for the first retry, do it ASAP (on the next worker run)
 	2: 5 * time.Minute,
 	3: 10 * time.Minute,
@@ -133,14 +151,29 @@ var delayPerRetry = []time.Duration{
 	5: 2 * time.Hour,
 }
 
+func (w *Worker) jobNames() []string {
+	// Get the names of the jobs in the registry
+	jobNames := make([]string, 0, len(w.registry))
+	for name := range w.registry {
+		jobNames = append(jobNames, name)
+	}
+	return jobNames
+}
+
 // ProcessJobs processes all queued jobs.
 func (w *Worker) ProcessJobs(ctx context.Context) error {
 	const maxNumJobs = 100
 
+	jobNames := w.jobNames()
+	if len(jobNames) == 0 {
+		w.log.InfoContext(ctx, "no jobs registered, nothing to process")
+		return nil
+	}
+
 	// process jobs until there are none left or the context is cancelled
 	seen := make(map[uint]struct{})
 	for {
-		jobs, err := w.ds.GetQueuedJobs(ctx, maxNumJobs, time.Time{})
+		jobs, err := w.ds.GetFilteredQueuedJobs(ctx, maxNumJobs, time.Time{}, jobNames)
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "get queued jobs")
 		}
@@ -156,27 +189,40 @@ func (w *Worker) ProcessJobs(ctx context.Context) error {
 			default:
 			}
 
-			log := kitlog.With(w.log, "job_id", job.ID)
+			log := w.log.With("job_id", job.ID)
 
 			if _, ok := seen[job.ID]; ok {
-				level.Debug(log).Log("msg", "some jobs failed, retrying on next cron execution")
+				log.DebugContext(ctx, "some jobs failed, retrying on next cron execution")
 				return nil
 			}
 			seen[job.ID] = struct{}{}
 
-			level.Debug(log).Log("msg", "processing job")
+			log.DebugContext(ctx, "processing job")
 
 			if err := w.processJob(ctx, job); err != nil {
-				level.Error(log).Log("msg", "process job", "err", err)
+				log.ErrorContext(ctx, "process job", "err", err)
 				job.Error = err.Error()
 				if job.Retries < maxRetries {
-					level.Debug(log).Log("msg", "will retry job")
+					log.DebugContext(ctx, "will retry job")
 					job.Retries += 1
-					if job.Retries < len(delayPerRetry) {
-						job.NotBefore = time.Now().Add(delayPerRetry[job.Retries])
+					delays := w.delayPerRetry
+					if delays == nil {
+						delays = defaultDelayPerRetry
+					}
+					if job.Retries < len(delays) {
+						job.NotBefore = time.Now().UTC().Add(delays[job.Retries])
 					}
 				} else {
 					job.State = fleet.JobStateFailure
+					if notifier, ok := w.registry[job.Name].(FinalFailureNotifier); ok {
+						var args json.RawMessage
+						if job.Args != nil {
+							args = *job.Args
+						}
+						if ffErr := notifier.OnFinalFailure(ctx, args, job.Error); ffErr != nil {
+							log.ErrorContext(ctx, "on final failure handler", "err", ffErr)
+						}
+					}
 				}
 			} else {
 				job.State = fleet.JobStateSuccess
@@ -187,7 +233,7 @@ func (w *Worker) ProcessJobs(ctx context.Context) error {
 			// of queue. GetQueuedJobs fetches jobs by updated_at, so it will not return the same job until the queue
 			// has been processed once.
 			if _, err := w.ds.UpdateJob(ctx, job.ID, job); err != nil {
-				level.Error(log).Log("update job", "err", err)
+				log.ErrorContext(ctx, "update job", "err", err)
 			}
 		}
 	}
@@ -196,6 +242,15 @@ func (w *Worker) ProcessJobs(ctx context.Context) error {
 }
 
 func (w *Worker) processJob(ctx context.Context, job *fleet.Job) error {
+	// Create OTEL span for job processing (parent span should be: cron.scheduled_tick.integrations)
+	ctx, span := otel.Tracer("github.com/fleetdm/fleet/v4/server/worker").Start(ctx, fmt.Sprintf("worker.process_job.%s", job.Name),
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.Int64("job.id", int64(job.ID)), // nolint:gosec,G115
+		),
+	)
+	defer span.End()
+
 	j, ok := w.registry[job.Name]
 	if !ok {
 		if w.TestIgnoreUnknownJobs {
@@ -209,8 +264,11 @@ func (w *Worker) processJob(ctx context.Context, job *fleet.Job) error {
 		args = *job.Args
 	}
 
-	ctx = context.WithValue(ctx, retryNumberCtxKey, job.Retries)
-	return j.Run(ctx, args)
+	err := j.Run(ctx, args)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }
 
 type failingPoliciesTplArgs struct {

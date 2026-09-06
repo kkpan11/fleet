@@ -33,6 +33,12 @@
 
 - CSPs: https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-configuration-service-provider
 
+- Initial PoC PR's: [MDM Server](https://github.com/fleetdm/fleet/pull/9178) [Programmatic Enrollment](https://github.com/fleetdm/fleet/pull/9500)
+
+### Android
+
+See the [Android MDM documentation](./android-mdm.md)
+
 ### Development
 
 - `./Testing-and-local-development.md` has many sections about setting up MDM and debugging specific features
@@ -46,26 +52,25 @@
 
 ### Profiles and Declarations
 
-For Windows and Apple MDM, Fleet defines "profiles" as groups of settings that can be SyncML (Windows), XML, or JSON (Apple).
+For Windows, Apple and Android MDM, Fleet defines "profiles" as groups of settings that can be SyncML (Windows), XML (Apple), or JSON (Apple/Android).
 
-Settings are defined per team and can be further targeted to hosts using labels.
+Settings are defined per fleet and can be further targeted to hosts using labels.
 
 Profiles and declarations can be uploaded via the UI/CLI by the IT admin. Additionally, Fleet automatically sends profiles to hosts as part of high-level UI actions. For instance, enabling disk encryption in macOS sends the relevant configuration to the host.
 
 To determine the subset of profiles/declarations that should be applied to a specific host, we use the following approach:
 
-1. **Ideal State:** The "ideal state" of a host is calculated by combining team profiles with any label-based inclusions/exclusions using the `mdm_*_configuration_profiles` and `mdm_apple_declarations` tables.
+1. **Ideal State:** The "ideal state" of a host is calculated by combining fleet profiles with any label-based inclusions/exclusions using the `mdm_*_configuration_profiles` and `mdm_apple_declarations` tables.
 2. **Current State:** The "current state" of a host is tracked using the `host_mdm_*_configuration_profiles` and `host_mdm_apple_declarations` tables, which are updated based on MDM protocol responses and kept in sync via osquery (commonly referred to as "profile verification" or "double-check").
 3. **Diff Calculation:** We use set algebra to compute the difference between the ideal and current states—determining the profiles that need to be installed ("to install") and those that should be removed ("to remove").
 
 This logic runs in two main places:
 
-1. **`mdm_apple_profile_manager` Cron Job:** Runs every 30 seconds and performs the following actions:
+1. **`mdm_*_profile_manager` Cron Job:** Runs every 30 seconds and performs the following actions:
     - Calculates the profiles to install/remove
     - Enqueues the necessary commands
     - Sends push notifications to the hosts
 
-    (Note: Despite its name, this cron job handles both Apple and Windows MDM. [Issue link](https://github.com/fleetdm/fleet/issues/22824))
 
 2. **`ds.BulkSetPendingMDMHostProfiles`:** This method is called to mark profiles and declarations as "pending." It's a lighter process than the cron job, only updating database records to reflect pending profiles in the UI, providing immediate feedback to users.
 
@@ -97,6 +102,8 @@ All lifecycle-related actions are implemented in the `HostLifecycle` struct. A g
 
 We use the terminology "turn on" and "turn off" to align with the language used by the product group, which is generally associated with enrollment and unenrollment.
 
+> _HostLifecycle might not contain all lifecycle events, and does not cover Android as of today (2025/12/22)_
+
 ### SCEP Renewals
 
 MicroMDM has documented the intricacies of SCEP certificate renewals in detail: [MicroMDM SCEP Documentation](https://github.com/micromdm/micromdm/wiki/Device-Identity-Certificate-Expiration).
@@ -118,6 +125,7 @@ The implementation of the Puppet module is described in detail at: `ee/tools/pup
 Windows MDM is more flexible when it comes to switching MDM servers, so MDM migrations are generally not a big deal.
 
 Apple MDM is more strict, and we have built two different flows:
+> As of MacOS 26, iOS 26, and iPadOS 26, Apple has introduced a [native MDM migration flow](https://fleetdm.com/announcements/fleet-supports-macos-26-tahoe-ios-26-and-ipados-26#mdm-migration-with-apple-business-manager-abm).
 
 1. The "regular" flow is what most customers will use, involve `fleetd` guiding the user through the migration to perform manual steps. The user documentation for this flow is https://fleetdm.com/guides/mdm-migration
 2. The "seamless" flow allows customers with access to their MDM database and ownership of the domain used as the `ServerURL` in the enrollment profile to migrate the devices without user action. The user documentation for this flow is https://fleetdm.com/guides/seamless-mdm-migration
@@ -152,15 +160,15 @@ If we're not able to decrypt the key for a host, the key needs to be rotated. Ro
 
 Disk encryption in Windows is performed entirely by orbit.
 
-When disk encryption is enabled, the server sends a notification to orbit, who calls the [Win32_EncryptableVolume class](https://learn.microsoft.com/en-us/windows/win32/secprov/getencryptionmethod-win32-encryptablevolume) to encrypt/decrypt the disk and generate an encryption key.
+When disk encryption is enabled, the server sends a notification to orbit, which calls the [Win32_EncryptableVolume class](https://learn.microsoft.com/en-us/windows/win32/secprov/getencryptionmethod-win32-encryptablevolume) to encrypt the disk and generate an encryption key. If the disk is already encrypted, orbit rotates the recovery key (adds a new Fleet-managed protector, removes old ones) without decrypting.
 
-After the disk is encrypted, orbit sends the key back to the server using an orbit-authenticated endpoint (`POST /api/fleet/orbit/disk_encryption_key`)
+After the disk is encrypted (or the key is rotated), orbit sends the key back to the server using an orbit-authenticated endpoint (`POST /api/fleet/orbit/disk_encryption_key`)
 
 ### Load testing
 
 osquery-perf supports MDM load testing for Windows and Apple devices. Under the hood it uses the `mdmtest` package to simulate MDM clients.
 
-Documentation about setting up load testing for MDM can be found in ./infrastructure/loadtesting/terraform/readme.md
+Documentation about setting up load testing for MDM can be found in the [infrastructure loadtesting README](../../../../infrastructure/loadtesting/terraform/readme.md)
 
 ### ADE
 
@@ -171,16 +179,18 @@ Below is a summary of Fleet-specific behaviors for ADE.
 
 ### Sync
 
-Sincronization of devices from all ABM tokens uploaded to Fleet happen in the `dep_syncer` cron job, which runs every 30 seconds.
+Sincronization of devices from all ABM tokens uploaded to Fleet happen in the `dep_syncer` cron job, which runs every minute, but can be configured by setting `mdm.apple_dep_sync_periodicity` to a duration string (e.g. "30s", "5m", "1h") in the config.
 
 We keep a record of all devices ingested via the ADE sync in the `host_dep_assignments` table. Entries in this table are soft-deleted.
 
 On every run, we pull the list of added/modified/deleted devices and:
 
 1. If the host was added/modified, we:
-    1. Create/match a row in the `hosts` table for the new host. This allows IT admin to move the host between teams before it turns on MDM or has `fleetd` installed.
+    1. Create/match a row in the `hosts` table for the new host. This allows IT admin to move the host between fleets before it turns on MDM or has `fleetd` installed.
     1. Assign the corresponding JSON profile to each host using ABM's APIs.
 2. If the host was deleted, we soft delete the `host_dep_assignments` entry 
+
+Read [resetting Apple DEP sync cursor](./troubleshooting/resetting-apple-dep-sync-cursor.md) for how to reset the sync cursor.
 
 #### Special case: host in ABM is deleted in Fleet
 

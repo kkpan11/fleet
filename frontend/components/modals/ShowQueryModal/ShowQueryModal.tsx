@@ -4,13 +4,14 @@ import SQLEditor from "components/SQLEditor";
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
 import PerformanceImpactCell from "components/TableContainer/DataTable/PerformanceImpactCell";
+import { PerformanceImpactIndicator } from "interfaces/schedulable_query";
 
 const baseClass = "show-query-modal";
 
 interface IShowQueryModalProps {
   onCancel: () => void;
   query?: string;
-  impact?: string;
+  impact?: PerformanceImpactIndicator;
 }
 
 const ShowQueryModal = ({
@@ -40,7 +41,7 @@ const ShowQueryModal = ({
           </div>
         )}
         <div className="modal-cta-wrap">
-          <Button onClick={onCancel}>Done</Button>
+          <Button onClick={onCancel}>Close</Button>
         </div>
       </div>
     </Modal>

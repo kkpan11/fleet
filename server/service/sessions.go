@@ -5,22 +5,23 @@ import (
 	"context"
 	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
 
+	shared_mdm "github.com/fleetdm/fleet/v4/pkg/mdm"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
+	"github.com/fleetdm/fleet/v4/server/contexts/license"
 	"github.com/fleetdm/fleet/v4/server/contexts/logging"
 	"github.com/fleetdm/fleet/v4/server/contexts/publicip"
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mail"
-	"github.com/fleetdm/fleet/v4/server/service/contract"
-	"github.com/fleetdm/fleet/v4/server/service/middleware/endpoint_utils"
+	"github.com/fleetdm/fleet/v4/server/platform/endpointer"
 	"github.com/fleetdm/fleet/v4/server/sso"
-	"github.com/go-kit/log/level"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -114,15 +115,6 @@ func (svc *Service) DeleteSession(ctx context.Context, id uint) error {
 // Login
 ////////////////////////////////////////////////////////////////////////////////
 
-type loginResponse struct {
-	User           *fleet.User          `json:"user,omitempty"`
-	AvailableTeams []*fleet.TeamSummary `json:"available_teams"`
-	Token          string               `json:"token,omitempty"`
-	Err            error                `json:"error,omitempty"`
-}
-
-func (r loginResponse) Error() error { return r.Err }
-
 type loginMfaResponse struct {
 	Message string `json:"message"`
 	Err     error  `json:"error,omitempty"`
@@ -133,7 +125,7 @@ func (r loginMfaResponse) Status() int { return http.StatusAccepted }
 func (r loginMfaResponse) Error() error { return r.Err }
 
 func loginEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*contract.LoginRequest)
+	req := request.(*fleet.LoginRequest)
 	req.Email = strings.ToLower(req.Email)
 
 	user, session, err := svc.Login(ctx, req.Email, req.Password, req.SupportsEmailVerification)
@@ -142,7 +134,7 @@ func loginEndpoint(ctx context.Context, request interface{}, svc fleet.Service) 
 			return loginMfaResponse{Message: "We sent an email to you. Please click the magic link in the email to sign in."}, nil
 		}
 
-		return loginResponse{Err: err}, nil
+		return fleet.LoginResponse{Err: err}, nil
 	}
 	// Add viewer to context to allow access to service teams for list of available teams.
 	ctx = viewer.NewContext(ctx, viewer.Viewer{
@@ -154,19 +146,27 @@ func loginEndpoint(ctx context.Context, request interface{}, svc fleet.Service) 
 		if errors.Is(err, fleet.ErrMissingLicense) {
 			availableTeams = []*fleet.TeamSummary{}
 		} else {
-			return loginResponse{Err: err}, nil
+			return fleet.LoginResponse{Err: err}, nil
 		}
 	}
-	return loginResponse{user, availableTeams, session.Key, nil}, nil
+
+	// Calculate token expiration time if session duration is configured
+	var tokenExpiresAt *time.Time
+	if sessionDuration := svc.GetSessionDuration(ctx); sessionDuration > 0 {
+		expiresAt := time.Now().Add(sessionDuration).UTC()
+		tokenExpiresAt = &expiresAt
+	}
+
+	return fleet.LoginResponse{
+		User:           user,
+		AvailableTeams: availableTeams,
+		Token:          session.Key,
+		TokenExpiresAt: tokenExpiresAt,
+	}, nil
 }
 
 //goland:noinspection GoErrorStringFormat
 var sendingMFAEmail = errors.New("sending MFA email")
-var noMFASupported = errors.New("client with no MFA email support")
-var mfaNotSupportedForClient = endpoint_utils.BadRequestErr(
-	"Your login client does not support MFA. Please log in via the web, then use an API token to authenticate.",
-	noMFASupported,
-)
 
 func (svc *Service) Login(ctx context.Context, email, password string, supportsEmailVerification bool) (*fleet.User, *fleet.Session, error) {
 	// skipauth: No user context available yet to authorize against.
@@ -176,14 +176,14 @@ func (svc *Service) Login(ctx context.Context, email, password string, supportsE
 		"op", "login",
 		"email", email,
 		"public_ip", publicip.FromContext(ctx),
-	), level.Info)
+	), slog.LevelInfo)
 
 	// If there is an error, sleep until the request has taken at least 1
 	// second. This means that generally a login failure for any reason will
 	// take ~1s and frustrate a timing attack.
 	var err error
 	defer func(start time.Time) {
-		if err != nil && !errors.Is(err, sendingMFAEmail) && !errors.Is(err, mfaNotSupportedForClient) {
+		if err != nil && !errors.Is(err, sendingMFAEmail) {
 			if err := svc.NewActivity(
 				ctx, nil, fleet.ActivityTypeUserFailedLogin{
 					Email:    email,
@@ -211,17 +211,42 @@ func (svc *Service) Login(ctx context.Context, email, password string, supportsE
 	}
 
 	if user.SSOEnabled {
-		return nil, nil, fleet.NewAuthFailedError("password login disabled for sso users")
+		err = fleet.NewAuthFailedError("password login disabled for sso users")
+		return nil, nil, err
 	} else if user.MFAEnabled {
 		if !supportsEmailVerification {
-			return nil, nil, mfaNotSupportedForClient
+			err = fleet.NewAuthFailedError("client with no MFA email support")
+			return nil, nil, err
 		}
 
 		if err = svc.makeMFAEmail(ctx, *user); err != nil {
 			return nil, nil, fleet.NewAuthFailedError(err.Error())
 		}
 
-		return nil, nil, sendingMFAEmail
+		// A correct password on an MFA-enabled account triggers a verification
+		// email. Record it so this event is visible in the activity feed and
+		// audit stream, since it is otherwise the only observable signal that a
+		// valid password was submitted.
+		if actErr := svc.NewActivity(
+			ctx, nil, fleet.ActivityTypeUserMFARequested{
+				Email:    email,
+				PublicIP: publicip.FromContext(ctx),
+			}); actErr != nil {
+			logging.WithExtras(logging.WithNoUser(ctx),
+				"msg", "failed to generate MFA requested activity",
+			)
+		}
+
+		err = sendingMFAEmail
+		return nil, nil, err
+	}
+
+	// Do not allow login if on Fleet Free and the user has a Premium-only role.
+	if !license.IsPremium(ctx) {
+		if fleet.PremiumRolesPresent(user.GlobalRole, user.Teams) {
+			err = fleet.ErrMissingLicense
+			return nil, nil, err
+		}
 	}
 
 	session, err := svc.makeSession(ctx, user.ID)
@@ -242,6 +267,10 @@ func (svc *Service) makeSession(ctx context.Context, userID uint) (*fleet.Sessio
 	return svc.ds.NewSession(ctx, userID, svc.config.Session.KeySize)
 }
 
+func (svc *Service) GetSessionDuration(ctx context.Context) time.Duration {
+	return svc.config.Session.Duration
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Session create (second step of MFA)
 ////////////////////////////////////////////////////////////////////////////////
@@ -254,7 +283,7 @@ func sessionCreateEndpoint(ctx context.Context, request interface{}, svc fleet.S
 	req := request.(*sessionCreateRequest)
 	session, user, err := svc.CompleteMFA(ctx, req.Token)
 	if err != nil {
-		return loginResponse{Err: err}, nil
+		return fleet.LoginResponse{Err: err}, nil
 	}
 	// Add viewer to context to allow access to service teams for list of available teams.
 	ctx = viewer.NewContext(ctx, viewer.Viewer{
@@ -266,10 +295,23 @@ func sessionCreateEndpoint(ctx context.Context, request interface{}, svc fleet.S
 		if errors.Is(err, fleet.ErrMissingLicense) {
 			availableTeams = []*fleet.TeamSummary{}
 		} else {
-			return loginResponse{Err: err}, nil
+			return fleet.LoginResponse{Err: err}, nil
 		}
 	}
-	return loginResponse{user, availableTeams, session.Key, nil}, nil
+
+	// Calculate token expiration time if session duration is configured
+	var tokenExpiresAt *time.Time
+	if sessionDuration := svc.GetSessionDuration(ctx); sessionDuration > 0 {
+		expiresAt := time.Now().Add(sessionDuration).UTC()
+		tokenExpiresAt = &expiresAt
+	}
+
+	return fleet.LoginResponse{
+		User:           user,
+		AvailableTeams: availableTeams,
+		Token:          session.Key,
+		TokenExpiresAt: tokenExpiresAt,
+	}, nil
 }
 
 func (svc *Service) CompleteMFA(ctx context.Context, token string) (*fleet.Session, *fleet.User, error) {
@@ -301,25 +343,19 @@ func (svc *Service) CompleteMFA(ctx context.Context, token string) (*fleet.Sessi
 // Logout
 ////////////////////////////////////////////////////////////////////////////////
 
-type logoutResponse struct {
-	Err error `json:"error,omitempty"`
-}
-
-func (r logoutResponse) Error() error { return r.Err }
-
 func logoutEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	err := svc.Logout(ctx)
 	if err != nil {
-		return logoutResponse{Err: err}, nil
+		return fleet.LogoutResponse{Err: err}, nil
 	}
-	return logoutResponse{}, nil
+	return fleet.LogoutResponse{}, nil
 }
 
 func (svc *Service) Logout(ctx context.Context) error {
 	// skipauth: Any user can always log out of their own session.
 	svc.authz.SkipAuthorization(ctx)
 
-	logging.WithLevel(ctx, level.Info)
+	logging.WithLevel(ctx, slog.LevelInfo)
 
 	return svc.DestroySession(ctx)
 }
@@ -355,17 +391,82 @@ type initiateSSORequest struct {
 type initiateSSOResponse struct {
 	URL string `json:"url,omitempty"`
 	Err error  `json:"error,omitempty"`
+
+	sessionID              string
+	sessionDurationSeconds int
 }
+
+const cookieNameSSOSession = "__Host-FLEETSSOSESSIONID"
 
 func (r initiateSSOResponse) Error() error { return r.Err }
 
+// cookieSecure is defined as a variable for testing purposes.
+var cookieSecure = true
+
+func setSSOCookie(w http.ResponseWriter, sessionID string, cookieDurationSeconds int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieNameSSOSession,
+		Value:    sessionID,
+		Path:     "/",
+		MaxAge:   cookieDurationSeconds,
+		Secure:   cookieSecure,
+		HttpOnly: true,
+		// SameSite: Strict or Lax do not work with SSO.
+	})
+}
+
+func deleteSSOCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieNameSSOSession,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   cookieSecure,
+		HttpOnly: true,
+	})
+}
+
+const cookieNameDeviceSSOSession = "__Host-FLEET_DESKTOP_SESSION"
+
+// setHostPrefixedCookie sets a __Host- session cookie: pinned to this host,
+// SameSite=Lax. Lax is safe here, because none of these has to ride the cross-site POST
+// from the IdP -- only the safe-method navigation the SSO callback redirects to,
+// and the page's own requests afterwards.
+func setHostPrefixedCookie(w http.ResponseWriter, name, value string, cookieDurationSeconds int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   cookieDurationSeconds,
+		Secure:   cookieSecure,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+func setDeviceSSOSessionCookie(w http.ResponseWriter, sessionID string, cookieDurationSeconds int) {
+	setHostPrefixedCookie(w, cookieNameDeviceSSOSession, sessionID, cookieDurationSeconds)
+}
+
+func setBYODCookie(w http.ResponseWriter, value string, cookieDurationSeconds int) {
+	setHostPrefixedCookie(w, shared_mdm.BYODIdpCookieName, value, cookieDurationSeconds)
+}
+
+func (r initiateSSOResponse) SetCookies(_ context.Context, w http.ResponseWriter) {
+	setSSOCookie(w, r.sessionID, r.sessionDurationSeconds)
+}
+
 func initiateSSOEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*initiateSSORequest)
-	idProviderURL, err := svc.InitiateSSO(ctx, req.RelayURL)
+	sessionID, sessionDurationSeconds, idProviderURL, err := svc.InitiateSSO(ctx, req.RelayURL)
 	if err != nil {
 		return initiateSSOResponse{Err: err}, nil
 	}
-	return initiateSSOResponse{URL: idProviderURL}, nil
+	return initiateSSOResponse{
+		URL:                    idProviderURL,
+		sessionID:              sessionID,
+		sessionDurationSeconds: sessionDurationSeconds,
+	}, nil
 }
 
 // InitiateSSO initiates a Single Sign-On flow for a request to visit the
@@ -373,93 +474,159 @@ func initiateSSOEndpoint(ctx context.Context, request interface{}, svc fleet.Ser
 // provider to make a request to to proceed with the authentication via that
 // external service, and stores ephemeral session state to validate the
 // callback from the identity provider to finalize the SSO flow.
-func (svc *Service) InitiateSSO(ctx context.Context, redirectURL string) (string, error) {
+func (svc *Service) InitiateSSO(ctx context.Context, redirectURL string) (sessionID string, sessionDurationSeconds int, idpURL string, err error) {
 	// skipauth: User context does not yet exist. Unauthenticated users may
 	// initiate SSO.
 	svc.authz.SkipAuthorization(ctx)
 
-	logging.WithLevel(logging.WithNoUser(ctx), level.Info)
+	logging.WithLevel(logging.WithNoUser(ctx), slog.LevelInfo)
 
 	appConfig, err := svc.ds.AppConfig(ctx)
 	if err != nil {
-		return "", ctxerr.Wrap(ctx, err, "InitiateSSO getting app config")
+		return "", 0, "", ctxerr.Wrap(ctx, err, "InitiateSSO getting app config")
 	}
 
 	if appConfig.SSOSettings == nil || !appConfig.SSOSettings.EnableSSO {
 		err := &fleet.BadRequestError{Message: "organization not configured to use sso"}
-		return "", ctxerr.Wrap(ctx, newSSOError(err, ssoOrgDisabled), "initiate sso")
-	}
-
-	metadata, err := sso.GetMetadata(&appConfig.SSOSettings.SSOProviderSettings)
-	if err != nil {
-		return "", ctxerr.Wrap(ctx, endpoint_utils.BadRequestErr("Could not get SSO Metadata. Check your SSO settings.", err))
+		return "", 0, "", ctxerr.Wrap(ctx, newSSOError(err, ssoOrgDisabled), "initiate sso")
 	}
 
 	parsedUrl, err := url.Parse(redirectURL)
 	if err != nil {
-		return "", ctxerr.Wrap(ctx, badRequest("invalid sso redirect url"))
+		return "", 0, "", ctxerr.Wrap(ctx, badRequest("invalid sso redirect url"))
 	}
-
 	if slices.Contains([]string{"javascript", "vbscript", "data"}, parsedUrl.Scheme) {
-		return "", ctxerr.Wrap(ctx, badRequest("invalid sso redirect url scheme: "+parsedUrl.Scheme))
+		return "", 0, "", ctxerr.Wrap(ctx, badRequest("invalid sso redirect url scheme: "+parsedUrl.Scheme))
 	}
 
 	serverURL := appConfig.ServerSettings.ServerURL
-	settings := sso.Settings{
-		Metadata: metadata,
-		// Construct call back url to send to idp
-		AssertionConsumerServiceURL: serverURL + svc.config.Server.URLPrefix + "/api/v1/fleet/sso/callback",
-		SessionStore:                svc.ssoSessionStore,
-		OriginalURL:                 redirectURL,
+	// Use SSO server URL if configured, otherwise use the server URL
+	ssoURL := serverURL
+	if appConfig.SSOSettings != nil && appConfig.SSOSettings.SSOServerURL != "" {
+		ssoURL = appConfig.SSOSettings.SSOServerURL
 	}
+	// Construct the ACS callback URL. CallbackURL appends the url_prefix only when
+	// the server URL doesn't already include it, so the subpath is present exactly
+	// once whether or not server_url was configured with the prefix.
+	parsedURL, err := url.Parse(ssoURL)
+	if err != nil {
+		return "", 0, "", ctxerr.Wrap(ctx, badRequest("invalid SSO URL: "+err.Error()))
+	}
+	acsURL := sso.CallbackURL(parsedURL, svc.config.Server.URLPrefix, "/api/v1/fleet/sso/callback").String()
 
-	// If issuer is not explicitly set, default to host name.
-	var issuer string
+	// If entityID is not explicitly set, default to host name.
+	//
+	// NOTE(lucas): This code may be required if SSO was configured with an older version of Fleet
+	// where EntityID wasn't required to configure SSO.
 	entityID := appConfig.SSOSettings.EntityID
 	if entityID == "" {
 		u, err := url.Parse(serverURL)
 		if err != nil {
-			return "", ctxerr.Wrap(ctx, err, "parse server url")
+			return "", 0, "", ctxerr.Wrap(ctx, err, "parse server url")
 		}
-		issuer = u.Hostname()
-	} else {
-		issuer = entityID
+		entityID = u.Hostname()
 	}
 
-	idpURL, err := sso.CreateAuthorizationRequest(&settings, issuer)
+	samlProvider, err := sso.SAMLProviderFromConfiguredMetadata(ctx,
+		entityID,
+		acsURL,
+		&appConfig.SSOSettings.SSOProviderSettings,
+	)
 	if err != nil {
-		return "", ctxerr.Wrap(ctx, err, "InitiateSSO creating authorization")
+		return "", 0, "", ctxerr.Wrap(ctx, err, "failed to create provider from configured metadata")
 	}
 
-	return idpURL, nil
+	sessionDurationSeconds = int(svc.config.Auth.SsoSessionValidityPeriod.Seconds())
+	sessionID, idpURL, err = sso.CreateAuthorizationRequest(
+		ctx, samlProvider, svc.ssoSessionStore, redirectURL,
+		uint(sessionDurationSeconds), //nolint:gosec // dismiss G115
+		fleet.SSORelayStateNone,
+		sso.SSORequestData{},
+	)
+	if err != nil {
+		return "", 0, "", ctxerr.Wrap(ctx, err, "InitiateSSO creating authorization")
+	}
+
+	return sessionID, sessionDurationSeconds, idpURL, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Callback SSO
 ////////////////////////////////////////////////////////////////////////////////
 
-type callbackSSORequest struct{}
+type callbackSSORequest struct {
+	sessionID    string
+	samlResponse []byte
+}
 
-func (callbackSSORequest) DecodeRequest(ctx context.Context, r *http.Request) (interface{}, error) {
-	err := r.ParseForm()
+func (c callbackSSORequest) DecodeRequest(ctx context.Context, r *http.Request) (interface{}, error) {
+	// Admin login SSO doesn't set relay state, so there is none to read back.
+	sessionID, samlResponse, _, err := decodeCallbackRequest(ctx, r)
 	if err != nil {
-		return nil, ctxerr.Wrap(ctx, &fleet.BadRequestError{
+		return nil, err
+	}
+	return &callbackSSORequest{
+		sessionID:    sessionID,
+		samlResponse: samlResponse,
+	}, nil
+}
+
+func decodeCallbackRequest(ctx context.Context, r *http.Request) (
+	sessionID string,
+	decodedSAMLResponse []byte,
+	relayState fleet.SSORelayState,
+	err error,
+) {
+	cs, err := r.Cookie(cookieNameSSOSession)
+	switch {
+	case err == nil:
+		sessionID = cs.Value
+	case errors.Is(err, http.ErrNoCookie):
+		// SessionID cookie will be empty on IdP-initiated logins.
+	default:
+		return "", nil, fleet.SSORelayStateNone, ctxerr.Wrap(ctx, &fleet.BadRequestError{
+			Message: "failed to read SSO cookie session ID",
+		}, "cookie session ID in SSO callback")
+	}
+
+	if err := r.ParseForm(); err != nil {
+		return "", nil, fleet.SSORelayStateNone, ctxerr.Wrap(ctx, &fleet.BadRequestError{
 			Message:     "failed to parse form",
 			InternalErr: err,
-		}, "decode sso callback")
+		}, "parse form in SSO callback")
 	}
-	authResponse, err := sso.DecodeAuthResponse(r.FormValue("SAMLResponse"))
+
+	samlResponseValue := r.FormValue("SAMLResponse")
+	if samlResponseValue == "" {
+		return "", nil, fleet.SSORelayStateNone, ctxerr.Wrap(ctx, &fleet.BadRequestError{
+			Message: "missing SAMLResponse",
+		}, "missing SAMLResponse in SSO callback")
+	}
+	// Cap the SAMLResponse value itself, not just the request body. FormValue
+	// reads from both the POST body and the URL query string, and
+	// WithRequestBodySizeLimit only bounds the body — so without this check the
+	// body cap is trivially bypassed by sending the payload as a
+	// ?SAMLResponse= query argument. This guards both the regular and MDM SSO
+	// callbacks, which share this decoder.
+	if int64(len(samlResponseValue)) > fleet.MaxSSOCallbackSize {
+		return "", nil, fleet.SSORelayStateNone, ctxerr.Wrap(ctx, &fleet.BadRequestError{
+			Message: "SAMLResponse too large",
+		}, "SAMLResponse exceeds maximum size in SSO callback")
+	}
+	decodedSAMLResponseValue, err := sso.DecodeSAMLResponse(samlResponseValue)
 	if err != nil {
-		return nil, ctxerr.Wrap(ctx, &fleet.BadRequestError{
+		return "", nil, fleet.SSORelayStateNone, ctxerr.Wrap(ctx, &fleet.BadRequestError{
 			Message:     "failed to decode SAMLResponse",
 			InternalErr: err,
-		}, "decoding sso callback")
+		}, "decode SAMLResponse in SSO callback")
 	}
-	return authResponse, nil
+	return sessionID, decodedSAMLResponseValue, fleet.ParseSSORelayState(r.FormValue("RelayState")), nil
 }
 
 type callbackSSOResponse struct {
 	content string
+	token   string
+	expires time.Duration
 	Err     error `json:"error,omitempty"`
 }
 
@@ -468,19 +635,36 @@ func (r callbackSSOResponse) Error() error { return r.Err }
 // If html is present we return a web page
 func (r callbackSSOResponse) Html() string { return r.content }
 
-func makeCallbackSSOEndpoint(urlPrefix string) endpoint_utils.HandlerFunc {
+func (r callbackSSOResponse) SetCookies(_ context.Context, w http.ResponseWriter) {
+	deleteSSOCookie(w)
+	if r.token != "" {
+		cookie := &http.Cookie{
+			Name:     "__Host-token",
+			Value:    r.token,
+			Path:     "/",
+			Secure:   cookieSecure,
+			SameSite: http.SameSiteLaxMode,
+		}
+		if r.expires > 0 {
+			cookie.Expires = time.Now().Add(r.expires).UTC()
+		}
+		http.SetCookie(w, cookie)
+	}
+}
+
+func makeCallbackSSOEndpoint(urlPrefix string) handlerFunc {
 	return func(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-		authResponse := request.(fleet.Auth)
-		session, err := getSSOSession(ctx, svc, authResponse)
+		callbackRequest := request.(*callbackSSORequest)
+		session, userID, err := getSSOSession(ctx, svc, callbackRequest)
 		var resp callbackSSOResponse
 		if err != nil {
 			if err := svc.NewActivity(ctx, nil, fleet.ActivityTypeUserFailedLogin{
-				Email:    authResponse.UserID(),
+				Email:    userID,
 				PublicIP: publicip.FromContext(ctx),
 			}); err != nil {
 				logging.WithLevel(logging.WithExtras(logging.WithNoUser(ctx),
 					"msg", "failed to generate failed login activity",
-				), level.Info)
+				), slog.LevelInfo)
 			}
 
 			var ssoErr *ssoError
@@ -500,7 +684,6 @@ func makeCallbackSSOEndpoint(urlPrefix string) endpoint_utils.HandlerFunc {
 		relayStateLoadPage := ` <html>
      <script type='text/javascript'>
      var redirectURL = {{ .RedirectURL }};
-     window.localStorage.setItem('FLEET::auth_token', '{{ .Token }}');
      window.location = redirectURL;
      </script>
      <body>
@@ -518,80 +701,100 @@ func makeCallbackSSOEndpoint(urlPrefix string) endpoint_utils.HandlerFunc {
 			return nil, err
 		}
 		resp.content = writer.String()
+		resp.token = session.Token
+		resp.expires = svc.GetSessionDuration(ctx)
 		return resp, nil
 	}
 }
 
-func getSSOSession(ctx context.Context, svc fleet.Service, auth fleet.Auth) (*fleet.SSOSession, error) {
-	redirectURL, err := svc.InitSSOCallback(ctx, auth)
+func getSSOSession(
+	ctx context.Context,
+	svc fleet.Service,
+	callbackRequest *callbackSSORequest,
+) (session *fleet.SSOSession, userID string, err error) {
+	auth, redirectURL, err := svc.InitSSOCallback(ctx, callbackRequest.sessionID, callbackRequest.samlResponse)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	user, err := svc.GetSSOUser(ctx, auth)
 	if err != nil {
-		return nil, err
+		return nil, auth.UserID(), err
 	}
 
-	return svc.LoginSSOUser(ctx, user, redirectURL)
+	session, err = svc.LoginSSOUser(ctx, user, redirectURL)
+	if err != nil {
+		return nil, auth.UserID(), err
+	}
+
+	return session, auth.UserID(), nil
 }
 
-func (svc *Service) InitSSOCallback(ctx context.Context, auth fleet.Auth) (string, error) {
+func (svc *Service) InitSSOCallback(
+	ctx context.Context,
+	sessionID string,
+	samlResponse []byte,
+) (auth fleet.Auth, redirectURL string, err error) {
 	// skipauth: User context does not yet exist. Unauthenticated users may
 	// hit the SSO callback.
 	svc.authz.SkipAuthorization(ctx)
 
-	logging.WithLevel(logging.WithNoUser(ctx), level.Info)
+	logging.WithLevel(logging.WithNoUser(ctx), slog.LevelInfo)
 
 	appConfig, err := svc.ds.AppConfig(ctx)
 	if err != nil {
-		return "", ctxerr.Wrap(ctx, err, "get config for sso")
+		return nil, "", ctxerr.Wrap(ctx, err, "get config for sso")
 	}
 
 	if appConfig.SSOSettings == nil || !appConfig.SSOSettings.EnableSSO {
 		err := ctxerr.New(ctx, "organization not configured to use sso")
-		return "", ctxerr.Wrap(ctx, newSSOError(err, ssoOrgDisabled), "callback sso")
+		return nil, "", ctxerr.Wrap(ctx, newSSOError(err, ssoOrgDisabled), "callback sso")
 	}
 
-	// Load the request metadata if available.
-	var metadata *sso.Metadata
-	var redirectURL string
-	if appConfig.SSOSettings.EnableSSOIdPLogin && auth.RequestID() == "" {
-		// Missing request ID indicates this was IdP-initiated. Only allow if
-		// configured to do so.
-		metadata, err = sso.GetMetadata(&appConfig.SSOSettings.SSOProviderSettings)
-		if err != nil {
-			return "", ctxerr.Wrap(ctx, err, "get sso metadata")
-		}
-		redirectURL = "/"
-	} else {
-		var session *sso.Session
-		session, metadata, err = svc.ssoSessionStore.Fullfill(auth.RequestID())
-		if err != nil {
-			return "", ctxerr.Wrap(ctx, err, "validate request in session")
-		}
-		redirectURL = session.OriginalURL
+	serverURL := appConfig.ServerSettings.ServerURL
+	// Use SSO server URL if configured, otherwise use the server URL
+	ssoURL := serverURL
+	if appConfig.SSOSettings != nil && appConfig.SSOSettings.SSOServerURL != "" {
+		ssoURL = appConfig.SSOSettings.SSOServerURL
 	}
+	parsedURL, err := url.Parse(ssoURL)
+	if err != nil {
+		return nil, "", ctxerr.Wrap(ctx, newSSOError(err, ssoOtherError), "invalid SSO URL")
+	}
+	baseSSO := parsedURL.String()
 
-	// Validate response
-	err = sso.ValidateAudiences(
-		*metadata,
-		auth,
+	// Now construct the ACS URL. CallbackURL appends the url_prefix only when the
+	// server URL doesn't already include it, so the subpath is present exactly once
+	// whether or not server_url was configured with the prefix.
+	parsedURL = sso.CallbackURL(parsedURL, svc.config.Server.URLPrefix, "/api/v1/fleet/sso/callback")
+
+	expectedAudiences := []string{
 		appConfig.SSOSettings.EntityID,
-		appConfig.ServerSettings.ServerURL,
-		appConfig.ServerSettings.ServerURL+svc.config.Server.URLPrefix+"/api/v1/fleet/sso/callback", // ACS
+		baseSSO,            // Base SSO URL
+		parsedURL.String(), // Use the already-constructed ACS URL
+	}
+	samlProvider, requestID, redirectURL, err := sso.SAMLProviderFromSessionOrConfiguredMetadata(
+		ctx, sessionID, svc.ssoSessionStore, parsedURL, appConfig.SSOSettings, expectedAudiences,
 	)
 	if err != nil {
-		return "", ctxerr.Wrap(ctx, err, "validating sso response")
+		return nil, "", ctxerr.Wrap(ctx, err, "failed to create provider from metadata")
 	}
 
-	return redirectURL, nil
+	// Parse and verify SAMLResponse (verifies fields, expected IDs and signature).
+	auth, err = sso.ParseAndVerifySAMLResponse(samlProvider, samlResponse, requestID, parsedURL)
+	if err != nil {
+		// We actually don't return 401 to clients and instead return an HTML page with /login?status=error,
+		// but to be consistent we will return fleet.AuthFailedError which is used for unauthorized access.
+		return nil, "", ctxerr.Wrap(ctx, fleet.NewAuthFailedError(err.Error()))
+	}
+
+	return auth, redirectURL, nil
 }
 
 func (svc *Service) GetSSOUser(ctx context.Context, auth fleet.Auth) (*fleet.User, error) {
 	user, err := svc.ds.UserByEmail(ctx, auth.UserID())
 	if err != nil {
-		var nfe endpoint_utils.NotFoundErrorInterface
+		var nfe endpointer.NotFoundErrorInterface
 		if errors.As(err, &nfe) {
 			return nil, ctxerr.Wrap(ctx, newSSOError(err, ssoAccountInvalid))
 		}
@@ -608,6 +811,14 @@ func (svc *Service) LoginSSOUser(ctx context.Context, user *fleet.User, redirect
 		err := ctxerr.New(ctx, "user not configured to use sso")
 		return nil, ctxerr.Wrap(ctx, newSSOError(err, ssoAccountDisabled))
 	}
+
+	// Do not allow login if on Fleet Free and the user has a Premium-only role.
+	if !license.IsPremium(ctx) {
+		if fleet.PremiumRolesPresent(user.GlobalRole, user.Teams) {
+			return nil, fleet.ErrMissingLicense
+		}
+	}
+
 	session, err := svc.makeSession(ctx, user.ID)
 	if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "make session in sso callback")
@@ -656,7 +867,7 @@ func (svc *Service) SSOSettings(ctx context.Context) (*fleet.SessionSSOSettings,
 	// that they have the necessary information to initiate SSO).
 	svc.authz.SkipAuthorization(ctx)
 
-	logging.WithLevel(logging.WithNoUser(ctx), level.Info)
+	logging.WithLevel(logging.WithNoUser(ctx), slog.LevelInfo)
 
 	appConfig, err := svc.ds.AppConfig(ctx)
 	if err != nil {
@@ -699,12 +910,12 @@ func (svc *Service) makeMFAEmail(ctx context.Context, user fleet.User) error {
 		Mailer: &mail.MFAMailer{
 			FullName: user.Name,
 			Token:    token,
-			BaseURL:  template.URL(config.ServerSettings.ServerURL + svc.config.Server.URLPrefix), //nolint:gosec // dismiss G203
+			BaseURL:  emailLinkBaseURL(config.ServerSettings.ServerURL, svc.config.Server.URLPrefix),
 			AssetURL: getAssetURL(),
 		},
 	}
 
-	return svc.mailService.SendEmail(email)
+	return svc.mailService.SendEmail(ctx, email)
 }
 
 func (svc *Service) GetSessionByKey(ctx context.Context, key string) (*fleet.Session, error) {

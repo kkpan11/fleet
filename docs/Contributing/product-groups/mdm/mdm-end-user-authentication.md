@@ -1,6 +1,6 @@
 # End user authentication
 
-- [Fleet's guide for setting up end user authentication during macOS setup experience](https://fleetdm.com/guides/macos-setup-experience#end-user-authentication-and-end-user-license-agreement-eula)
+- [Fleet's guide for setting up IdP authentication during macOS setup experience](https://fleetdm.com/guides/setup-experience#require-idp-authentication)
 - On Fleet's [pricing page](https://fleetdm.com/pricing), this feature is called `User account sync` (as of 2025/03/31)
 - Also known as: IdP integration
 
@@ -20,7 +20,7 @@ Create a SAML app in an IdP.
 
 If the IT admin configured end user authentication, we change the `configuration_web_url` value in the [enrollment JSON profile](https://developer.apple.com/documentation/devicemanagement/profile) to be `{server_url}/mdm/sso`. This page gets the SAML Request from `{server_url}/api/v1/fleet/mdm/sso` and initiates the SSO flow in the setup assistant web view.
 
-`end_user_authentication` setting is global, but `enable_end_user_authentication` is a team setting.
+`end_user_authentication` setting is global, but `enable_end_user_authentication` is a fleet-level setting.
 
 Key points about the flow:
 

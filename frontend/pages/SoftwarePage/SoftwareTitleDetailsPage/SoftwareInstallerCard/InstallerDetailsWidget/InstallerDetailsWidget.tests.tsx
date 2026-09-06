@@ -1,6 +1,8 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { screen } from "@testing-library/react";
+import { createCustomRenderer } from "test/test-utils";
+import { InstallerType } from "interfaces/software";
+
 import InstallerDetailsWidget from "./InstallerDetailsWidget";
 
 // Mock current time for time stamp test
@@ -13,19 +15,35 @@ afterAll(() => {
   jest.useRealTimers();
 });
 
+const render = createCustomRenderer({ withBackendMock: true });
+
 describe("InstallerDetailsWidget", () => {
   const defaultProps = {
     softwareName: "Test Software",
-    installerType: "package" as const,
+    installerType: "package" as InstallerType,
     addedTimestamp: "2024-05-06T10:00:00Z",
-    versionInfo: <span>v1.2.3</span>,
+    version: "v1.2.3",
     isFma: false,
+    isScriptPackage: false,
+    androidPlayStoreId: undefined,
   };
 
   it("renders the package icon when installerType is 'package'", () => {
     render(<InstallerDetailsWidget {...defaultProps} />);
     expect(screen.queryByTestId("file-pkg-graphic")).toBeInTheDocument();
     expect(screen.queryByTestId("software-icon")).not.toBeInTheDocument();
+  });
+
+  it("renders the Python icon for a py_packages script package", () => {
+    render(<InstallerDetailsWidget {...defaultProps} source="py_packages" />);
+    expect(screen.queryByTestId("file-py-graphic")).toBeInTheDocument();
+    expect(screen.queryByTestId("file-pkg-graphic")).not.toBeInTheDocument();
+  });
+
+  it("renders the generic package icon for other script sources", () => {
+    render(<InstallerDetailsWidget {...defaultProps} source="sh_packages" />);
+    expect(screen.queryByTestId("file-pkg-graphic")).toBeInTheDocument();
+    expect(screen.queryByTestId("file-py-graphic")).not.toBeInTheDocument();
   });
 
   it("renders the software name", () => {
@@ -36,6 +54,29 @@ describe("InstallerDetailsWidget", () => {
   it("renders version info and relative time when addedTimestamp is present", () => {
     render(<InstallerDetailsWidget {...defaultProps} />);
     expect(screen.getByText("v1.2.3")).toBeInTheDocument();
+    expect(screen.getByText(/2 days ago/i)).toBeInTheDocument();
+  });
+
+  it("does not render Version (unknown) info for a script package", () => {
+    render(
+      <InstallerDetailsWidget
+        {...defaultProps}
+        version={undefined}
+        isScriptPackage
+      />
+    );
+    expect(screen.queryByText(/Version \(unknown\)/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/2 days ago/i)).toBeInTheDocument();
+  });
+
+  it("renders Version (unknown) info for a non-script package with no version info", () => {
+    render(
+      <InstallerDetailsWidget
+        {...defaultProps} // Includes isScriptPackage: false
+        version={undefined}
+      />
+    );
+    expect(screen.getByText(/Version \(unknown\)/i)).toBeInTheDocument();
     expect(screen.getByText(/2 days ago/i)).toBeInTheDocument();
   });
 
@@ -69,9 +110,38 @@ describe("InstallerDetailsWidget", () => {
   });
 
   it("renders VPP label", () => {
-    render(<InstallerDetailsWidget {...defaultProps} installerType="vpp" />);
+    render(
+      <InstallerDetailsWidget {...defaultProps} installerType="app-store" />
+    );
 
     expect(screen.getByText(/App Store \(VPP\)/i)).toBeInTheDocument();
+  });
+
+  it("renders Google Play Store label and 'latest' for version", () => {
+    render(
+      <InstallerDetailsWidget
+        {...defaultProps}
+        installerType="app-store"
+        androidPlayStoreId="com.android.appname"
+      />
+    );
+
+    expect(screen.getByText(/Google Play Store/i)).toBeInTheDocument();
+    expect(screen.getByText(/latest/i)).toBeInTheDocument();
+  });
+
+  it("renders Web app label and does not render Version (unknown) info for a Google playstore webapp", () => {
+    render(
+      <InstallerDetailsWidget
+        {...defaultProps}
+        version={undefined}
+        installerType="app-store"
+        androidPlayStoreId="com.google.enterprise.webapp.test"
+      />
+    );
+    expect(screen.getByText(/Web app/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Version \(unknown\)/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/2 days ago/i)).toBeInTheDocument();
   });
 
   it("InstallerName disables tooltip if not truncated", () => {
@@ -79,16 +149,5 @@ describe("InstallerDetailsWidget", () => {
     render(<InstallerDetailsWidget {...defaultProps} />);
     // TooltipWrapper is mocked, so we just check that the child is rendered
     expect(screen.getByText("Test Software")).toBeInTheDocument();
-  });
-
-  it("renders the sha256 hash when provided and a copy button", () => {
-    const sha256 =
-      "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-    render(<InstallerDetailsWidget {...defaultProps} sha256={sha256} />);
-    // The component shows the first 6 chars + ellipsis
-    expect(screen.getByText(/^abcdef1…$/)).toBeInTheDocument();
-    const copyIcon = screen.getByTestId("copy-icon");
-    const copyButton = copyIcon.closest("button");
-    expect(copyButton).toBeInTheDocument();
   });
 });

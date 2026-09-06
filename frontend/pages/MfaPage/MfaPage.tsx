@@ -6,12 +6,12 @@ import { AppContext } from "context/app";
 import { RoutingContext } from "context/routing";
 import paths from "router/paths";
 import local from "utilities/local";
+import authToken from "utilities/auth_token";
 import configAPI from "services/entities/config";
 import sessionsAPI from "services/entities/sessions";
 
 import Button from "components/buttons/Button";
 import AuthenticationFormWrapper from "components/AuthenticationFormWrapper";
-import StackedWhiteBoxes from "components/StackedWhiteBoxes";
 import Spinner from "components/Spinner";
 
 interface IMfaPage {
@@ -43,9 +43,12 @@ const MfaPage = ({ router, params }: IMfaPage) => {
 
     try {
       const response = await sessionsAPI.finishMFA({ token: mfaToken });
-      const { user, available_teams, token } = response;
+      const { user, available_teams, token, token_expires_at } = response;
 
-      local.setItem("auth_token", token);
+      const expiresAt = token_expires_at
+        ? new Date(token_expires_at)
+        : undefined;
+      authToken.save(token, expiresAt);
 
       setCurrentUser(user);
       setAvailableTeams(user, available_teams);
@@ -96,35 +99,28 @@ const MfaPage = ({ router, params }: IMfaPage) => {
 
   if (!shouldFinishMFA) {
     return (
-      <AuthenticationFormWrapper>
-        <div className={baseClass}>
-          <Button onClick={onClickFinishLoginButton}>Log in</Button>
-        </div>
+      <AuthenticationFormWrapper className={baseClass}>
+        <Button onClick={onClickFinishLoginButton}>Log in</Button>
       </AuthenticationFormWrapper>
     );
   }
 
   if (isExpired) {
     return (
-      <AuthenticationFormWrapper>
-        <StackedWhiteBoxes className={baseClass}>
-          <>
-            <p>
-              <b>That link is expired.</b>
-            </p>
+      <AuthenticationFormWrapper className={baseClass} header="Invalid token">
+        <>
+          <div className={`${baseClass}__description`}>
             <p>Log in again for a new link.</p>
-            <Button onClick={onClickLoginButton}>Back to login</Button>
-          </>
-        </StackedWhiteBoxes>
+          </div>
+          <Button onClick={onClickLoginButton}>Back to login</Button>
+        </>
       </AuthenticationFormWrapper>
     );
   }
 
   return (
-    <AuthenticationFormWrapper>
-      <div className={baseClass}>
-        <Spinner />
-      </div>
+    <AuthenticationFormWrapper className={baseClass}>
+      <Spinner />
     </AuthenticationFormWrapper>
   );
 };

@@ -45,16 +45,6 @@ const CustomLabelGroupHeading = (
     <components.GroupHeading {...props}>
       <div className={`${baseClass}__labels-header`}>
         <span className={`${baseClass}__label-title`}>{props.children}</span>
-        <div className={`${baseClass}__add_new_label`}>
-          {canAddNewLabels && (
-            <Button variant="text-icon" onClick={onAddLabel} iconStroke>
-              <>
-                Add label
-                <Icon name="plus" />
-              </>
-            </Button>
-          )}
-        </div>
       </div>
       <div className={`${baseClass}__field`}>
         <input
@@ -73,6 +63,15 @@ const CustomLabelGroupHeading = (
           onBlur={onBlurLabelSearchInput}
         />
         <Icon name="search" />
+        {canAddNewLabels && (
+          <Button
+            className={`${baseClass}__add-label-button`}
+            variant="secondary"
+            onClick={onAddLabel}
+            icon="plus"
+            ariaLabel="Add label"
+          />
+        )}
       </div>
     </components.GroupHeading>
   );

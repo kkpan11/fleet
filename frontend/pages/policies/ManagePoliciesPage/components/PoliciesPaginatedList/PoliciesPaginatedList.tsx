@@ -6,19 +6,31 @@ import React, {
   useContext,
   forwardRef,
   Ref,
+  ReactElement,
 } from "react";
-import { ReactElement } from "react-markdown/lib/react-markdown";
 import { AppContext } from "context/app";
 import PaginatedList, { IPaginatedListHandle } from "components/PaginatedList";
-import { useQueryClient } from "react-query";
-import { IPolicy } from "interfaces/policy";
-import teamPoliciesAPI from "services/entities/team_policies";
-import globalPoliciesAPI from "services/entities/global_policies";
+import { useQuery } from "react-query";
+import {
+  IPolicy,
+  ILoadAllPoliciesResponse,
+  ILoadTeamPoliciesResponse,
+  IPoliciesCountResponse,
+} from "interfaces/policy";
+import teamPoliciesAPI, {
+  IPoliciesApiParams,
+  IPoliciesCountApiParams,
+} from "services/entities/team_policies";
+import globalPoliciesAPI, {
+  IGlobalPoliciesApiQueryParams,
+} from "services/entities/global_policies";
 
 import { APP_CONTEXT_ALL_TEAMS_ID } from "interfaces/team";
+import { QueryablePlatform, isQueryablePlatform } from "interfaces/platform";
 import Button from "components/buttons/Button";
 import TooltipWrapper from "components/TooltipWrapper";
 import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
+import PlatformCell from "components/TableContainer/DataTable/PlatformCell";
 
 // Extend the IPolicy interface with some virtual properties that make it easier
 // to track item state. These are set by the various Manage Automations modals.
@@ -37,6 +49,7 @@ interface IPoliciesPaginatedListProps {
     item: IFormPolicy,
     onChange: (item: IFormPolicy) => void
   ) => ReactElement | false | null | undefined;
+  renderItemLabel?: (item: IFormPolicy) => ReactElement | null;
   onToggleItem: (item: IFormPolicy) => IFormPolicy;
   /** A function defining the conditions under which to disable a policy. */
   getPolicyDisabled?: (policy: IFormPolicy) => boolean;
@@ -46,6 +59,8 @@ interface IPoliciesPaginatedListProps {
   isUpdating: boolean;
   disableList?: boolean;
   disableSave?: (changedItems: IFormPolicy[]) => boolean | string;
+  /** Whether to render platform icons to the right of the policy name. */
+  renderPlatform?: boolean;
   teamId: number;
   helpText: ReactElement | undefined | null;
 }
@@ -56,6 +71,7 @@ function PoliciesPaginatedList(
   {
     isSelected,
     renderItemRow,
+    renderItemLabel,
     onToggleItem,
     getPolicyDisabled,
     getPolicyTooltipContent,
@@ -64,6 +80,7 @@ function PoliciesPaginatedList(
     isUpdating,
     disableList = false,
     disableSave,
+    renderPlatform = false,
     teamId,
     helpText,
   }: IPoliciesPaginatedListProps,
@@ -78,6 +95,8 @@ function PoliciesPaginatedList(
 
   const [saveDisabled, setSaveDisabled] = useState<string | boolean>(false);
 
+  const [pageNumber, setPageNumber] = useState(0);
+
   // Allow parents access to the `getDirtyItems` of the underlying PaginatedList.
   useImperativeHandle(ref, () => ({
     getDirtyItems() {
@@ -86,6 +105,7 @@ function PoliciesPaginatedList(
       }
       return [];
     },
+    reload: () => Promise.resolve(), // not used, but required for the interface
   }));
 
   // When "save" is clicked, call the parent's `onSubmit` with the set of changed items.
@@ -109,114 +129,169 @@ function PoliciesPaginatedList(
     [disableSave]
   );
 
+  // When renderPlatform is enabled, compose renderItemRow to include platform
+  // icons at the rightmost side of the row.
+  const composedRenderItemRow = (
+    item: IFormPolicy,
+    onChange: (item: IFormPolicy) => void
+  ) => {
+    const callerRow = renderItemRow ? renderItemRow(item, onChange) : null;
+
+    const platforms = item.platform
+      ? (item.platform
+          .split(",")
+          .filter(isQueryablePlatform) as QueryablePlatform[])
+      : [];
+
+    return (
+      <>
+        {callerRow}
+        <PlatformCell platforms={platforms} />
+      </>
+    );
+  };
+
   // Fetch a single page of policies.
-  const queryClient = useQueryClient();
   const DEFAULT_PAGE_SIZE = 10;
   const DEFAULT_SORT_COLUMN = "name";
 
-  const fetchPage = useCallback(
-    (pageNumber: number) => {
-      let fetchPromise;
+  // API CALLS
+  let policiesQueryKey: IPoliciesApiParams;
+  let countQueryKey: IPoliciesCountApiParams;
+  if (teamId === APP_CONTEXT_ALL_TEAMS_ID) {
+    policiesQueryKey = {
+      page: pageNumber,
+      perPage: DEFAULT_PAGE_SIZE,
+      query: "",
+      orderDirection: "asc" as const,
+      orderKey: DEFAULT_SORT_COLUMN,
+      teamId,
+      automationType: undefined,
+    };
+    countQueryKey = {
+      query: "",
+      teamId,
+      automationType: undefined,
+    };
+  } else {
+    policiesQueryKey = {
+      page: pageNumber,
+      perPage: DEFAULT_PAGE_SIZE,
+      query: "",
+      orderDirection: "asc" as const,
+      orderKey: DEFAULT_SORT_COLUMN,
+      teamId,
+      mergeInherited: false,
+      automationType: undefined,
+    };
+    countQueryKey = {
+      query: "",
+      teamId,
+      mergeInherited: false,
+      automationType: undefined,
+    };
+  }
 
-      if (teamId === APP_CONTEXT_ALL_TEAMS_ID) {
-        fetchPromise = queryClient.fetchQuery(
-          [
-            {
-              scope: "globalPolicies",
-              page: pageNumber,
-              perPage: DEFAULT_PAGE_SIZE,
-              query: "",
-              orderDirection: "asc" as const,
-              orderKey: DEFAULT_SORT_COLUMN,
-            },
-          ],
-          ({ queryKey }) => {
-            return globalPoliciesAPI.loadAllNew(queryKey[0]);
-          }
-        );
-      } else {
-        fetchPromise = queryClient.fetchQuery(
-          [
-            {
-              scope: "teamPolicies",
-              page: pageNumber,
-              perPage: DEFAULT_PAGE_SIZE,
-              query: "",
-              orderDirection: "asc" as const,
-              orderKey: DEFAULT_SORT_COLUMN,
-              teamId,
-              mergeInherited: false,
-            },
-          ],
-          ({ queryKey }) => {
-            return teamPoliciesAPI.loadAllNew(queryKey[0]);
-          }
-        );
-      }
+  const marshallApiResponse = (
+    policiesResponse: ILoadAllPoliciesResponse | ILoadTeamPoliciesResponse
+  ): IFormPolicy[] => {
+    return (policiesResponse.policies || []).map((policy) => {
+      return {
+        ...policy,
+        installSoftwareEnabled: !!policy.install_software,
+        swIdToInstall: policy.install_software?.software_title_id,
+        runScriptEnabled: !!policy.run_script,
+        scriptIdToRun: policy.run_script?.id,
+        scriptNameToRun: policy.run_script?.name,
+      };
+    }) as IFormPolicy[];
+  };
 
-      return fetchPromise.then((policiesResponse) => {
-        // Marshall the response into IFormPolicy objects.
-        return (policiesResponse.policies || []).map((policy) => {
-          return {
-            ...policy,
-            installSoftwareEnabled: !!policy.install_software,
-            swIdToInstall: policy.install_software?.software_title_id,
-            runScriptEnabled: !!policy.run_script,
-            scriptIdToRun: policy.run_script?.id,
-            scriptNameToRun: policy.run_script?.name,
-          };
-        }) as IFormPolicy[];
-      });
-    },
-    [queryClient, teamId]
+  // Global policies query
+  const { data: globalData, isFetching: globalIsLoading } = useQuery<
+    ILoadAllPoliciesResponse,
+    Error,
+    IFormPolicy[]
+  >(
+    [policiesQueryKey],
+    () =>
+      globalPoliciesAPI.loadAllNew(
+        policiesQueryKey as IGlobalPoliciesApiQueryParams
+      ),
+    {
+      enabled: teamId === APP_CONTEXT_ALL_TEAMS_ID,
+      keepPreviousData: true,
+      select: marshallApiResponse,
+    }
   );
 
-  const fetchCount = useCallback(() => {
-    let fetchPromise;
+  // Team policies query
+  const { data: teamData, isFetching: teamIsLoading } = useQuery<
+    ILoadAllPoliciesResponse,
+    Error,
+    IFormPolicy[]
+  >([policiesQueryKey], () => teamPoliciesAPI.loadAllNew(policiesQueryKey), {
+    enabled: teamId !== APP_CONTEXT_ALL_TEAMS_ID,
+    keepPreviousData: true,
+    select: marshallApiResponse,
+  });
 
-    if (teamId === APP_CONTEXT_ALL_TEAMS_ID) {
-      fetchPromise = queryClient.fetchQuery(
-        [
-          {
-            scope: "globalPoliciesCount",
-            query: "",
-          },
-        ],
-        ({ queryKey }) => {
-          return globalPoliciesAPI.getCount(queryKey[0]);
-        }
-      );
-    } else {
-      fetchPromise = queryClient.fetchQuery(
-        [
-          {
-            scope: "teamPoliciesCount",
-            query: "",
-            teamId,
-            mergeInherited: false,
-          },
-        ],
-        ({ queryKey }) => {
-          return teamPoliciesAPI.getCount(queryKey[0]);
-        }
-      );
+  const data = teamId === APP_CONTEXT_ALL_TEAMS_ID ? globalData : teamData;
+  const isLoading =
+    teamId === APP_CONTEXT_ALL_TEAMS_ID ? globalIsLoading : teamIsLoading;
+
+  // Global count query
+  const { data: globalCount, isFetching: globalIsFetchingCount } = useQuery<
+    IPoliciesCountResponse,
+    Error,
+    number
+  >(
+    [countQueryKey],
+    () =>
+      globalPoliciesAPI.getCount(
+        countQueryKey as Pick<
+          IGlobalPoliciesApiQueryParams,
+          "query" | "automationType"
+        >
+      ),
+    {
+      enabled: teamId === APP_CONTEXT_ALL_TEAMS_ID,
+      select: (countResponse: IPoliciesCountResponse) => countResponse.count,
     }
+  );
 
-    return fetchPromise.then((countResponse) => countResponse.count);
-  }, []);
+  // Team count query
+  const { data: teamCount, isFetching: teamIsFetchingCount } = useQuery<
+    IPoliciesCountResponse,
+    Error,
+    number
+  >([countQueryKey], () => teamPoliciesAPI.getCount(countQueryKey), {
+    enabled: teamId !== APP_CONTEXT_ALL_TEAMS_ID,
+    select: (countResponse: IPoliciesCountResponse) => countResponse.count,
+  });
+
+  const count = teamId === APP_CONTEXT_ALL_TEAMS_ID ? globalCount : teamCount;
+  const isFetchingCount =
+    teamId === APP_CONTEXT_ALL_TEAMS_ID
+      ? globalIsFetchingCount
+      : teamIsFetchingCount;
 
   return (
     <div className={`${baseClass} form`}>
       <div className="form-field">
         <PaginatedList<IFormPolicy>
           ref={paginatedListRef}
-          fetchPage={fetchPage}
-          fetchCount={fetchCount}
+          data={data || []}
+          count={count || 0}
+          isLoading={isLoading || isFetchingCount}
+          currentPage={pageNumber}
+          onChangePage={setPageNumber}
           isSelected={isSelected}
           isItemDisabled={getPolicyDisabled}
           getItemTooltipContent={getPolicyTooltipContent}
           onClickRow={onToggleItem}
-          renderItemRow={renderItemRow}
+          renderItemLabel={renderItemLabel}
+          renderItemRow={renderPlatform ? composedRenderItemRow : renderItemRow}
           pageSize={DEFAULT_PAGE_SIZE}
           onUpdate={onUpdate}
           disabled={disableList || gitOpsModeEnabled}
@@ -248,7 +323,7 @@ function PoliciesPaginatedList(
             </TooltipWrapper>
           )}
         />
-        <Button onClick={onCancel} variant="inverse">
+        <Button onClick={onCancel} variant="secondary">
           Cancel
         </Button>
       </div>

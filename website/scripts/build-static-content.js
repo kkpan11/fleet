@@ -23,14 +23,13 @@ module.exports = {
     // The data we're compiling will get built into this dictionary and then written on top of the .sailsrc file.
     let builtStaticContent = {};
     let rootRelativeUrlPathsSeen = [];
-    let baseHeadersForGithubRequests;
+    let baseHeadersForGithubRequests = {
+      'User-Agent': 'Fleet-Standard-Query-Library',
+      'Accept': 'application/vnd.github.v3+json',
+    };
 
-    if(githubAccessToken) {// If a github token was provided, set headers for requests to GitHub.
-      baseHeadersForGithubRequests = {
-        'User-Agent': 'Fleet-Standard-Query-Library',
-        'Accept': 'application/vnd.github.v3+json',
-        'Authorization': `token ${githubAccessToken}`,
-      };
+    if(githubAccessToken) {// If a github token was provided, Add an authorization header for requests to GitHub.
+      baseHeadersForGithubRequests['Authorization'] = `token ${githubAccessToken}`;
     } else {
       sails.log('Skipping GitHub API requests for contributer profiles and ritual validation.\nNOTE: The contributors in the standard query library will be populated with fake data.\nTo see how the standard query library will look on fleetdm.com, pass a GitHub access token into this script with the `--githubAccessToken={YOUR_GITHUB_ACCESS_TOKEN}` flag. \n Note: This script can take up to 30s to run.');
     }//ﬁ
@@ -350,8 +349,9 @@ module.exports = {
               .split(/\//).map((fileOrFolderName) => fileOrFolderName.toLowerCase().replace(/\s+/g, '-')).join('/')
             );
 
-            // If this page is in the docs/contributing/ folder, skip it.
-            if(sectionRepoPath === 'docs/' && _.startsWith(pageUnextensionedUnwhitespacedLowercasedRelPath, 'contributing/')){
+            // Only build markdown pages from the Get started, Configuration, Deploy, and REST API subfolders.
+            let subfolderName = pageRelSourcePath.split('/')[0];
+            if(sectionRepoPath === 'docs/' && !['Get started', 'Deploy', 'REST API', 'Configuration'].includes(subfolderName)){
               continue;
             }
             // Skip pages in folders starting with an underscore character.
@@ -397,7 +397,6 @@ module.exports = {
               // Compile markdown to HTML.
               // > This includes build-time enablement of:
               // >  • syntax highlighting
-              // >  • data type bubbles
               // >  • transforming relative markdown links to their fleetdm.com equivalents
               // >
               // > For more info about how these additional features work, see: https://github.com/fleetdm/fleet/issues/706#issuecomment-884622252
@@ -426,7 +425,22 @@ module.exports = {
               if(htmlString.match(/(&#96;){3,4}[\s\S]+(&#96;){3}/g)){
                 throw new Error('The compiled markdown has a codeblock (\`\`\`) nested inside of another codeblock (\`\`\`\`) at '+pageSourcePath+'. To resolve this error, remove the codeblock nested inside another codeblock from this file.');
               }
-              htmlString = htmlString.replace(/\(\(([^())]*)\)\)/g, '<bubble type="$1" class="colors"><span is="bubble-heart"></span></bubble>');// « Replace ((bubble))s with HTML. For more background, see https://github.com/fleetdm/fleet/issues/706#issuecomment-884622252
+              htmlString = htmlString.replace(
+                /(<code(?:\s[^>]*)?>[\s\S]*?<\/code>)|\(\(([^()]*)\)\)/g,
+                (match, codeBlock, bubbleContent) => {
+                  if (codeBlock) {
+                    // ignore content inside of <code> elements.
+                    return codeBlock;
+                  } else {
+                    let sanitizedType = bubbleContent.trim().replace(/["'`]/g, '');
+                    if (!sanitizedType) {
+                      return match; // ignore bubbles with no text
+                    } else {
+                      return `<bubble type="${sanitizedType}" class="colors"></bubble>`;
+                    }
+                  }
+                }
+              );// « Replace ((bubble))s (outside of code blocks) with HTML. For more background, see https://github.com/fleetdm/fleet/issues/706#issuecomment-884622252
               htmlString = htmlString.replace(/(href="(\.\/[^"]+|\.\.\/[^"]+)")/g, (hrefString)=>{// « Modify path-relative links like `./…` and `../…` to make them absolute.  (See https://github.com/fleetdm/fleet/issues/706#issuecomment-884641081 for more background)
                 let oldRelPath = hrefString.match(/href="(\.\/[^"]+|\.\.\/[^"]+)"/)[1];
                 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -480,6 +494,12 @@ module.exports = {
 
               });//∞
 
+              // Rewrite YouTube embed src URLs to the privacy-enhanced (no-cookie) host so the embedded player doesn't set tracking cookies until the visitor presses play.
+              // This allows us to show embedded youtube videos to users who don't consent to the cookie banner on the website.
+              htmlString = htmlString.replace(/(src="https?:\/\/(?:www\.)?youtube\.com\/embed\/[^"]*")/g, (srcString) => {
+                return srcString.replace(/https?:\/\/(?:www\.)?youtube\.com\/embed\/([^"]*)/, 'https://www.youtube-nocookie.com/embed/$1');
+              });//∞
+
               // Modify images in the /articles folder
               if (sectionRepoPath === 'articles/') {
                 // modifying relative links e.g. `../website/assets/images/articles/foo-200x300@2x.png`
@@ -488,8 +508,11 @@ module.exports = {
                   let referencedPageSourcePath = path.resolve(path.join(topLvlRepoPath, sectionRepoPath, pageRelSourcePath), '../', oldRelPath);
                   // If the relative link goes to the image is in the website's assets folder (`website/assets/`) we'll modify the relative link
                   // to work on fleetdm.com e.g. ('../website/assets/images/articles/foo-300x900@2x.png' -> '/images/articles/foo-200x300@2x.png')
-                  let isWebsiteAsset = referencedPageSourcePath.match(/(?<=\/website\/assets)(\/images\/(.+))/g)[0];
+                  let isWebsiteAsset = referencedPageSourcePath.match(/(?<=\/website\/assets)(\/images\/(.+))/g) ? referencedPageSourcePath.match(/(?<=\/website\/assets)(\/images\/(.+))/g)[0] : undefined;
                   if(isWebsiteAsset) {
+                    if(!isWebsiteAsset.match(/\d+x\d+@2x.+/)){
+                      throw new Error(`Failed compiling markdown content. An article page references an image (${isWebsiteAsset}) that does not follow the website's image naming conventions. Please update the filename and reference to the image in "${path.join(topLvlRepoPath, pageSourcePath)}" to include the CSS dimensions of the image (pixel dimensions * 0.5 postfixed with "@2x" e.g., a 400x600 pixel image should be postfixed with "-200x300@2x.png") and try running this script again. Read more about the website's image naming conventions here: https://fleetdm.com/handbook/company/communications#export-an-image-for-fleetdm-com`);
+                    }
                     return '="'+isWebsiteAsset+'"';
                   } else {
                     // If the relative link doesn't go to the `website/assets/` folder, we'll throw an error.
@@ -535,9 +558,19 @@ module.exports = {
               // > This works because HTML in Markdown files is added as-is, while any <meta> tags in codeblocks would have their brackets replaced with HTML entities when they are converted to HTML.
               let embeddedMetadata = {};
               try {
-                for (let tag of (htmlString.match(/<meta[^>]*>/igm)||[])) {
-                  let name = tag.match(/name="([^">]+)"/i)[1];
-                  let value = tag.match(/value="([^">]+)"/i)[1];
+                for (let tag of (htmlString.match(/<meta[^>]*>/igm))||[]) {
+                  let name = tag.match(/name="([^">]+)"/i);
+                  if(!name || !name[1]){
+                    throw new Error(`A <meta> tag is misssing a name attribute. To resolve, Make sure all <meta> tags have a name attribute and try running this script again`);
+                  } else {
+                    name = name[1];
+                  }
+                  let value = tag.match(/value="([^">]+)"/i);
+                  if(!value || !value[1]) {
+                    throw new Error(`A <meta> tag (<meta name="${name}">) is misssing a value attribute. To resolve, add a value attribute to this <meta> tag and try running this script again`);
+                  } else {
+                    value = value[1];
+                  }
                   embeddedMetadata[name] = value;
                 }//∞
               } catch (err) {
@@ -548,29 +581,12 @@ module.exports = {
               }//ﬁ
 
               // Get last modified timestamp using git, and represent it as a JS timestamp.
-              let lastModifiedAt;
-              if(!githubAccessToken) {
-                lastModifiedAt = Date.now();
-              } else if(process.env.GITHUB_REF_NAME && process.env.GITHUB_REF_NAME === 'main') {// Only add lastModifiedAt timestamps if this test is running on the main branch
-                let responseData = await sails.helpers.http.get.with({// [?]: https://docs.github.com/en/rest/commits/commits?apiVersion=2022-11-28#list-commits
-                  url: 'https://api.github.com/repos/fleetdm/fleet/commits',
-                  data: {
-                    path: path.join(sectionRepoPath, pageRelSourcePath),
-                    page: 1,
-                    per_page: 1,//eslint-disable-line camelcase
-                  },
-                  headers: baseHeadersForGithubRequests,
-                }).intercept((err)=>{
-                  return new Error(`When getting the commit history for ${path.join(sectionRepoPath, pageRelSourcePath)} to get a lastModifiedAt timestamp, an error occured.`, err);
-                });
-                // The value we'll use for the lastModifiedAt timestamp will be date value of the `commiter` property of the `commit` we got in the API response from github.
-                let mostRecentCommitToThisFile = responseData[0];
-                if(!mostRecentCommitToThisFile.commit || !mostRecentCommitToThisFile.commit.committer) {
-                  // Throw an error if the the response from GitHub is missing a commit or commiter.
-                  throw new Error(`When getting the commit history for ${path.join(sectionRepoPath, pageRelSourcePath)} to get a lastModifiedAt timestamp, the response from the GitHub API did not include information about the most recent commit. Response from GitHub: ${util.inspect(responseData, {depth:null})}`);
-                }
-                lastModifiedAt = (new Date(mostRecentCommitToThisFile.commit.committer.date)).getTime(); // Convert the UTC timestamp from GitHub to a JS timestamp.
-              }
+              // > Inspired by https://github.com/uncletammy/doc-templater/blob/2969726b598b39aa78648c5379e4d9503b65685e/lib/compile-markdown-tree-from-remote-git-repo.js#L265-L273
+              let lastModifiedAt = (new Date((await sails.helpers.process.executeCommand.with({
+                command: `git log -1 --format="%ai" '${path.relative(topLvlRepoPath, pageSourcePath)}'`,
+                dir: topLvlRepoPath,
+              })).stdout)).getTime();
+
 
               // Determine display title (human-readable title) to use for this page.
               let pageTitle;
@@ -648,7 +664,7 @@ module.exports = {
                   throw new Error(`Failed compiling markdown content: An article page is missing a category meta tag (<meta name="category" value="guides">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, add a meta tag with the category of the article`);
                 } else {
                   // Throwing an error if the article has an invalid category.
-                  let validArticleCategories = ['deploy', 'security', 'engineering', 'success stories', 'announcements', 'guides', 'releases', 'podcasts', 'report' ];
+                  let validArticleCategories = ['deploy', 'articles', 'security', 'engineering', 'announcements', 'guides', 'releases', 'podcasts', 'report', 'case study', 'comparison', 'whitepaper', 'webinar', 'newsletter', 'industry news' ];
                   if(!validArticleCategories.includes(embeddedMetadata.category)) {
                     throw new Error(`Failed compiling markdown content: An article page has an invalid category meta tag (<meta name="category" value="${embeddedMetadata.category}">) at "${path.join(topLvlRepoPath, pageSourcePath)}". To resolve, change the meta tag to a valid category, one of: ${validArticleCategories}`);
                   }
@@ -670,6 +686,9 @@ module.exports = {
                       throw new Error(`Failed compiling markdown content: An article page has an invalid articleImageUrl meta tag (<meta name="articleImageUrl" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be an image that will be hosted on fleetdm.com`);
                     }
                   } else if(inWebsiteAssetFolder) { // If the `articleImageUrl` value is a relative link to the `website/assets/` folder, we'll modify the value to link directly to that folder.
+                    if(!embeddedMetadata.articleImageUrl.match(/\d+x\d+@2x.+/)){
+                      throw new Error(`Failed compiling markdown content. An article page has a articleImageUrl meta tag value that does not follow the website's image naming conventions. Please update the image's filename and articleImageUrl value in "${path.join(topLvlRepoPath, pageSourcePath)}" to include the CSS dimensions of the image (pixel dimensions * 0.5 postfixed with "@2x" e.g., a 400x600 pixel image should be postfixed with "-200x300@2x.png") and try running this script again. Read more about the website's image naming conventions here: https://fleetdm.com/handbook/company/communications#export-an-image-for-fleetdm-com`);
+                    }
                     embeddedMetadata.articleImageUrl = embeddedMetadata.articleImageUrl.replace(/^\.\.\/website\/assets/g, '');
                   } else { // If the value is not a url and the relative link does not go to the 'website/assets/' folder, we'll throw an error.
                     throw new Error(`Failed compiling markdown content: An article page has an invalid articleImageUrl meta tag (<meta name="articleImageUrl" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be a URL or repo relative link to an image in the 'website/assets/images' folder`);
@@ -679,19 +698,105 @@ module.exports = {
                   // Throwing an error if the article's description meta tag value is over 150 characters long
                   throw new Error(`Failed compiling markdown content: An article page has an invalid description meta tag (<meta name="description" value="${embeddedMetadata.description}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, make sure the value of the meta description is less than 150 characters long.`);
                 }
-                if(embeddedMetadata.showOnTestimonialsPageWithEmoji){
-                  // Throw an error if a showOnTestimonialsPageWithEmoji value is not one of: 🥀, 🔌, 🚪, or 🪟.
-                  if(!['🥀', '🔌', '🚪', '🪟'].includes(embeddedMetadata.showOnTestimonialsPageWithEmoji)){
-                    throw new Error(`Failed compiling markdown content: An article page has an invalid showOnTestimonialsPageWithEmoji meta tag (<meta name="showOnTestimonialsPageWithEmoji" value="${embeddedMetadata.articleImageUrl}">) at "${path.join(topLvlRepoPath, pageSourcePath)}".  To resolve, change the value of the meta tag to be one of 🥀, 🔌, 🚪, or 🪟 and try running this script again.`);
+                if(embeddedMetadata.category === 'case study') {
+                  // If a case study article does not have a `useBasicArticleTemplate` meta tag, check to see if has the meta tags required to use the case study speciifc template page.
+                  if(typeof embeddedMetadata.useBasicArticleTemplate === 'undefined') {
+                    // Note: Case study articles use a page template that requires additional meta tags.
+                    if(!embeddedMetadata.summaryChallenge){
+                      throw new Error(`Failed compiling markdown content: A case study article is missing a "summaryChallenge" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a summaryChallenge meta tag and try running this script again. Note: you can add a "useBasicArticleTemplate" meta tag (e.g., <meta name="useBasicArticleTemplate" value="true"> to remove this requirement and display this article using the standard article template.`);
+                    }
+
+                    if(!embeddedMetadata.summarySolution){
+                      throw new Error(`Failed compiling markdown content: A case study article is missing a "summarySolution" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a summarySolution meta tag and try running this script again. Note: you can add a "useBasicArticleTemplate" meta tag (e.g., <meta name="useBasicArticleTemplate" value="true"> to remove this requirement and display this article using the standard article template.`);
+                    }
+
+                    if(!embeddedMetadata.summaryKeyResults){
+                      throw new Error(`Failed compiling markdown content: A case study article is missing a "summaryKeyResults" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a summaryKeyResults meta tag and try running this script again. Note: you can add a "useBasicArticleTemplate" meta tag (e.g., <meta name="useBasicArticleTemplate" value="true"> to remove this requirement and display this article using the standard article template.`);
+                    } else if(embeddedMetadata.summaryKeyResults.split(';').length === 1) {
+                      // Make sure that summaryKeyResults meta tag values are semicolon-separated lists.
+                      throw new Error(`Failed compiling markdown content: A case study article has an invalid "summaryKeyResults" meta tag value at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, change the summaryKeyResults meta tag value to be a list of results separated by semi-colons (e.g., "Cut endpoint maintenance effort by 50%; Reduced licensing costs by 21%;") and try running this script again. Note: you can add a "useBasicArticleTemplate" meta tag (e.g., <meta name="useBasicArticleTemplate" value="true"> to remove this requirement and display this article using the standard article template.`);
+                    }
+
+                    // If a companyLogoFilename meta tag is provided, make sure the image exists in the website/assets/images folder.
+                    if(embeddedMetadata.companyLogoFilename) {
+                      let companyLogoImageExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/'+embeddedMetadata.companyLogoFilename));
+                      if(!companyLogoImageExists){
+                        throw new Error(`Failed compiling markdown content: A case study article (${path.join(topLvlRepoPath, pageSourcePath)}) has a "companyLogoFilename" meta tag value that references an image that is not in the website/assets/images folder (${path.join(topLvlRepoPath, 'website/assets/images/'+embeddedMetadata.companyLogoFilename)}). Was it moved?`);
+                      }
+                    }
+
+                    if(embeddedMetadata.quoteContent) {
+                      // If a quoteContent meta tag is provided, make sure that the article has quoteAuthorName, quoteAuthorJobTitle, and quoteAuthorImageFilename meta tags.
+                      if(!embeddedMetadata.quoteAuthorName) {
+                        throw new Error(`Failed compiling markdown content: A case study article is missing a "quoteAuthorName" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a quoteAuthorName meta tag and try running this script again.`);
+                      }
+
+                      if(!embeddedMetadata.quoteAuthorJobTitle) {
+                        throw new Error(`Failed compiling markdown content: A case study article is missing a "quoteAuthorJobTitle" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a quoteAuthorJobTitle meta tag and try running this script again.`);
+                      }
+
+                      if(!embeddedMetadata.quoteAuthorImageFilename) {
+                        throw new Error(`Failed compiling markdown content: A case study article is missing a "quoteAuthorImageFilename" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a quoteAuthorImageFilename meta tag and try running this script again.`);
+                      } else {
+                        // If a quoteAuthorImageFilename meta tag is provided, make sure the file exists.
+                        let quoteAuthorImageExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/'+embeddedMetadata.quoteAuthorImageFilename));
+                        if(!quoteAuthorImageExists){
+                          throw new Error(`Failed compiling markdown content: A case study article (${path.join(topLvlRepoPath, pageSourcePath)}) has a "quoteAuthorImageFilename" meta tag value that references an image that is not in the website/assets/images folder (${path.join(topLvlRepoPath, 'website/assets/images/'+embeddedMetadata.quoteAuthorImageFilename)}). Was it moved?`);
+                        }
+                      }
+                    }
+                  } else {
+                    if(!embeddedMetadata.cardTitleForCustomersPage) {
+                      throw new Error(`Failed compiling markdown content: A case study article is missing a "cardTitleForCustomersPage" meta tag at "${path.join(topLvlRepoPath, pageSourcePath)}". To resolve, add a "cardTitleForCustomersPage" meta tag with the title of this article when it is linked to from the /customers page. (e.g., "AI security company")`);
+                    }
                   }
                 }
-                // For article pages, we'll attach the category to the `rootRelativeUrlPath`.
-                // If the article is categorized as 'product' we'll replace the category with 'use-cases', or if it is categorized as 'success story' we'll replace it with 'device-management'
-                rootRelativeUrlPath = (
-                  '/' +
-                  (encodeURIComponent(embeddedMetadata.category === 'success stories' ? 'success-stories' : embeddedMetadata.category === 'security' ? 'securing' : embeddedMetadata.category)) + '/' +
-                  (pageUnextensionedUnwhitespacedLowercasedRelPath.split(/\//).map((fileOrFolderName) => encodeURIComponent(fileOrFolderName.replace(/^[0-9]+[\-]+/,'').replace(/\./g, '-'))).join('/'))
-                );
+                // If this is a whitepaper article, we'll check to make sure it has a whitepaperFilename and TODO metatags
+                if(embeddedMetadata.category === 'whitepaper') {
+                  if(!embeddedMetadata.whitepaperFilename){
+                    throw new Error(`Failed compiling markdown content: A whitepaper article is missing a 'whitepaperFilename' meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a whitepaperFilename meta tag with a value that is the filename of a PDF whitepaper in the website/assets/pdf folder and try running this script again.`);
+                  } else {
+                    let whitePaperPdfExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/pdfs/'+embeddedMetadata.whitepaperFilename));
+                    if(!whitePaperPdfExists){
+                      throw new Error(`Failed compiling markdown content: A whitepaper article (${path.join(topLvlRepoPath, pageSourcePath)}) has a "whitepaperFilename" meta tag value that references a PDF that is not in the website/assets/pdfs folder (${path.join(topLvlRepoPath, 'website/assets/pdfs/'+embeddedMetadata.whitepaperFilename)}). Was it moved?`);
+                    }
+                  }
+                }
+                // If this is a webinar article, we'll check to make sure it has a webinarEmbeddedVideoUrl meta tag.
+                if(embeddedMetadata.category === 'webinar') {
+                  if(!embeddedMetadata.webinarEmbeddedVideoUrl){
+                    throw new Error(`Failed compiling markdown content: A webinar article is missing a 'webinarEmbeddedVideoUrl' meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a webinarEmbeddedVideoUrl meta tag with a value that is the URL of the webinar this article is presenting, and try running this script again.`);
+                  } else {
+                    let parsedVideoUrl;
+                    try {
+                      parsedVideoUrl = new URL(embeddedMetadata.webinarEmbeddedVideoUrl);
+                    } catch(err) {
+                      throw new Error(`Failed compiling markdown content: A webinar article has an invalid "webinarEmbeddedVideoUrl" value (${embeddedMetadata.webinarEmbeddedVideoUrl}) at ${path.join(topLvlRepoPath, pageSourcePath)}. Please change this value to be a valid URL of the webinar recording with no query strings. Full error: ${util.inspect(err)}`);
+                    }
+                    if(parsedVideoUrl.search) {
+                      throw new Error(`Failed compiling markdown content: A webinar article has a "webinarEmbeddedVideoUrl" value that contains query strings (${parsedVideoUrl.search}) at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, remove the query strings from this value and try running this script again. `);
+                    }
+                  }
+                }
+                // If this is a comparison article, we will require a different set of meta tags and will determine the URL of the page using the articleSlugInCategory meta tag.
+                if(embeddedMetadata.category === 'comparison') {
+                  if(!embeddedMetadata.articleSlugInCategory){
+                    throw new Error(`Failed compiling markdown content: A comparison article is missing a "articleSlugInCategory" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a articleSlugInCategory meta tag and try running this script again.`);
+                  }
+
+                  if(!embeddedMetadata.introductionTextBlockOne){
+                    throw new Error(`Failed compiling markdown content: A comparison article is missing a "introductionTextBlockOne" meta tag at ${path.join(topLvlRepoPath, pageSourcePath)}. To resolve, add a introductionTextBlockOne meta tag and try running this script again.`);
+                  }
+                  rootRelativeUrlPath = ('/' +(encodeURIComponent('compare') + '/' + encodeURIComponent(embeddedMetadata.articleSlugInCategory)));
+                } else {
+
+                  // For article pages, we'll attach the category to the `rootRelativeUrlPath`.
+                  rootRelativeUrlPath = (
+                    '/' +
+                    (encodeURIComponent(embeddedMetadata.category === 'security' ? 'securing' : embeddedMetadata.category === 'whitepaper' ? 'whitepapers' : embeddedMetadata.category === 'webinar' ? 'webinars' : embeddedMetadata.category === 'case study' ? 'case-study' : embeddedMetadata.category === 'newsletter' ? 'newsletters' : embeddedMetadata.category === 'industry news' ? 'industry-news' : embeddedMetadata.category)) + '/' +
+                    (pageUnextensionedUnwhitespacedLowercasedRelPath.split(/\//).map((fileOrFolderName) => encodeURIComponent(fileOrFolderName.replace(/^[0-9]+[\-]+/,'').replace(/\./g, '-'))).join('/'))
+                  );
+                }
               }
 
               // Assert uniqueness of URL paths.
@@ -742,30 +847,12 @@ module.exports = {
         let RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO = 'handbook/company/open-positions.yml';
 
         // Get last modified timestamp using git, and represent it as a JS timestamp.
-        let lastModifiedAt;
-        if(!githubAccessToken) {
-          lastModifiedAt = Date.now();
-        } else {
-          // If we're including a lastModifiedAt value for schema tables, we'll send a request to the GitHub API to get a timestamp of when the last commit
-          let responseData = await sails.helpers.http.get.with({// [?]: https://docs.github.com/en/rest/commits/commits?apiVersion=2022-11-28#list-commits
-            url: 'https://api.github.com/repos/fleetdm/fleet/commits',
-            data: {
-              path: RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO,
-              page: 1,
-              per_page: 1,//eslint-disable-line camelcase
-            },
-            headers: baseHeadersForGithubRequests,
-          }).intercept((err)=>{
-            return new Error(`When getting the commit history for the open positions YAML to get a lastModifiedAt timestamp, an error occured.`, err);
-          });
-          // The value we'll use for the lastModifiedAt timestamp will be date value of the `commiter` property of the `commit` we got in the API response from github.
-          let mostRecentCommitToThisFile = responseData[0];
-          if(!mostRecentCommitToThisFile.commit || !mostRecentCommitToThisFile.commit.committer) {
-            // Throw an error if the the response from GitHub is missing a commit or commiter.
-            throw new Error(`When trying to get a lastModifiedAt timestamp for the open positions YAML, the response from the GitHub API did not include information about the most recent commit. Response from GitHub: ${util.inspect(responseData, {depth:null})}`);
-          }
-          lastModifiedAt = (new Date(mostRecentCommitToThisFile.commit.committer.date)).getTime(); // Convert the UTC timestamp from GitHub to a JS timestamp.
-        }
+        // > Inspired by https://github.com/uncletammy/doc-templater/blob/2969726b598b39aa78648c5379e4d9503b65685e/lib/compile-markdown-tree-from-remote-git-repo.js#L265-L273
+        let lastModifiedAt = (new Date((await sails.helpers.process.executeCommand.with({
+          command: `git log -1 --format="%ai" '${path.join(topLvlRepoPath, RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO)}'`,
+          dir: topLvlRepoPath,
+        })).stdout)).getTime();
+
 
         let openPositionsYaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find open positions YAML file at "${RELATIVE_PATH_TO_OPEN_POSITIONS_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
         let openPositionsToCreatePartialsFor = YAML.parse(openPositionsYaml, {prettyErrors: true});
@@ -807,7 +894,7 @@ module.exports = {
             }
             let pageTitle = openPosition.jobTitle;
 
-            let mdStringForThisOpenPosition = `# ${openPosition.jobTitle}\n\n## Let's start with why we exist. 📡\n\nEver wondered if your employer is monitoring your work computer?\n\nOrganizations make huge investments every year to keep their laptops and servers online, secure, compliant, and usable from anywhere. This is called "device management".\n\nAt Fleet, we think it's time device management became [transparent](https://fleetdm.com/transparency) and [open source](https://fleetdm.com/handbook/company#open-source).\n\n\n## About the company 🌈\n\nYou can read more about the company in our [handbook](https://fleetdm.com/handbook/company), which is public and open to the world.\n\ntldr; Fleet Device Management Inc. is a [recently-funded](https://techcrunch.com/2022/04/28/fleet-nabs-20m-to-enable-enterprises-to-manage-their-devices/) Series A startup founded and backed by the same people who created osquery, the leading open source security agent. Today, osquery is installed on millions of laptops and servers, and it is especially popular with [enterprise IT and security teams](https://www.linuxfoundation.org/press/press-release/the-linux-foundation-announces-intent-to-form-new-foundation-to-support-osquery-community).\n\n\n## Your primary responsibilities 🔭\n${openPosition.responsibilities}\n\n## Are you our new team member? 🧑‍🚀\nIf most of these qualities sound like you, we would love to chat and see if we're a good fit.\n\n${openPosition.experience}\n\n## Why should you join us? 🛸\n\nLearn more about the company and [why you should join us here](https://fleetdm.com/handbook/company#is-it-any-good).\n\n<div purpose="open-position-quote-card"><div><img alt="Deloitte logo" src="/images/logo-deloitte-166x36@2x.png"></div><div purpose="open-position-quote"><div purpose="quote-text"><p>“One of the best teams out there to go work for and help shape security platforms.”</p></div><div purpose="quote-attribution"><strong>Dhruv Majumdar</strong><p>Director Of Cyber Risk & Advisory</p></div></div></div>\n\n\n## Want to join the team?\n\nWant to join the team?\n\nMessage us on [LinkedIn](https://www.linkedin.com/company/fleetdm/). \n\n\n >The salary range for this role is ${openPosition.onTargetEarnings ? openPosition.onTargetEarnings : '$48,000 - $480,000'}. Fleet provides competitive compensation based on our [compensation philosophy](https://fleetdm.com/handbook/company/communications#compensation), as well as comprehensive [benefits](https://fleetdm.com/handbook/company/communications#benefits).`;
+            let mdStringForThisOpenPosition = `# ${openPosition.jobTitle}\n\n## Let's start with why we exist. 📡\n\nEver wondered if your employer is monitoring your work computer?\n\nOrganizations make huge investments every year to keep their laptops and servers online, secure, compliant, and usable from anywhere. This is called "device management".\n\nAt Fleet, we think it's time device management became [transparent](https://fleetdm.com/transparency) and [open source](https://fleetdm.com/handbook/company#open-source).\n\n\n## About the company 🌈\n\nYou can read more about the company in our [handbook](https://fleetdm.com/handbook/company), which is public and open to the world.\n\ntldr; Fleet Device Management Inc. is a [Series B](https://www.businesswire.com/news/home/20250617550974/en/Fleet-Adds-%2427M-to-Usher-in-New-Era-of-Open-Device-Management) startup founded and backed by the same people who created osquery, the leading open source security agent. Today, osquery is installed on millions of laptops and servers, and it is especially popular with [enterprise IT and security teams](https://www.linuxfoundation.org/press/press-release/the-linux-foundation-announces-intent-to-form-new-foundation-to-support-osquery-community).\n\n\n## Your primary responsibilities 🔭\n${openPosition.responsibilities}\n\n## Are you our new team member? 🧑‍🚀\nIf most of these qualities sound like you, we would love to chat and see if we're a good fit.\n\n${openPosition.experience}\n\n## Why should you join us? 🛸\n\nLearn more about the company and [why you should join us here](https://fleetdm.com/handbook/company#is-it-any-good).\n\n<div purpose="open-position-quote-card"><div purpose="open-position-quote"><div purpose="quote-text"><p>“One of the best teams out there to go work for and help shape security platforms.”</p></div></div></div>\n\n\n## Want to join the team?\n\nWant to join the team?\n\n[Message us your Linkedin profile](/contact#apply). \n\n\n >The salary range for this role is ${openPosition.onTargetEarnings ? openPosition.onTargetEarnings : '$48,000 - $480,000'}. Fleet provides competitive compensation based on our [compensation philosophy](https://fleetdm.com/handbook/company/communications#compensation), as well as comprehensive [benefits](https://fleetdm.com/handbook/company/communications#benefits).`;
 
 
             let htmlStringForThisPosition = await sails.helpers.strings.toHtml.with({mdString: mdStringForThisOpenPosition});
@@ -924,14 +1011,26 @@ module.exports = {
                 if(column.platforms.length > 3) {// FUTURE: add support for more than three platform values in columns.
                   throw new Error('Support for more than three platforms in columns has not been implemented yet. If this column is supported on all platforms, you can omit the platforms array entirely.');
                 }
-
+                let lowercasePlatformValuesToFriendlyNames = {
+                  darwin: 'macOS',
+                  macos: 'macOS',
+                  linux: 'Linux',
+                  windows: 'Windows',
+                  chrome: 'ChromeOS',
+                };
+                // Normalize the capitalization of platform names.
+                column.platforms = column.platforms.map((platform)=>{
+                  return lowercasePlatformValuesToFriendlyNames[platform.toLowerCase()];
+                });
+                // Filter out any platforms not included in the list above.
+                column.platforms = _.filter(column.platforms, (platform =>{return !! platform;}));
                 if(column.platforms.length === 3) { // Because there are only four options for platform, we can safely assume that there will be at most 3 platforms, so we'll just handle this one of three ways
                   // If there are three, we'll add a string with an oxford comma. e.g., "On macOS, Windows, and Linux"
                   platformString += `${column.platforms[0]}, ${column.platforms[1]}, and ${column.platforms[2]}`;
                 } else if(column.platforms.length === 2) {
                   // If there are two values in the platforms array, it will be formated as "[Platform 1] and [Platform 2]"
                   platformString += `${column.platforms[0]} and ${column.platforms[1]}`;
-                } else {
+                } else if(column.platforms.length === 1) {
                   // Otherwise, there is only one value in the platform array and we'll add that value to the column's description
                   platformString += column.platforms[0];
                 }
@@ -1014,21 +1113,21 @@ module.exports = {
         let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_PRICING_TABLE_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find pricing table features YAML file at "${RELATIVE_PATH_TO_PRICING_TABLE_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
         let pricingTableFeatures = YAML.parse(yaml, {prettyErrors: true});
         let VALID_PRODUCT_CATEGORIES = ['Endpoint operations', 'Device management', 'Vulnerability management'];
-        let VALID_PRICING_TABLE_CATEGORIES = ['Support', 'Deployment', 'Integrations', 'Configuration', 'Devices', 'Vulnerability management'];
+        let VALID_PRICING_TABLE_CATEGORIES = ['Support', 'Deployment', 'Integrations', 'Configuration', 'Device management', 'Vulnerability management'];
         let VALID_PRICING_TABLE_KEYS = ['industryName', 'description', 'documentationUrl', 'tier', 'jamfProHasFeature', 'jamfProtectHasFeature', 'usualDepartment', 'productCategories', 'pricingTableCategories', 'waysToUse', 'buzzwords', 'demos', 'dri', 'friendlyName', 'moreInfoUrl', 'comingSoonOn', 'screenshotSrc', 'isExperimental'];
         for(let feature of pricingTableFeatures){
+          if(feature.name) {// Compatibility check
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature has a "name" (${feature.name}) which is no longer supported. To resolve, add a "industryName" to this feature: ${util.inspect(feature)}`);
+          }
           // Throw an error if a feature contains an unrecognized key.
           for(let key of _.keys(feature)){
             if(!VALID_PRICING_TABLE_KEYS.includes(key)){
               throw new Error(`Unrecognized key. Could not build pricing table config from pricing-features-table.yml. The "${feature.industryName}" feature contains an unrecognized key (${key}). To resolve, fix any typos or remove this key and try running this script again.`);
             }
           }
-          if(feature.name) {// Compatibility check
-            throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature has a "name" (${feature.name}) which is no longer supported. To resolve, add a "industryName" to this feature: ${feature}`);
-          }
           if(feature.industryName !== undefined) {
             if(!feature.industryName || typeof feature.industryName !== 'string') {
-              throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature has a missing or invalid "industryName". To resolve, set an "industryName" as a valid, non-empty string for this feature ${feature}`);
+              throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature has a missing or invalid "industryName". To resolve, set an "industryName" as a valid, non-empty string for this feature ${util.inspect(feature)}`);
             }
             feature.name = feature.industryName;//« This is just an alias. FUTURE: update code elsewhere to use the new property instead, and delete this aliasing.
           }
@@ -1059,10 +1158,7 @@ module.exports = {
           if(!feature.tier) { // Throw an error if a feature is missing a `tier`.
             throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature is missing a "tier". To resolve, add a "tier" (either "Free" or "Premium") to this feature.`);
           } else if(!_.contains(['Free', 'Premium'], feature.tier)){ // Throw an error if a feature's `tier` is not "Free" or "Premium".
-            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature has an invalid "tier". to resolve, change the value of this features "tier" (currently set to '+feature.tier+') to be either "Free" or "Premium".`);
-          }
-          if(feature.comingSoon) {// Compatibility check
-            throw new Error(`Could not build pricing table config from pricing-features-table.yml. A feature (industryName: ${feature.industryName}) category has "comingSoon", which is no longer supported. To resolve, remove "comingSoon" or add "comingSoonOn" (YYYY-MM-DD) to this feature ${feature}`);
+            throw new Error(`Could not build pricing table config from pricing-features-table.yml. The ${feature.industryName} feature has an invalid "tier". to resolve, change the value of this features "tier" (currently set to ${feature.tier}) to be either "Free" or "Premium".`);
           }
           if(feature.comingSoonOn !== undefined) {
             if(typeof feature.comingSoonOn !== 'string'){
@@ -1088,20 +1184,20 @@ module.exports = {
           }
           // Check for required values.
           if(!testimonial.quote) {
-            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quote". To resolve, make sure all testimonials have a "quote" and try running this script again. Testimonial missing a quote: ${testimonial}`);
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quote". To resolve, make sure all testimonials have a "quote" and try running this script again. Testimonial missing a quote: ${util.inspect(testimonial)}`);
           }
           if(!testimonial.quoteAuthorName) {
-            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteAuthorName". To resolve, make sure all testimonials have a "quoteAuthorName", and try running this script again. Testimonial with missing "quoteAuthorName": ${testimonial} `);
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteAuthorName". To resolve, make sure all testimonials have a "quoteAuthorName", and try running this script again. Testimonial with missing "quoteAuthorName": ${util.inspect(testimonial)}`);
           }
           if(!testimonial.quoteLinkUrl){
-            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteLinkUrl" (A link to the quote author's LinkedIn profile). To resolve, make sure all testimonials have a "quoteLinkUrl", and try running this script again. Testimonial with missing "quoteLinkUrl": ${testimonial} `);
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteLinkUrl" (A link to the quote author's LinkedIn profile). To resolve, make sure all testimonials have a "quoteLinkUrl", and try running this script again. Testimonial with missing "quoteLinkUrl": ${util.inspect(testimonial)} `);
           }
           if(!testimonial.quoteAuthorProfileImageFilename){
-            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteAuthorProfileImageFilename" (The quote author's LinkedIn profile picture). To resolve, make sure all testimonials have a "quoteAuthorProfileImageFilename", and try running this script again. Testimonial with missing "quoteAuthorProfileImageFilename": ${testimonial} `);
+            throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial is missing a "quoteAuthorProfileImageFilename" (The quote author's LinkedIn profile picture). To resolve, make sure all testimonials have a "quoteAuthorProfileImageFilename", and try running this script again. Testimonial with missing "quoteAuthorProfileImageFilename": ${util.inspect(testimonial)} `);
           } else {
             let imageFileExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/', testimonial.quoteAuthorProfileImageFilename));
             if(!imageFileExists){
-              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a 'quoteAuthorProfileImageFilename' value that points to an image that doesn't exist. Please make sure the file exists in the /website/assets/images/ folder. Invalid quoteImageFilename value: ${testimonial.quoteImageFilename}`);
+              throw new Error(`Could not build testimonials config from testimonials.yml. A testimonial has a 'quoteAuthorProfileImageFilename' value that points to an image that doesn't exist. Please make sure the file exists in the /website/assets/images/ folder. Invalid quoteImageFilename value: ${testimonial.quoteAuthorProfileImageFilename}`);
             }
           }
           if(!testimonial.productCategories) {
@@ -1123,7 +1219,7 @@ module.exports = {
             try {
               videoLinkToCheck = new URL(testimonial.youtubeVideoUrl);
             } catch(err) {
-              throw new Error(`Could not build testimonial config from testimonials.yml. When trying to parse a "youtubeVideoUrl" value, an erro occured. Please make sure all "youtubeVideoUrl" values are valid URLs and standard Youtube links (e.g, https://www.youtube.com/watch?v=siXy9aanOu4), and try running this script again. Invalid "youtubeVideoUrl" value: ${testimonial.youtubeVideoUrl}. error: ${err}`);
+              throw new Error(`Could not build testimonial config from testimonials.yml. When trying to parse a "youtubeVideoUrl" value, an error occured. Please make sure all "youtubeVideoUrl" values are valid URLs and standard Youtube links (e.g, https://www.youtube.com/watch?v=siXy9aanOu4), and try running this script again. Invalid "youtubeVideoUrl" value: ${testimonial.youtubeVideoUrl}. error: ${util.inspect(err)}`);
             }
             // If this is a youtu.be link, the video ID will be the pathname of the URL.
             if(!videoLinkToCheck.host.match(/w*\.*youtube\.com$/)) {
@@ -1145,7 +1241,7 @@ module.exports = {
           if(testimonial.quoteImageFilename) {
             // Throw an error if a testimonial with an image does not have a "quoteLinkUrl"
             if(!testimonial.quoteLinkUrl){
-              throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial with a 'quoteImageFilename' value is missing a 'quoteLinkUrl'. If providing a 'quoteImageFilename', a quoteLinkUrl (The link that the image will go to) is required. Testimonial missing a quoteLinkUrl: ${testimonial}`);
+              throw new Error(`Could not build testimonial config from testimonials.yml. A testimonial with a 'quoteImageFilename' value is missing a 'quoteLinkUrl'. If providing a 'quoteImageFilename', a quoteLinkUrl (The link that the image will go to) is required. Testimonial missing a quoteLinkUrl: ${util.inspect(testimonial)}`);
             }
             // Check if the image used for the testimonials exists.
             let imageFileExists = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/', testimonial.quoteImageFilename));
@@ -1179,7 +1275,7 @@ module.exports = {
         });
 
         let githubLabelsToCheck = {};
-        let KNOWN_AUTOMATABLE_FREQUENCIES = ['Daily', 'Weekly', 'Triweekly', 'Monthly', 'Annually'];
+        let KNOWN_AUTOMATABLE_FREQUENCIES = ['Daily', 'Weekly', 'Triweekly', 'Monthly', 'Annually', 'Quarterly'];
         // Process each rituals YAML file. These will be added to the builtStaticContent as JSON
         for(let ritualsYamlFilePath of ritualTablesYamlFiles){
           // Get this rituals.yml file's parent folder name, we'll use this as the key for this section's rituals in the ritualsTables dictionary
@@ -1229,6 +1325,9 @@ module.exports = {
               }
               if(!_.contains(['fleet', 'confidential'], ritual.autoIssue.repo)) {
                 throw new Error(`Could not built rituals from ${ritualsYamlFilePath}. The "autoIssue.repo" value of "${ritual.task}" contains an invalid GitHub repo (${ritual.autoIssue.repo}). Please change this value to be either "fleet" or "confidential" and try running this script again.`);
+              }
+              if(ritual.autoIssue.issueDescription && typeof ritual.autoIssue.issueDescription !== 'string') {
+                throw new Error(`Could not build rituals from ${ritualsYamlFilePath}. "${ritual.task}" has an 'autoIssue' value that has an invalid "issueDescription" value. Please change this value to be a string (currently ${typeof ritual.autoIssue.issueDescription}) that contains the issue description of this rituals GitHub issue and try running this script again.`);
               }
               // Check each label in the labels array
               for(let label of ritual.autoIssue.labels) {
@@ -1296,28 +1395,53 @@ module.exports = {
         let appLibrary = [];
         // Get app library json
         let appsJsonData = await sails.helpers.fs.readJson(path.join(topLvlRepoPath, '/ee/maintained-apps/outputs/apps.json'));
+        // Read the same file as text. This is so we can determine the line number of apps to use in the edit page link.
+        let appsJsonDataAsAString = await sails.helpers.fs.read(path.join(topLvlRepoPath, '/ee/maintained-apps/outputs/apps.json'));
+        let linesInAppsJsonFile = appsJsonDataAsAString.split('\n');
         // Then for each item in the json, build a configuration object to add to the sails.builtStaticContent.appLibrary array.
         await sails.helpers.flow.simultaneouslyForEach(appsJsonData.apps, async(app)=>{
-          // FUTURE: add support for windows apps once the page is updated to be multi-platform.
-          if(app.platform !== 'darwin'){
-            return;
+          // Validate that all FMA have the expected values.
+          if(!app.name) {
+            throw new Error(`Could not build software catalog configuration from the ee/maintained-apps/outputs/apps.json file. An app (${util.inspect(app)}) is missing a "name" value. Please add a "name" value for this app and try running this script again.`);
           }
+          if(!app.slug) {
+            throw new Error(`Could not build software catalog configuration from the ee/maintained-apps/outputs/apps.json file. An app (name: ${app.name}) is missing a "slug" value. Please add a "slug" value for this app and try running this script again.`);
+          }
+          if(!app.unique_identifier) {
+            throw new Error(`Could not build software catalog configuration from the ee/maintained-apps/outputs/apps.json file. An app (name: ${app.name}) is missing a "unique_identifier" value. Please add a "unique_identifier" value for this app and try running this script again.`);
+          }
+          if(!app.description) {
+            throw new Error(`Could not build software catalog configuration from the ee/maintained-apps/outputs/apps.json file. An app (name: ${app.name}) is missing a "description" value. Please add a "description" value for this app and try running this script again.`);
+          }
+          if(!app.platform) {
+            throw new Error(`Could not build software catalog configuration from the ee/maintained-apps/outputs/apps.json file. An app (name: ${app.name}) is missing a "platform" value. Please add a "platform" value for this app and try running this script again.`);
+          }
+
+          // Determine the line in the JSON that the object for this app starts on.
+          // this will allow us to link users directly to the app's position in the JSON file when users want to make a change.
+          let lineWithTheAppsSlugKey = _.find(linesInAppsJsonFile, (line)=>{
+            return line.includes(`"slug": "${app.slug}"`);
+          });
+          let lineNumberForEdittingThisApp = linesInAppsJsonFile.indexOf(lineWithTheAppsSlugKey);
+
+
 
           let appInformation = {
             name: app.name,
-            identifier: app.slug.split('/'+app.platform)[0],
+            identifier: app.slug.replace(/\//, '-'),
             outputSlug: app.slug,
             bundleIdentifier: app.unique_identifier,
             description: app.description,
             platform: app.platform,
+            lineNumberInJson: lineNumberForEdittingThisApp,
           };
 
           // Grab the latest information about these apps from the the ee/maintained-apps folder in the repo.
           let detailedInformationAboutThisApp = await sails.helpers.fs.readJson(path.join(topLvlRepoPath, '/ee/maintained-apps/outputs/'+app.slug+'.json'))
           .intercept('doesNotExist', ()=>{
-            return new Error(`Could not build app library configuration from the ee/maintained-apps folder. When attempting to read a JSON configuration file for ${appInformation.identifier}, no file was found at ${path.join(topLvlRepoPath, '/ee/maintained-apps/outputs/'+app.slug+'.json')}. Was it moved?')}.`);
+            return new Error(`Could not build software catalog configuration from the ee/maintained-apps folder. When attempting to read a JSON configuration file for ${appInformation.identifier}, no file was found at ${path.join(topLvlRepoPath, '/ee/maintained-apps/outputs/'+app.slug+'.json')}. Was it moved?')}.`);
           });
-          let expectedAppIconFilename = `app-icon-${appInformation.identifier}-60x60@2x.png`;
+          let expectedAppIconFilename = `app-icon-${app.slug.split('/'+app.platform)[0]}-60x60@2x.png`;
 
           // FUTURE: copy the app icons from where they are stored in the repo (when they are stored in the repo).
           let iconImageExistsForThisApp = await sails.helpers.fs.exists(path.join(topLvlRepoPath, 'website/assets/images/', expectedAppIconFilename));
@@ -1334,48 +1458,220 @@ module.exports = {
           // Get the uninstall script for this version.
           let scriptToUninstallThisApp = detailedInformationAboutThisApp.refs[latestUninstallScriptRef];
           // Modify the latest uninstall script to be on a single line.
+          if(app.platform === 'darwin'){
 
-          // Remove lines that only contain comments.
-          scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/^\s*#.*$/gm, '');
-          // Condense functions in the uninstall script onto a single line.
-          // For each function in the script:
-          scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/(\w+)\s*\(\)\s*\{([\s\S]*?)^\}/gm, (match, functionName, functionContent)=> {
-            // Split the function content into an array
-            let linesInFunction = functionContent.split('\n');
+            // Remove lines that only contain comments.
+            scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/^\s*#.*$/gm, '');
+            // Condense functions in the uninstall script onto a single line.
+            // For each function in the script:
+            scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/(\w+)\s*\(\)\s*\{([\s\S]*?)^\}/gm, (match, functionName, functionContent)=> {
+              // Split the function content into an array
+              let linesInFunction = functionContent.split('\n');
 
-            // Remove extra leading or trailing whitespace from each line.
-            linesInFunction = linesInFunction.map((line)=>{ return line.trim();});
+              // Remove extra leading or trailing whitespace from each line.
+              linesInFunction = linesInFunction.map((line)=>{ return line.trim();});
 
-            // Remove any empty lines
-            linesInFunction = linesInFunction.filter((lineText)=>{
-              return lineText.length > 0;
+              // Remove any empty lines
+              linesInFunction = linesInFunction.filter((lineText)=>{
+                return lineText.length > 0;
+              });
+              // Iterate through the lines in the function, adding semicolons to lines with commands.
+              linesInFunction = linesInFunction.map((text, lineIndex, lines)=>{
+                // If this is not the last line in the function, and it does not only contain a control stucture keyword, append a semi colon to it.
+                if(lineIndex !== lines.length - 1 && !/^\s*(if|while|for|do|else|then|done|return)/.test(text)) {
+                  return text + ';';
+                }
+                // Otherwise, do not add a semicolon
+                return text;
+              });
+              // Join the lines into a single string
+              let condensedBodyOfFunction = linesInFunction.join(' ');
+
+              // Return the condensed single-line function.
+              return `${functionName}() { ${condensedBodyOfFunction} }`;
             });
-            // Iterate through the lines in the function, adding semicolons to lines with commands.
-            linesInFunction = linesInFunction.map((text, lineIndex, lines)=>{
-              // If this is not the last line in the function, and it does not only contain a control stucture keyword, append a semi colon to it.
-              if(lineIndex !== lines.length - 1 && !/^\s*(if|while|for|do|else|then|done|return)/.test(text)) {
-                return text + ';';
-              }
-              // Otherwise, do not add a semicolon
-              return text;
-            });
-            // Join the lines into a single string
-            let condensedBodyOfFunction = linesInFunction.join(' ');
-
-            // Return the condensed single-line function.
-            return `${functionName}() { ${condensedBodyOfFunction} }`;
-          });
-          // Remove newlines with "&&" and remove any that are added to the end and beginning of the condensed command.
-          scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/\n\s*/g, ' && ').replace(/ && $/, '').replace(/^ && /, '');
+            // Remove newlines with "&&" and remove any that are added to the end and beginning of the condensed command.
+            scriptToUninstallThisApp = scriptToUninstallThisApp.replace(/\n\s*/g, ' && ').replace(/ && $/, '').replace(/^ && /, '');
+          }
 
           // Add the uninstall script and the latest version to this app's configuration.
+          // Note: we esacape the uninstall script to prevent issues when storing these values in the website's JSON configuration.
           appInformation.uninstallScript = scriptToUninstallThisApp;
           appInformation.version = latestVersionOfThisApp.version.split(',')[0];
           appLibrary.push(appInformation);
         });
         builtStaticContent.appLibrary = appLibrary;
       },
+      //
+      //  ███████╗ ██████╗██████╗ ██╗██████╗ ████████╗███████╗    ██╗     ██╗██████╗ ██████╗  █████╗ ██████╗ ██╗   ██╗
+      //  ██╔════╝██╔════╝██╔══██╗██║██╔══██╗╚══██╔══╝██╔════╝    ██║     ██║██╔══██╗██╔══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝
+      //  ███████╗██║     ██████╔╝██║██████╔╝   ██║   ███████╗    ██║     ██║██████╔╝██████╔╝███████║██████╔╝ ╚████╔╝
+      //  ╚════██║██║     ██╔══██╗██║██╔═══╝    ██║   ╚════██║    ██║     ██║██╔══██╗██╔══██╗██╔══██║██╔══██╗  ╚██╔╝
+      //  ███████║╚██████╗██║  ██║██║██║        ██║   ███████║    ███████╗██║██████╔╝██║  ██║██║  ██║██║  ██║   ██║
+      //  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝   ╚══════╝    ╚══════╝╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
+      //
+      async()=>{
+        let RELATIVE_PATH_TO_SCRIPTS_YML_IN_FLEET_REPO = 'docs/scripts.yml';
+        let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_SCRIPTS_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find scripts YAML file at "${RELATIVE_PATH_TO_SCRIPTS_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
+        let scripts = YAML.parse(yaml, {prettyErrors: true});
+        let scriptsLibrary = [];
+        let scriptSlugsSeen = [];
+
+        for(let script of scripts) {
+          if(!script.name) {
+            throw new Error(`Could not build script library configuration from YAML. A script (${script}) is missing a "name" value. To resolve, add a name to this script, and try running this script again.`);
+          }
+
+          if(!script.description) {
+            throw new Error(`Could not build script library configuration from YAML. A script (${script.name}) is missing a description value. To resolve, add a description to this script and try running this script again.`);
+          }
+
+          if(!script.platform) {
+            throw new Error('missing platform', script);
+          } else if(!['windows', 'macos', 'linux'].includes(script.platform)){
+            throw new Error(`Could not build script library configuration from YAML. A script (${script.name}) has an unsupported platform value (${script.platform}). To resolve, change the platform value to be 'windows', 'macos', or 'linux'`);
+          }
+
+          if(!script.script) {
+            throw new Error(`Could not build script library configuration from YAML. A script (${script.name}) is missing a script value. To resolve, add a script value and try running this script again.`);
+          }
+
+          // Format the script so it be safely stored as a string in the website's JSON configuration.
+          script.script = script.script;
+
+          // Create a url slug for this script
+          script.slug = _.kebabCase(script.platform+' '+script.name);// ex: macos-collect-fleetd-logs
+
+          // Throw an error if there are any duplicate slugs.
+          if(scriptSlugsSeen.includes(script.slug)){
+            throw new Error(`Could not build script library configuration from YAML: scripts as currently named would result in colliding (duplicate) slugs (${script.slug}).  To resolve, rename the ${script.name} script`);
+          }
+          scriptSlugsSeen.push(script.slug);
+
+          scriptsLibrary.push(script);
+        }
+        builtStaticContent.scripts = scriptsLibrary;
+        builtStaticContent.scriptsLibraryYmlRepoPath = RELATIVE_PATH_TO_SCRIPTS_YML_IN_FLEET_REPO;
+      },
+      //   ██████╗ ██████╗ ███╗   ███╗███╗   ███╗ █████╗ ███╗   ██╗██████╗ ███████╗    ██╗     ██╗██████╗ ██████╗  █████╗ ██████╗ ██╗   ██╗
+      //  ██╔════╝██╔═══██╗████╗ ████║████╗ ████║██╔══██╗████╗  ██║██╔══██╗██╔════╝    ██║     ██║██╔══██╗██╔══██╗██╔══██╗██╔══██╗╚██╗ ██╔╝
+      //  ██║     ██║   ██║██╔████╔██║██╔████╔██║███████║██╔██╗ ██║██║  ██║███████╗    ██║     ██║██████╔╝██████╔╝███████║██████╔╝ ╚████╔╝
+      //  ██║     ██║   ██║██║╚██╔╝██║██║╚██╔╝██║██╔══██║██║╚██╗██║██║  ██║╚════██║    ██║     ██║██╔══██╗██╔══██╗██╔══██║██╔══██╗  ╚██╔╝
+      //  ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║ ╚═╝ ██║██║  ██║██║ ╚████║██████╔╝███████║    ███████╗██║██████╔╝██║  ██║██║  ██║██║  ██║   ██║
+      //   ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ ╚══════╝    ╚══════╝╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
+      async()=>{
+        let RELATIVE_PATH_TO_MDM_COMMANDS_YML_IN_FLEET_REPO = 'docs/mdm-commands.yml';
+        let yaml = await sails.helpers.fs.read(path.join(topLvlRepoPath, RELATIVE_PATH_TO_MDM_COMMANDS_YML_IN_FLEET_REPO)).intercept('doesNotExist', (err)=>new Error(`Could not find MDM commands YAML file at "${RELATIVE_PATH_TO_MDM_COMMANDS_YML_IN_FLEET_REPO}".  Was it accidentally moved?  Raw error: `+err.message));
+        let linesInYamlFile = yaml.split('\n');
+        let mdmCommands = YAML.parse(yaml, {prettyErrors: true});
+
+        let mdmCommandsLibrary = [];
+        let commandSlugsSeen = [];
+
+        for(let command of mdmCommands) {
+          if(!command.name) {
+            throw new Error(`Could not build MDM command library configuration from YAML. A command (${command}) is missing a "name" value. To resolve, add a name to this command, and try running this script again.`);
+          }
+          if(!command.platform) {
+            throw new Error('missing platform', command);
+          } else if(!['windows', 'apple'].includes(command.platform)){
+            throw new Error(`Could not build MDM command library configuration from YAML. A command (${command.name}) has an unsupported platform value. To resolve, change the platform value to be either 'windows' or 'apple'`);
+          }
+          if(!command.description) {
+            throw new Error(`Could not build MDM command library configuration from YAML. A command (${command.name}) is missing a description value. To resolve, add a description to this command and try running this script again.`);
+          }
+          if(!command.supportedDeviceTypes) {
+            throw new Error(`Could not build MDM command library configuration from YAML. A command (${command.name}) is missing a supportedDeviceTypes value. To resolve, add a supportedDeviceTypes that contains a list of all operating systems that support this command and try running this script again.`);
+          } else if(!_.isArray(command.supportedDeviceTypes)) {
+            throw new Error(`Could not build MDM command library configuration from YAML. A command (${command.name}) has an invalid supportedDeviceTypes value. To resolve, change the supportedDeviceTypes value to be an array of all operating systems that support this command and try running this script again.`);
+          }
+          if(!command.command) {
+            throw new Error(`Could not build MDM command library configuration from YAML. A command (${command.name}) is missing a command value. To resolve, add a command that contains an XML (for Windows commands) or plist (for Apple commands) MDM command, and try running this script again.`);
+          }
+
+          // Determine the line in the yaml that this command starts on.
+          // this will allow us to link users directly to the commands position in the YAML file (currently >1500 lines) when users want to make a change.
+          let lineWithThisCommandsNameKey = _.find(linesInYamlFile, (line)=>{
+            return line.includes('name: '+command.name);
+          });
+          let lineNumberForEdittingThisCommand = linesInYamlFile.indexOf(lineWithThisCommandsNameKey) + 1;
+          command.lineNumberInYaml = lineNumberForEdittingThisCommand; // Set the line number for edits.
+
+
+          // Note: The command descriptions are escaped because they include references to XML tags (e.g., <Data>) that can cause issues with Vue.
+          command.description = _.escape(command.description);
+          command.command = command.command;
+          // Create a url slug for this script
+          command.slug = _.kebabCase(command.platform+' '+command.name);
+
+          // Throw an error if there are any duplicate slugs.
+          if(commandSlugsSeen.includes(command.slug)){
+            throw new Error(`Could not build MDM command library configuration from YAML: commands as currently named would result in colliding (duplicate) slugs.  To resolve, rename the ${command.name} (platform: ${command.platform}) command`);
+          }
+          commandSlugsSeen.push(command.slug);
+
+          mdmCommandsLibrary.push(command);
+        }
+        builtStaticContent.mdmCommands = mdmCommandsLibrary;
+        builtStaticContent.commandsLibraryYmlRepoPath = RELATIVE_PATH_TO_MDM_COMMANDS_YML_IN_FLEET_REPO;
+      },
+      //
+      //  ╔═╗╦  ╔═╗╔═╗╔╦╗╔═╗╔╦╗╦    ╦╔╗╔╔═╗╔╦╗╔═╗╦  ╦  ╔═╗╦═╗  ╦  ╦╔╗╔╦╔═╔═╗
+      //  ╠╣ ║  ║╣ ║╣  ║ ║   ║ ║    ║║║║╚═╗ ║ ╠═╣║  ║  ║╣ ╠╦╝  ║  ║║║║╠╩╗╚═╗
+      //  ╚  ╩═╝╚═╝╚═╝ ╩ ╚═╝ ╩ ╩═╝  ╩╝╚╝╚═╝ ╩ ╩ ╩╩═╝╩═╝╚═╝╩╚═  ╩═╝╩╝╚╝╩ ╩╚═╝
+      // Fetch the latest URLS of the latest fleetctl installers from GitHub for the /download page.
+      // Note: This request is sent to GitHub regardless of whether a githubAccessToken input was provided.
+      async()=>{
+        let latestFleetReleaseDetails = await sails.helpers.http.get.with({
+          url: 'https://api.github.com/repos/fleetdm/fleet/releases/latest',
+          headers: baseHeadersForGithubRequests,
+        }).intercept((err) =>{
+          return new Error(`When sending a request to the GitHub API to get links for the latest released fleetctl installers, an error occurred. Full error: ${util.inspect(err)}`);
+        });
+        let downloadAssets = latestFleetReleaseDetails.assets;
+        let macOsInstaller = _.find(downloadAssets, (asset)=> { return  _.endsWith(asset.browser_download_url, '_mac.pkg');});
+        let windowsInstaller = _.find(downloadAssets, (asset)=> { return _.endsWith(asset.browser_download_url, '_windows_amd64.msi');});
+        let windowsArmInstaller = _.find(downloadAssets, (asset)=> { return _.endsWith(asset.browser_download_url, '_windows_arm64.msi');});
+        if(!macOsInstaller || !windowsInstaller || !windowsArmInstaller) {
+          let otherRecentFleetReleases = await sails.helpers.http.get.with({
+            url: 'https://api.github.com/repos/fleetdm/fleet/releases',
+            headers: baseHeadersForGithubRequests,
+          }).intercept((err) =>{
+            return new Error(`When sending a request to the GitHub API to get links for the latest released fleetctl installers, an error occurred. Full error: ${util.inspect(err)}`);
+          });
+
+          // Find all releases that contains all three installer assets.
+          let completeReleases = _.filter(otherRecentFleetReleases, (release)=>{
+            return _.some(release.assets, (asset)=> { return _.endsWith(asset.browser_download_url, '_mac.pkg');}) &&
+              _.some(release.assets, (asset)=> { return _.endsWith(asset.browser_download_url, '_windows_amd64.msi');}) &&
+              _.some(release.assets, (asset)=> { return _.endsWith(asset.browser_download_url, '_windows_arm64.msi');});
+          });
+          // Get the latest "complete" release to use.
+          let latestCompleteRelease = _.last(_.sortBy(completeReleases, (release)=>{ return new Date(release.published_at).getTime(); }));
+          if(!latestCompleteRelease) {
+            throw new Error(`When getting information about recent Fleet releases to find installers for the download page, no release containing macOS, Windows (amd64), and Windows (arm64) installers was found in the GitHub API response.`);
+          }
+          if(!macOsInstaller) {
+            sails.log.warn(`When getting information about the latest release (${latestFleetReleaseDetails.name}) to get installer links for the download page, no installer for macOS was found in the release assets. The download page will link to an older version (${latestCompleteRelease.name}) for macOS.`);
+            macOsInstaller = _.find(latestCompleteRelease.assets, (asset)=> { return _.endsWith(asset.browser_download_url, '_mac.pkg');});
+          }
+          if(!windowsInstaller) {
+            sails.log.warn(`When getting information about the latest release (${latestFleetReleaseDetails.name}) to get installer links for the download page, no installer for Windows (amd64) was found in the release assets. The download page will link to an older version (${latestCompleteRelease.name}) for Windows (amd64).`);
+            windowsInstaller = _.find(latestCompleteRelease.assets, (asset)=> { return _.endsWith(asset.browser_download_url, '_windows_amd64.msi');});
+          }
+          if(!windowsArmInstaller) {
+            sails.log.warn(`When getting information about the latest release (${latestFleetReleaseDetails.name}) to get installer links for the download page, no installer for Windows (arm64) was found in the release assets. The download page will link to an older version (${latestCompleteRelease.name}) for Windows (arm64).`);
+            windowsArmInstaller = _.find(latestCompleteRelease.assets, (asset)=> { return _.endsWith(asset.browser_download_url, '_windows_arm64.msi');});
+          }
+        }
+        builtStaticContent.fleetctlDownloadUrls = {
+          macOs: macOsInstaller.browser_download_url,
+          windows: windowsInstaller.browser_download_url,
+          windowsArm: windowsArmInstaller.browser_download_url,
+        };
+      }
     ]);
+
     //  ██████╗ ███████╗██████╗ ██╗      █████╗  ██████╗███████╗       ███████╗ █████╗ ██╗██╗     ███████╗██████╗  ██████╗
     //  ██╔══██╗██╔════╝██╔══██╗██║     ██╔══██╗██╔════╝██╔════╝       ██╔════╝██╔══██╗██║██║     ██╔════╝██╔══██╗██╔════╝██╗
     //  ██████╔╝█████╗  ██████╔╝██║     ███████║██║     █████╗         ███████╗███████║██║██║     ███████╗██████╔╝██║     ╚═╝

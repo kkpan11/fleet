@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ import (
 
 func TestBootstrapPackage(t *testing.T) {
 	ctx := context.Background()
-	store := SetupTestBootstrapPackageStore(t, "bootstrap-packages-unit-test", "prefix")
+	store := setupTestBootstrapPackageStore(t, "bootstrap-packages-unit-test", "prefix")
 
 	// get a non-existing package
 	blob, length, err := store.Get(ctx, "no-such-package")
@@ -87,11 +87,11 @@ func TestBootstrapPackage(t *testing.T) {
 
 func TestBootstrapPackageCleanup(t *testing.T) {
 	ctx := context.Background()
-	store := SetupTestBootstrapPackageStore(t, "bootstrap-packages-unit-test", "prefix")
+	store := setupTestBootstrapPackageStore(t, "bootstrap-packages-unit-test", "prefix")
 
 	assertExisting := func(want []string) {
 		prefix := path.Join(store.prefix, bootstrapPackagePrefix)
-		page, err := store.s3client.ListObjectsV2(&s3.ListObjectsV2Input{
+		page, err := store.s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket: &store.bucket,
 			Prefix: &prefix,
 		})

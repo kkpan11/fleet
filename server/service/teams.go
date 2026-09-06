@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/fleetdm/fleet/v4/pkg/optjson"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
@@ -24,7 +25,7 @@ type listTeamsRequest struct {
 }
 
 type listTeamsResponse struct {
-	Teams []fleet.Team `json:"teams"`
+	Teams []fleet.Team `json:"teams" renameto:"fleets"`
 	Err   error        `json:"error,omitempty"`
 }
 
@@ -61,18 +62,46 @@ type getTeamRequest struct {
 }
 
 type getTeamResponse struct {
-	Team *fleet.Team `json:"team"`
+	Team *fleet.Team `json:"team" renameto:"fleet"`
 	Err  error       `json:"error,omitempty"`
 }
 
 func (r getTeamResponse) Error() error { return r.Err }
 
+type defaultTeamResponse struct {
+	Team *fleet.DefaultTeam `json:"team" renameto:"fleet"`
+	Err  error              `json:"error,omitempty"`
+}
+
+func (r defaultTeamResponse) Error() error { return r.Err }
+
 func getTeamEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*getTeamRequest)
+
 	team, err := svc.GetTeam(ctx, req.ID)
 	if err != nil {
 		return getTeamResponse{Err: err}, nil
 	}
+
+	// Special handling for team ID 0 - return DefaultTeam structure
+	if team.ID == 0 {
+		defaultTeam := &fleet.DefaultTeam{
+			ID:   team.ID,
+			Name: team.Name,
+			DefaultTeamConfig: fleet.DefaultTeamConfig{
+				WebhookSettings: fleet.DefaultTeamWebhookSettings{
+					FailingPoliciesWebhook: team.Config.WebhookSettings.FailingPoliciesWebhook,
+					HostActivitiesWebhook:  team.Config.WebhookSettings.HostActivitiesWebhook,
+				},
+				Integrations: fleet.DefaultTeamIntegrations{
+					Jira:    team.Config.Integrations.Jira,
+					Zendesk: team.Config.Integrations.Zendesk,
+				},
+			},
+		}
+		return defaultTeamResponse{Team: defaultTeam}, nil
+	}
+
 	return getTeamResponse{Team: team}, nil
 }
 
@@ -93,7 +122,7 @@ type createTeamRequest struct {
 }
 
 type teamResponse struct {
-	Team *fleet.Team `json:"team,omitempty"`
+	Team *fleet.Team `json:"team,omitempty" renameto:"fleet"`
 	Err  error       `json:"error,omitempty"`
 }
 
@@ -128,10 +157,42 @@ type modifyTeamRequest struct {
 
 func modifyTeamEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*modifyTeamRequest)
+
+	// AppleOSUpdateSettings.UpdateNewHosts is only used in macOS ... so ignore any values sent for iOS/iPadOS
+	if req.TeamPayload.MDM != nil {
+		if req.TeamPayload.MDM.IOSUpdates != nil {
+			req.TeamPayload.MDM.IOSUpdates.UpdateNewHosts = optjson.Bool{}
+		}
+		if req.TeamPayload.MDM.IPadOSUpdates != nil {
+			req.TeamPayload.MDM.IPadOSUpdates.UpdateNewHosts = optjson.Bool{}
+		}
+	}
+
 	team, err := svc.ModifyTeam(ctx, req.ID, req.TeamPayload)
 	if err != nil {
 		return teamResponse{Err: err}, nil
 	}
+
+	// Special handling for team ID 0 - return limited fields
+	if req.ID == 0 {
+		// Convert to DefaultTeam with limited fields
+		defaultTeam := &fleet.DefaultTeam{
+			ID:   team.ID,
+			Name: team.Name,
+			DefaultTeamConfig: fleet.DefaultTeamConfig{
+				WebhookSettings: fleet.DefaultTeamWebhookSettings{
+					FailingPoliciesWebhook: team.Config.WebhookSettings.FailingPoliciesWebhook,
+					HostActivitiesWebhook:  team.Config.WebhookSettings.HostActivitiesWebhook,
+				},
+				Integrations: fleet.DefaultTeamIntegrations{
+					Jira:    team.Config.Integrations.Jira,
+					Zendesk: team.Config.Integrations.Zendesk,
+				},
+			},
+		}
+		return defaultTeamResponse{Team: defaultTeam}, nil
+	}
+
 	return teamResponse{Team: team}, err
 }
 
@@ -186,13 +247,15 @@ type applyTeamSpecsRequest struct {
 }
 
 func (req *applyTeamSpecsRequest) DecodeBody(ctx context.Context, r io.Reader, u url.Values, c []*x509.Certificate) error {
-	if err := fleet.JSONStrictDecode(r, req); err != nil {
-		err = fleet.NewUserMessageError(err, http.StatusBadRequest)
-		if !req.Force || !fleet.IsJSONUnknownFieldError(err) {
-			// only unknown field errors can be forced at this point (other errors
-			// can be forced later, after agent options' validations)
-			return ctxerr.Wrap(ctx, err, "strict decode team specs")
-		}
+	// force accepts specs containing unknown fields, so decode without rejecting them rather than
+	// decoding strictly and ignoring the resulting error. Every other error still has to surface, and
+	// other kinds of error can be forced later, after agent options' validations.
+	decode := fleet.JSONStrictDecode
+	if req.Force {
+		decode = fleet.JSONDecode
+	}
+	if err := decode(r, req); err != nil {
+		return ctxerr.Wrap(ctx, fleet.NewUserMessageError(err, http.StatusBadRequest), "strict decode team specs")
 	}
 
 	// the MacOSSettings field must be validated separately, since it
@@ -219,7 +282,7 @@ func (req *applyTeamSpecsRequest) DecodeBody(ctx context.Context, r io.Reader, u
 
 type applyTeamSpecsResponse struct {
 	Err           error           `json:"error,omitempty"`
-	TeamIDsByName map[string]uint `json:"team_ids_by_name,omitempty"`
+	TeamIDsByName map[string]uint `json:"team_ids_by_name,omitempty" renameto:"fleet_ids_by_name"`
 }
 
 func (r applyTeamSpecsResponse) Error() error { return r.Err }
@@ -409,7 +472,7 @@ func (svc *Service) TeamEnrollSecrets(ctx context.Context, teamID uint) ([]*flee
 ////////////////////////////////////////////////////////////////////////////////
 
 type modifyTeamEnrollSecretsRequest struct {
-	TeamID  uint                 `url:"team_id"`
+	TeamID  uint                 `url:"fleet_id"`
 	Secrets []fleet.EnrollSecret `json:"secrets"`
 }
 

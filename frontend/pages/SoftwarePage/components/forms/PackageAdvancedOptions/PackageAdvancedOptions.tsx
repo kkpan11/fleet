@@ -8,6 +8,7 @@ import {
   isPackageType,
   isWindowsPackageType,
   isFleetMaintainedPackageType,
+  isScriptOnlyPackageType,
   PackageType,
 } from "interfaces/package_type";
 
@@ -18,8 +19,11 @@ import { IPackageFormData } from "../PackageForm/PackageForm";
 import AdvancedOptionsFields from "../AdvancedOptionsFields";
 
 const getSupportedScriptTypeText = (pkgType: PackageType) => {
+  // .ps1 is a script-only package type, not a "windows package type", but it's
+  // still PowerShell.
+  const isPowerShell = isWindowsPackageType(pkgType) || pkgType === "ps1";
   return `Currently, ${
-    isWindowsPackageType(pkgType) ? "PowerS" : "s"
+    isPowerShell ? "PowerS" : "s"
   }hell scripts are supported.`;
 };
 
@@ -28,23 +32,48 @@ const PKG_TYPE_TO_ID_TEXT = {
   deb: "package name",
   rpm: "package name",
   msi: "product code",
+  msix: "product code or package family name",
   exe: "software name",
+  zip: "software name",
+  sh: "package name",
+  ps1: "package name",
+  ipa: "software name",
 } as const;
 
 const getInstallScriptTooltip = (pkgType: PackageType) => {
-  if (
-    !isFleetMaintainedPackageType(pkgType) &&
-    (pkgType === "exe" || pkgType === "tar.gz")
-  ) {
-    return `Required for ${
-      pkgType === "exe" ? ".exe packages" : ".tar.gz archives"
-    }.`;
+  if (pkgType === "exe" || pkgType === "tar.gz") {
+    if (pkgType === "exe") {
+      return "Required for .exe packages.";
+    }
+    return "Required for .tar.gz archives.";
+  }
+  if (pkgType === "zip" && isWindowsPackageType(pkgType)) {
+    return "Required for .zip packages.";
   }
   return undefined;
 };
 
 const getInstallHelpText = (pkgType: PackageType) => {
+  if (isScriptOnlyPackageType(pkgType)) {
+    return "The uploaded script's contents are used as the install script. To change it, upload a new file.";
+  }
+
   if (pkgType === "exe") {
+    return (
+      <>
+        For Windows, Fleet only creates install scripts for .msi packages. Use
+        the $INSTALLER_PATH variable to point to the installer.{" "}
+        {getSupportedScriptTypeText(pkgType)}{" "}
+        <CustomLink
+          url={`${LEARN_MORE_ABOUT_BASE_LINK}/exe-install-scripts`}
+          text="Learn more"
+          newTab
+        />
+      </>
+    );
+  }
+
+  if (pkgType === "zip") {
     return (
       <>
         For Windows, Fleet only creates install scripts for .msi packages. Use
@@ -77,20 +106,43 @@ const getPostInstallHelpText = (pkgType: PackageType) => {
 };
 
 const getUninstallScriptTooltip = (pkgType: PackageType) => {
-  if (
-    !isFleetMaintainedPackageType(pkgType) &&
-    (pkgType === "exe" || pkgType === "tar.gz")
-  ) {
-    return `Required for ${
-      pkgType === "exe" ? ".exe packages" : ".tar.gz archives"
-    }.`;
+  if (pkgType === "exe" || pkgType === "tar.gz") {
+    if (pkgType === "exe") {
+      return "Required for .exe packages.";
+    }
+    return "Required for .tar.gz archives.";
+  }
+  if (pkgType === "zip" && isWindowsPackageType(pkgType)) {
+    return "Required for .zip packages.";
   }
   return undefined;
 };
 
 const getUninstallHelpText = (pkgType: PackageType) => {
+  // Script-only packages have no installer metadata, so there's no $PACKAGE_ID
+  // to populate; the uninstall script runs as-is.
+  if (isScriptOnlyPackageType(pkgType)) {
+    return getSupportedScriptTypeText(pkgType);
+  }
+
+  // Check for Windows zip files first (before isFleetMaintainedPackageType check)
+  if (pkgType === "zip" && isWindowsPackageType(pkgType)) {
+    return (
+      <>
+        For Windows, Fleet only creates uninstall scripts for .msi packages.
+        $PACKAGE_ID will be populated with the software name from the .zip file
+        after it&apos;s added. {getSupportedScriptTypeText(pkgType)}{" "}
+        <CustomLink
+          url={`${LEARN_MORE_ABOUT_BASE_LINK}/exe-install-scripts`}
+          text="Learn more"
+          newTab
+        />
+      </>
+    );
+  }
+
   if (isFleetMaintainedPackageType(pkgType)) {
-    return "Currently, shell scripts are supported.";
+    return "Currently, only shell scripts are supported.";
   }
 
   if (pkgType === "exe") {
@@ -98,8 +150,7 @@ const getUninstallHelpText = (pkgType: PackageType) => {
       <>
         For Windows, Fleet only creates uninstall scripts for .msi packages.
         $PACKAGE_ID will be populated with the software name from the .exe file
-        after it&apos;s added.
-        {getSupportedScriptTypeText(pkgType)}{" "}
+        after it&apos;s added. {getSupportedScriptTypeText(pkgType)}{" "}
         <CustomLink
           url={`${LEARN_MORE_ABOUT_BASE_LINK}/exe-install-scripts`}
           text="Learn more"
@@ -112,7 +163,22 @@ const getUninstallHelpText = (pkgType: PackageType) => {
   if (pkgType === "tar.gz") {
     return (
       <>
-        Currently, shell scripts are supported.{" "}
+        Currently, only shell scripts are supported.{" "}
+        <CustomLink
+          url={`${LEARN_MORE_ABOUT_BASE_LINK}/uninstall-scripts`}
+          text="Learn more about uninstall scripts"
+          newTab
+        />
+      </>
+    );
+  }
+
+  if (pkgType === "msi") {
+    return (
+      <>
+        $UPGRADE_CODE will be populated with the .msi&apos;s upgrade code if
+        available, and $PACKAGE_ID will be populated with its product code,
+        after the software is added. {getSupportedScriptTypeText(pkgType)}{" "}
         <CustomLink
           url={`${LEARN_MORE_ABOUT_BASE_LINK}/uninstall-scripts`}
           text="Learn more about uninstall scripts"
@@ -151,6 +217,10 @@ interface IPackageAdvancedOptionsProps {
   onChangeInstallScript: (value: string) => void;
   onChangePostInstallScript: (value?: string) => void;
   onChangeUninstallScript: (value?: string) => void;
+  /** Currently for editing FMA only, users cannot edit */
+  gitopsCompatible?: boolean;
+  gitOpsModeEnabled?: boolean;
+  patchWhenClosed?: boolean;
 }
 
 const PackageAdvancedOptions = ({
@@ -166,6 +236,9 @@ const PackageAdvancedOptions = ({
   onChangeInstallScript,
   onChangePostInstallScript,
   onChangeUninstallScript,
+  gitopsCompatible = false,
+  gitOpsModeEnabled = false,
+  patchWhenClosed = false,
 }: IPackageAdvancedOptionsProps) => {
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const name = selectedPackage?.name || "";
@@ -183,6 +256,7 @@ const PackageAdvancedOptions = ({
         showSchemaButton={showSchemaButton}
         installScriptTooltip={getInstallScriptTooltip(ext)}
         installScriptHelpText={getInstallHelpText(ext)}
+        installScriptReadOnly={isScriptOnlyPackageType(ext)}
         postInstallScriptHelpText={getPostInstallHelpText(ext)}
         uninstallScriptTooltip={getUninstallScriptTooltip(ext)}
         uninstallScriptHelpText={getUninstallHelpText(ext)}
@@ -196,9 +270,15 @@ const PackageAdvancedOptions = ({
         onChangeInstallScript={onChangeInstallScript}
         onChangePostInstallScript={onChangePostInstallScript}
         onChangeUninstallScript={onChangeUninstallScript}
+        gitopsCompatible={gitopsCompatible}
+        gitOpsModeEnabled={gitOpsModeEnabled}
+        patchWhenClosed={patchWhenClosed}
       />
     );
   };
+
+  const requiresAdvancedOptions =
+    ext === "exe" || ext === "zip" || ext === "tar.gz";
 
   return (
     <div className={baseClass}>
@@ -209,15 +289,19 @@ const PackageAdvancedOptions = ({
         hideText="Advanced options"
         caretPosition="after"
         onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
-        disabled={!selectedPackage}
+        disabled={!selectedPackage || requiresAdvancedOptions}
         disabledTooltipContent={
-          <>
-            Choose a file to modify <br />
-            advanced options.
-          </>
+          requiresAdvancedOptions ? (
+            <>Install and uninstall scripts are required for .{ext} packages.</>
+          ) : (
+            <>Choose a file to modify advanced options.</>
+          )
         }
       />
-      {(showAdvancedOptions || ext === "exe" || ext === "tar.gz") &&
+      {(showAdvancedOptions ||
+        ext === "exe" ||
+        ext === "zip" ||
+        ext === "tar.gz") &&
         !!selectedPackage &&
         renderAdvancedOptions()}
     </div>

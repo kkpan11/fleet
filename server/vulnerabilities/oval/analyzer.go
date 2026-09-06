@@ -46,6 +46,11 @@ func Analyze(
 		return nil, err
 	}
 
+	rules, err := GetKnownOVALBugRules()
+	if err != nil {
+		return nil, err
+	}
+
 	// Since hosts and software have a M:N relationship, the following sets are used to
 	// avoid doing duplicated inserts/delete operations (a vulnerable software might be
 	// present in many hosts).
@@ -65,6 +70,7 @@ func Analyze(
 		offset += hostsBatchSize
 
 		foundInBatch := make(map[uint][]fleet.SoftwareVulnerability)
+
 		for _, hostID := range hostIDs {
 			hostID := hostID
 			software, err := ds.ListSoftwareForVulnDetection(ctx, fleet.VulnSoftwareFilter{HostID: &hostID})
@@ -83,6 +89,24 @@ func Analyze(
 				return nil, err
 			}
 			foundInBatch[hostID] = append(foundInBatch[hostID], evalU...)
+
+			// Create a map of id: software for each
+			// pair (id, cve) in foundInBatch for this host
+			softwareIDs := make(map[uint]fleet.Software)
+			for _, s := range software {
+				softwareIDs[s.ID] = s
+			}
+
+			filteredBatch := make([]fleet.SoftwareVulnerability, 0, len(foundInBatch[hostID]))
+			for _, v := range foundInBatch[hostID] {
+				software := softwareIDs[v.SoftwareID]
+				skip := rules.MatchesAny(software, v.CVE)
+				if !skip {
+					filteredBatch = append(filteredBatch, v)
+				}
+			}
+
+			foundInBatch[hostID] = filteredBatch
 		}
 
 		existingInBatch, err := ds.ListSoftwareVulnerabilitiesByHostIDsSource(ctx, hostIDs, source)
@@ -108,32 +132,27 @@ func Analyze(
 		return nil, err
 	}
 
-	var inserted []fleet.SoftwareVulnerability
-	if collectVulns {
-		inserted = make([]fleet.SoftwareVulnerability, 0, len(toInsertSet))
+	allVulns := make([]fleet.SoftwareVulnerability, 0, len(toInsertSet))
+	for _, v := range toInsertSet {
+		allVulns = append(allVulns, v)
 	}
 
-	err = utils.BatchProcess(toInsertSet, func(vulns []fleet.SoftwareVulnerability) error {
-		for _, v := range vulns {
-			ok, err := ds.InsertSoftwareVulnerability(ctx, v, source)
-			if err != nil {
-				return err
-			}
-
-			if collectVulns && ok {
-				inserted = append(inserted, v)
-			}
-		}
-		return nil
-	}, vulnBatchSize)
+	newVulns, err := ds.InsertSoftwareVulnerabilities(ctx, allVulns, source)
 	if err != nil {
 		return nil, err
 	}
+	if !collectVulns {
+		return nil, nil
+	}
 
-	return inserted, nil
+	return newVulns, nil
 }
 
 // loadDef returns the latest oval Definition for the given platform.
+// Returns an error if the loaded definition file contains no rules, since an empty
+// definition would cause every existing vulnerability for the platform to be deleted
+// (it would look like every host was suddenly patched). An empty file usually means
+// the artifact download from GitHub was corrupted or partially failed.
 func loadDef(platform Platform, vulnPath string) (oval_parsed.Result, error) {
 	if !platform.IsSupported() {
 		return nil, fmt.Errorf("platform %q not supported", platform)
@@ -154,6 +173,9 @@ func loadDef(platform Platform, vulnPath string) (oval_parsed.Result, error) {
 		if err := json.Unmarshal(payload, &result); err != nil {
 			return nil, err
 		}
+		if len(result.Definitions) == 0 {
+			return nil, fmt.Errorf("OVAL definition file %q contains no rules (possible corrupted feed)", latest)
+		}
 		return result, nil
 	}
 
@@ -161,6 +183,9 @@ func loadDef(platform Platform, vulnPath string) (oval_parsed.Result, error) {
 		result := oval_parsed.RhelResult{}
 		if err := json.Unmarshal(payload, &result); err != nil {
 			return nil, err
+		}
+		if len(result.Definitions) == 0 {
+			return nil, fmt.Errorf("OVAL definition file %q contains no rules (possible corrupted feed)", latest)
 		}
 		return result, nil
 	}

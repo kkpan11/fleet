@@ -1,12 +1,12 @@
 import React, { useState } from "react";
 import { useDebouncedCallback } from "use-debounce";
-import { IAceEditor } from "react-ace/lib/types";
+import { Ace } from "ace-builds";
 
-// @ts-ignore
-import validateQuery from "components/forms/validators/validate_query";
+import { validateQuery } from "components/forms/validators/validate_query";
 import SQLEditor from "components/SQLEditor";
 import Button from "components/buttons/Button";
-import Icon from "components/Icon";
+
+import { LabelPlatform } from "interfaces/label";
 
 import LabelForm from "../LabelForm";
 import { ILabelFormData } from "../LabelForm/LabelForm";
@@ -14,25 +14,23 @@ import PlatformField from "../PlatformField";
 
 const baseClass = "dynamic-label-form";
 
-const IMMUTABLE_QUERY_HELP_TEXT =
-  "Label queries are immutable. To change the query, delete this label and create a new one.";
-
 export interface IDynamicLabelFormData {
   name: string;
   description: string;
   query: string;
-  platform: string;
+  platform: LabelPlatform;
 }
 
 interface IDynamicLabelFormProps {
   defaultName?: string;
   defaultDescription?: string;
   defaultQuery?: string;
-  defaultPlatform?: string;
+  defaultPlatform?: LabelPlatform;
   showOpenSidebarButton?: boolean;
   isEditing?: boolean;
   onOpenSidebar?: () => void;
   onOsqueryTableSelect?: (tableName: string) => void;
+  teamName: string | null;
   onSave: (formData: IDynamicLabelFormData) => void;
   onCancel: () => void;
 }
@@ -46,6 +44,7 @@ const DynamicLabelForm = ({
   showOpenSidebarButton = false,
   onOpenSidebar,
   onOsqueryTableSelect,
+  teamName,
   onSave,
   onCancel,
 }: IDynamicLabelFormProps) => {
@@ -86,16 +85,19 @@ const DynamicLabelForm = ({
     }
 
     return (
-      <Button variant="text-icon" onClick={onOpenSidebar}>
+      <Button
+        variant="subdued"
+        onClick={onOpenSidebar}
+        icon="info"
+        iconPosition="right"
+      >
         Schema
-        <Icon name="info" size="small" />
       </Button>
     );
   };
 
-  const onLoad = (editor: IAceEditor) => {
+  const onLoad = (editor: Ace.Editor) => {
     editor.setOptions({
-      enableLinking: true,
       enableMultiselect: false, // Disables command + click creating multiple cursors
     });
 
@@ -112,7 +114,7 @@ const DynamicLabelForm = ({
     });
   };
 
-  const onChangePlatform = (value: string) => {
+  const onChangePlatform = (value: LabelPlatform) => {
     setPlatform(value);
   };
 
@@ -121,8 +123,14 @@ const DynamicLabelForm = ({
       <LabelForm
         defaultName={defaultName}
         defaultDescription={defaultDescription}
+        teamName={teamName}
         onSave={onSaveForm}
         onCancel={onCancel}
+        immutableFields={
+          teamName
+            ? ["fleets", "queries", "platforms"]
+            : ["queries", "platforms"]
+        }
         additionalFields={
           <>
             <SQLEditor
@@ -135,8 +143,8 @@ const DynamicLabelForm = ({
               readOnly={isEditing}
               onLoad={onLoad}
               wrapperClassName={`${baseClass}__text-editor-wrapper form-field`}
-              helpText={isEditing ? IMMUTABLE_QUERY_HELP_TEXT : ""}
               wrapEnabled
+              enableCopy={isEditing}
             />
             <PlatformField
               platform={platform}

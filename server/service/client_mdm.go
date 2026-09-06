@@ -32,7 +32,7 @@ func (c *Client) GetAppleMDM() (*fleet.AppleMDM, error) {
 	return responseBody.AppleMDM, err
 }
 
-// GetAppleBM retrieves the Apple Business Manager information.
+// GetAppleBM retrieves the Apple Business information.
 func (c *Client) GetAppleBM() (*fleet.AppleBM, error) {
 	verb, path := "GET", "/api/latest/fleet/mdm/apple_bm"
 	var responseBody getAppleBMResponse
@@ -40,8 +40,16 @@ func (c *Client) GetAppleBM() (*fleet.AppleBM, error) {
 	return responseBody.AppleBM, err
 }
 
+// GetVPPTokens retrieves the List Volume Purchasing Program (VPP) tokens
+func (c *Client) GetVPPTokens() ([]*fleet.VPPTokenDB, error) {
+	verb, path := "GET", "/api/latest/fleet/vpp_tokens"
+	var responseBody getVPPTokensResponse
+	err := c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, "")
+	return responseBody.Tokens, err
+}
+
 func (c *Client) CountABMTokens() (int, error) {
-	verb, path := "GET", "/api/latest/fleet/abm_tokens/count"
+	verb, path := "GET", "/api/latest/fleet/ab_tokens/count"
 	var responseBody countABMTokensResponse
 	err := c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, "")
 	return responseBody.Count, err
@@ -59,7 +67,7 @@ func (c *Client) RequestAppleCSR() ([]byte, error) {
 // RequestAppleABM requests a signed CSR from the Fleet server and returns the
 // public key bytes
 func (c *Client) RequestAppleABM() ([]byte, error) {
-	verb, path := "GET", "/api/latest/fleet/mdm/apple/abm_public_key"
+	verb, path := "GET", "/api/latest/fleet/mdm/apple/ab_public_key"
 	var resp generateABMKeyPairResponse
 	err := c.authenticatedRequest(nil, verb, path, &resp)
 	return resp.PublicKey, err
@@ -67,13 +75,12 @@ func (c *Client) RequestAppleABM() ([]byte, error) {
 
 func (c *Client) GetBootstrapPackageMetadata(teamID uint, forUpdate bool) (*fleet.MDMAppleBootstrapPackage, error) {
 	verb, path := "GET", fmt.Sprintf("/api/latest/fleet/mdm/bootstrap/%d/metadata", teamID)
-	request := bootstrapPackageMetadataRequest{}
 	var responseBody bootstrapPackageMetadataResponse
 	var err error
 	if forUpdate {
-		err = c.authenticatedRequestWithQuery(request, verb, path, &responseBody, "for_update=true")
+		err = c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, "for_update=true")
 	} else {
-		err = c.authenticatedRequest(request, verb, path, &responseBody)
+		err = c.authenticatedRequest(nil, verb, path, &responseBody)
 	}
 	return responseBody.MDMAppleBootstrapPackage, err
 }
@@ -81,7 +88,7 @@ func (c *Client) GetBootstrapPackageMetadata(teamID uint, forUpdate bool) (*flee
 func (c *Client) DeleteBootstrapPackageIfNeeded(teamID uint, dryRun bool) error {
 	_, err := c.GetBootstrapPackageMetadata(teamID, true)
 	switch {
-	case errors.As(err, &notFoundErr{}):
+	case isNotFoundErr(err):
 		// not found is OK, it means there is nothing to delete
 		return nil
 	case err != nil:
@@ -97,14 +104,13 @@ func (c *Client) DeleteBootstrapPackageIfNeeded(teamID uint, dryRun bool) error 
 
 func (c *Client) DeleteBootstrapPackage(teamID uint, dryRun bool) error {
 	verb, path := "DELETE", fmt.Sprintf("/api/latest/fleet/mdm/bootstrap/%d", teamID)
-	request := deleteBootstrapPackageRequest{}
 	var responseBody deleteBootstrapPackageResponse
-	err := c.authenticatedRequestWithQuery(request, verb, path, &responseBody, fmt.Sprintf("dry_run=%t", dryRun))
+	err := c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, fmt.Sprintf("dry_run=%t", dryRun))
 	return err
 }
 
 func (c *Client) UploadBootstrapPackage(pkg *fleet.MDMAppleBootstrapPackage, dryRun bool) error {
-	verb, path := "POST", "/api/latest/fleet/mdm/bootstrap"
+	verb, path := "POST", "/api/latest/fleet/bootstrap"
 
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
@@ -118,8 +124,8 @@ func (c *Client) UploadBootstrapPackage(pkg *fleet.MDMAppleBootstrapPackage, dry
 		return err
 	}
 
-	// add the team_id field
-	if err := w.WriteField("team_id", fmt.Sprint(pkg.TeamID)); err != nil {
+	// add the fleet_id field
+	if err := w.WriteField("fleet_id", fmt.Sprint(pkg.TeamID)); err != nil {
 		return err
 	}
 
@@ -139,7 +145,7 @@ func (c *Client) UploadBootstrapPackage(pkg *fleet.MDMAppleBootstrapPackage, dry
 	defer response.Body.Close()
 
 	var bpResponse uploadBootstrapPackageResponse
-	if err := c.parseResponse(verb, path, response, &bpResponse); err != nil {
+	if err := c.ParseResponse(verb, path, response, &bpResponse); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
@@ -151,7 +157,7 @@ func (c *Client) UploadBootstrapPackageIfNeeded(bp *fleet.MDMAppleBootstrapPacka
 	oldMeta, err := c.GetBootstrapPackageMetadata(teamID, true)
 	if err != nil {
 		// not found is OK, it means this is our first time uploading a package
-		if !errors.As(err, &notFoundErr{}) {
+		if !isNotFoundErr(err) {
 			return fmt.Errorf("getting bootstrap package metadata: %w", err)
 		}
 		isFirstTime = true
@@ -194,7 +200,7 @@ func downloadRemoteMacosBootstrapPackage(pkgURL string) (*fleet.MDMAppleBootstra
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("the URL to the bootstrap_package doesn't exist. Please make this URL publicly accessible to the internet.")
+		return nil, errors.New("the URL to the macos_bootstrap_package doesn't exist. Please make this URL publicly accessible to the internet.")
 	}
 
 	// try to extract the name from a header
@@ -228,9 +234,9 @@ func downloadRemoteMacosBootstrapPackage(pkgURL string) (*fleet.MDMAppleBootstra
 	if err := file.CheckPKGSignature(pkgReader); err != nil {
 		switch {
 		case errors.Is(err, file.ErrInvalidType):
-			return nil, errors.New("Couldn’t edit bootstrap_package. The file must be a package (.pkg).")
+			return nil, errors.New("Couldn’t edit macos_bootstrap_package. The file must be a package (.pkg).")
 		case errors.Is(err, file.ErrNotSigned):
-			return nil, errors.New("Couldn’t edit bootstrap_package. The bootstrap_package must be signed. Learn how to sign the package in the Fleet documentation: https://fleetdm.com/docs/using-fleet/mdm-macos-setup-experience#step-2-sign-the-package")
+			return nil, errors.New("Couldn’t edit macos_bootstrap_package. The macos_bootstrap_package must be signed. Learn how to sign the package in the Fleet documentation: https://fleetdm.com/learn-more-about/setup-experience/bootstrap-package")
 		default:
 			return nil, fmt.Errorf("checking package signature: %w", err)
 		}
@@ -249,7 +255,7 @@ func (c *Client) validateMacOSSetupAssistant(fileName string) ([]byte, error) {
 	}
 
 	if strings.ToLower(filepath.Ext(fileName)) != ".json" {
-		return nil, errors.New("Couldn’t edit macos_setup_assistant. The file should be a .json file.")
+		return nil, errors.New("Couldn’t edit apple_setup_assistant. The file should be a .json file.")
 	}
 
 	b, err := os.ReadFile(fileName)
@@ -258,7 +264,7 @@ func (c *Client) validateMacOSSetupAssistant(fileName string) ([]byte, error) {
 	}
 	var raw json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, fmt.Errorf("Couldn’t edit macos_setup_assistant. The file should include valid JSON: %w", err)
+		return nil, fmt.Errorf("Couldn’t edit apple_setup_assistant. The file should include valid JSON: %w", err)
 	}
 
 	return b, nil
@@ -285,7 +291,7 @@ func (c *Client) deleteMacOSSetupAssistant(teamID *uint) error {
 func (c *Client) MDMListCommands(opts fleet.MDMCommandListOptions) ([]*fleet.MDMCommand, error) {
 	const defaultCommandsPerPage = 20
 
-	verb, path := http.MethodGet, "/api/latest/fleet/mdm/commands"
+	verb, path := http.MethodGet, "/api/latest/fleet/commands"
 
 	query := url.Values{}
 	query.Set("per_page", fmt.Sprint(defaultCommandsPerPage))
@@ -293,6 +299,15 @@ func (c *Client) MDMListCommands(opts fleet.MDMCommandListOptions) ([]*fleet.MDM
 	query.Set("order_direction", "desc")
 	query.Set("host_identifier", opts.Filters.HostIdentifier)
 	query.Set("request_type", opts.Filters.RequestType)
+
+	var statuses []string
+	if len(opts.Filters.CommandStatuses) > 0 {
+		statuses = make([]string, 0, len(opts.Filters.CommandStatuses))
+		for _, s := range opts.Filters.CommandStatuses {
+			statuses = append(statuses, string(s))
+		}
+	}
+	query.Set("command_status", strings.Join(statuses, ","))
 
 	var responseBody listMDMCommandsResponse
 	err := c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, query.Encode())
@@ -303,11 +318,12 @@ func (c *Client) MDMListCommands(opts fleet.MDMCommandListOptions) ([]*fleet.MDM
 	return responseBody.Results, nil
 }
 
-func (c *Client) MDMGetCommandResults(commandUUID string) ([]*fleet.MDMCommandResult, error) {
-	verb, path := http.MethodGet, "/api/latest/fleet/mdm/commandresults"
+func (c *Client) MDMGetCommandResults(commandUUID, hostIdentifier string) ([]*fleet.MDMCommandResult, error) {
+	verb, path := http.MethodGet, "/api/latest/fleet/commands/results"
 
 	query := url.Values{}
 	query.Set("command_uuid", commandUUID)
+	query.Set("host_identifier", hostIdentifier)
 
 	var responseBody getMDMCommandResultsResponse
 	err := c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, query.Encode())
@@ -325,8 +341,11 @@ func (c *Client) RunMDMCommand(hostUUIDs []string, rawCmd []byte, forPlatform st
 		prepareFn = c.prepareAppleMDMCommand
 	case "windows":
 		prepareFn = c.prepareWindowsMDMCommand
+	case "android":
+		// Android commands are JSON; base64-encode as-is (no XML preparation needed).
+		prepareFn = func(b []byte) ([]byte, error) { return b, nil }
 	default:
-		return nil, fmt.Errorf("Invalid platform %q. You can only run MDM commands on Windows or Apple hosts.", forPlatform)
+		return nil, fmt.Errorf("Invalid platform %q. You can only run MDM commands on Windows, Apple, or Android hosts.", forPlatform)
 	}
 
 	rawCmd, err := prepareFn(rawCmd)
@@ -388,7 +407,7 @@ func (c *Client) prepareAppleMDMCommand(rawCmd []byte) ([]byte, error) {
 }
 
 func (c *Client) MDMLockHost(hostID uint) error {
-	var response lockHostResponse
+	var response fleet.LockHostResponse
 	if err := c.authenticatedRequest(nil, "POST", fmt.Sprintf("/api/latest/fleet/hosts/%d/lock", hostID), &response); err != nil {
 		return fmt.Errorf("lock host request: %w", err)
 	}
@@ -396,7 +415,7 @@ func (c *Client) MDMLockHost(hostID uint) error {
 }
 
 func (c *Client) MDMUnlockHost(hostID uint) (string, error) {
-	var response unlockHostResponse
+	var response fleet.UnlockHostResponse
 	if err := c.authenticatedRequest(nil, "POST", fmt.Sprintf("/api/latest/fleet/hosts/%d/unlock", hostID), &response); err != nil {
 		return "", fmt.Errorf("lock host request: %w", err)
 	}
@@ -404,9 +423,155 @@ func (c *Client) MDMUnlockHost(hostID uint) (string, error) {
 }
 
 func (c *Client) MDMWipeHost(hostID uint) error {
-	var response wipeHostResponse
+	var response fleet.WipeHostResponse
 	if err := c.authenticatedRequest(nil, "POST", fmt.Sprintf("/api/latest/fleet/hosts/%d/wipe", hostID), &response); err != nil {
 		return fmt.Errorf("wipe host request: %w", err)
 	}
+	return nil
+}
+
+// MDMClearPasscodeHost issues a clear-passcode MDM command for the given host. Supported on
+// Apple mobile (iOS/iPadOS) and Android hosts; the server returns 4xx for other platforms.
+func (c *Client) MDMClearPasscodeHost(hostID uint) (*fleet.CommandEnqueueResult, error) {
+	var response fleet.ClearPasscodeResponse
+	if err := c.authenticatedRequest(nil, "POST", fmt.Sprintf("/api/latest/fleet/hosts/%d/clear_passcode", hostID), &response); err != nil {
+		return nil, fmt.Errorf("clear passcode request: %w", err)
+	}
+	return response.CommandEnqueueResult, nil
+}
+
+type eulaContent struct {
+	Bytes []byte
+}
+
+// eulaContent implements the bodyHandler interface so that we can read the
+// response body directly into a byte slice which represents the EULA file content.
+// This handler will be called in the Client.parseResponse method.
+func (ec *eulaContent) Handle(res *http.Response) error {
+	b, err := io.ReadAll(res.Body)
+	ec.Bytes = b
+	return err
+}
+
+func (c *Client) GetEULAContent(token string) ([]byte, error) {
+	verb, path := "GET", fmt.Sprintf("/api/latest/fleet/setup_experience/eula/%s", token)
+	var responseBody eulaContent
+	err := c.authenticatedRequest(nil, verb, path, &responseBody)
+	return responseBody.Bytes, err
+}
+
+func (c *Client) GetEULAMetadata() (*fleet.MDMEULA, error) {
+	verb, path := "GET", "/api/latest/fleet/setup_experience/eula/metadata"
+	var responseBody getMDMEULAMetadataResponse
+	err := c.authenticatedRequest(nil, verb, path, &responseBody)
+	return responseBody.MDMEULA, err
+}
+
+func (c *Client) DeleteEULAIfNeeded(dryRun bool) error {
+	eula, err := c.GetEULAMetadata()
+	switch {
+	case isNotFoundErr(err):
+		// not found is OK, it means there is nothing to delete
+		return nil
+	case err != nil:
+		return fmt.Errorf("getting eula metadata: %w", err)
+	}
+
+	err = c.DeleteEULA(eula.Token, dryRun)
+	if err != nil {
+		return fmt.Errorf("deleting eula: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) DeleteEULA(token string, dryRun bool) error {
+	verb, path := "DELETE", fmt.Sprintf("/api/latest/fleet/setup_experience/eula/%s", token)
+	var responseBody deleteMDMEULAResponse
+	err := c.authenticatedRequestWithQuery(nil, verb, path, &responseBody, fmt.Sprintf("dry_run=%t", dryRun))
+	return err
+}
+
+func (c *Client) UploadEULAIfNeeded(eulaPath string, dryRun bool) error {
+	isFirstTime := false
+	oldMeta, err := c.GetEULAMetadata()
+	if err != nil {
+		// not found is OK, it means this is our first time uploading a eula
+		if !isNotFoundErr(err) {
+			return fmt.Errorf("getting eula metadata: %w", err)
+		}
+		isFirstTime = true
+	}
+
+	// read file to get the new file bytes
+	eulaBytes, err := os.ReadFile(eulaPath)
+	if err != nil {
+		return fmt.Errorf("reading eula file: %w", err)
+	}
+
+	if !isFirstTime {
+		newChecksum := sha256.Sum256(eulaBytes)
+
+		// compare checksums, if they're equal then we can skip the eula upload
+		if bytes.Equal(oldMeta.Sha256, newChecksum[:]) && oldMeta.Name == filepath.Base(eulaPath) {
+			return nil
+		}
+
+		// similar to the expected UI experience, delete the old eula first
+		err = c.DeleteEULA(oldMeta.Token, dryRun)
+		if err != nil {
+			return fmt.Errorf("deleting old eula: %w", err)
+		}
+	}
+
+	if err := c.UploadEULA(eulaPath, dryRun); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Client) UploadEULA(eulaPath string, dryRun bool) error {
+	verb, path := "POST", "/api/latest/fleet/setup_experience/eula"
+
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+
+	// add the eula field
+	fw, err := w.CreateFormFile("eula", filepath.Base(eulaPath))
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Open(eulaPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(fw, file); err != nil {
+		return err
+	}
+	err = w.Close()
+	if err != nil {
+		return fmt.Errorf("closing writer: %w", err)
+	}
+
+	resp, err := c.doContextWithBodyAndHeaders(context.Background(), verb, path, fmt.Sprintf("dry_run=%t", dryRun),
+		b.Bytes(),
+		map[string]string{
+			"Content-Type":  w.FormDataContentType(),
+			"Accept":        "application/json",
+			"Authorization": fmt.Sprintf("Bearer %s", c.token),
+		})
+	if err != nil {
+		return fmt.Errorf("do multipart request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var eulaResponse createMDMEULAResponse
+	if err := c.ParseResponse(verb, path, resp, &eulaResponse); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+
 	return nil
 }

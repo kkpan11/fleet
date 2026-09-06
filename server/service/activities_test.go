@@ -2,72 +2,16 @@ package service
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/fleetdm/fleet/v4/server/authz"
+	activity_api "github.com/fleetdm/fleet/v4/server/activity/api"
+	"github.com/fleetdm/fleet/v4/server/contexts/license"
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mock"
 	"github.com/fleetdm/fleet/v4/server/ptr"
-	"github.com/fleetdm/fleet/v4/server/test"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type ActivityTypeTest struct {
-	Name string `json:"name"`
-}
-
-func (a ActivityTypeTest) ActivityName() string {
-	return "test_activity"
-}
-
-func (a ActivityTypeTest) Documentation() (activity string, details string, detailsExample string) {
-	return "test_activity", "test_activity", "test_activity"
-}
-
-func TestListActivities(t *testing.T) {
-	ds := new(mock.Store)
-	svc, ctx := newTestService(t, ds, nil, nil)
-
-	globalUsers := []*fleet.User{test.UserAdmin, test.UserMaintainer, test.UserObserver, test.UserObserverPlus}
-	teamUsers := []*fleet.User{test.UserTeamAdminTeam1, test.UserTeamMaintainerTeam1, test.UserTeamObserverTeam1}
-
-	ds.ListActivitiesFunc = func(ctx context.Context, opts fleet.ListActivitiesOptions) ([]*fleet.Activity, *fleet.PaginationMetadata, error) {
-		return []*fleet.Activity{
-			{ID: 1},
-			{ID: 2},
-		}, nil, nil
-	}
-
-	// any global user can read activities
-	for _, u := range globalUsers {
-		activities, _, err := svc.ListActivities(test.UserContext(ctx, u), fleet.ListActivitiesOptions{})
-		require.NoError(t, err)
-		require.Len(t, activities, 2)
-	}
-
-	// team users cannot read activities
-	for _, u := range teamUsers {
-		_, _, err := svc.ListActivities(test.UserContext(ctx, u), fleet.ListActivitiesOptions{})
-		require.Error(t, err)
-		require.Contains(t, err.Error(), authz.ForbiddenErrorMessage)
-	}
-
-	// user with no roles cannot read activities
-	_, _, err := svc.ListActivities(test.UserContext(ctx, test.UserNoRoles), fleet.ListActivitiesOptions{})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), authz.ForbiddenErrorMessage)
-
-	// no user in context
-	_, _, err = svc.ListActivities(ctx, fleet.ListActivitiesOptions{})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), authz.ForbiddenErrorMessage)
-}
 
 func Test_logRoleChangeActivities(t *testing.T) {
 	tests := []struct {
@@ -123,11 +67,10 @@ func Test_logRoleChangeActivities(t *testing.T) {
 		},
 	}
 	ds := new(mock.Store)
-	svc, ctx := newTestService(t, ds, nil, nil)
+	opts := &TestServerOpts{}
+	svc, ctx := newTestService(t, ds, nil, nil, opts)
 	var activities []string
-	ds.NewActivityFunc = func(
-		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
-	) error {
+	opts.ActivityMock.NewActivityFunc = func(_ context.Context, _ *activity_api.User, activity activity_api.ActivityDetails) error {
 		activities = append(activities, activity.ActivityName())
 		return nil
 	}
@@ -161,211 +104,6 @@ func Test_logRoleChangeActivities(t *testing.T) {
 	}
 }
 
-func TestActivityWebhooks(t *testing.T) {
-	ds := new(mock.Store)
-	svc, ctx := newTestService(t, ds, nil, nil)
-	var webhookBody = ActivityWebhookPayload{}
-	webhookChannel := make(chan struct{}, 1)
-	fail429 := false
-	startMockServer := func(t *testing.T) string {
-		// create a test http server
-		srv := httptest.NewServer(
-			http.HandlerFunc(
-				func(w http.ResponseWriter, r *http.Request) {
-					webhookBody = ActivityWebhookPayload{}
-					if r.Method != "POST" {
-						w.WriteHeader(http.StatusMethodNotAllowed)
-						return // don't send the channel signal
-					}
-					switch r.URL.Path {
-					case "/ok":
-						err := json.NewDecoder(r.Body).Decode(&webhookBody)
-						if err != nil {
-							t.Log(err)
-							w.WriteHeader(http.StatusBadRequest)
-						}
-					case "/error":
-						webhookBody.Type = "error" // to check for testing
-						w.WriteHeader(http.StatusTeapot)
-					case "/429":
-						// Only the first request will fail
-						fail429 = !fail429
-						if fail429 {
-							w.WriteHeader(http.StatusTooManyRequests)
-							return // don't send the channel signal
-						}
-						err := json.NewDecoder(r.Body).Decode(&webhookBody)
-						if err != nil {
-							t.Log(err)
-							w.WriteHeader(http.StatusBadRequest)
-						}
-					default:
-						w.WriteHeader(http.StatusNotFound)
-						return // don't send the channel signal
-					}
-					webhookChannel <- struct{}{}
-				},
-			),
-		)
-		t.Cleanup(srv.Close)
-		return srv.URL
-	}
-	mockUrl := startMockServer(t)
-	testUrl := mockUrl
-
-	ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
-		return &fleet.AppConfig{
-			WebhookSettings: fleet.WebhookSettings{
-				ActivitiesWebhook: fleet.ActivitiesWebhookSettings{
-					Enable:         true,
-					DestinationURL: testUrl,
-				},
-			},
-		}, nil
-	}
-	var activityUser *fleet.User
-	ds.NewActivityFunc = func(
-		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
-	) error {
-		activityUser = user
-		assert.NotEmpty(t, details)
-		assert.True(t, createdAt.After(time.Now().Add(-10*time.Second)))
-		assert.False(t, createdAt.After(time.Now()))
-		return nil
-	}
-
-	tests := []struct {
-		name    string
-		user    *fleet.User
-		url     string
-		doError bool
-	}{
-		{
-			name: "nil user",
-			url:  mockUrl + "/ok",
-			user: nil,
-		},
-		{
-			name: "real user",
-			url:  mockUrl + "/ok",
-			user: &fleet.User{
-				ID:    1,
-				Name:  "testUser",
-				Email: "testUser@example.com",
-			},
-		},
-		{
-			name:    "error",
-			url:     mockUrl + "/error",
-			doError: true,
-		},
-		{
-			name: "429",
-			url:  mockUrl + "/429",
-			user: &fleet.User{
-				ID:    2,
-				Name:  "testUser2",
-				Email: "testUser2@example.com",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				ds.NewActivityFuncInvoked = false
-				testUrl = tt.url
-				startTime := time.Now()
-				activity := ActivityTypeTest{Name: tt.name}
-				err := svc.NewActivity(ctx, tt.user, activity)
-				require.NoError(t, err)
-				select {
-				case <-time.After(1 * time.Second):
-					t.Error("timeout")
-				case <-webhookChannel:
-					if tt.doError {
-						assert.Equal(t, "error", webhookBody.Type)
-					} else {
-						endTime := time.Now()
-						assert.False(
-							t, webhookBody.Timestamp.Before(startTime), "timestamp %s is before start time %s",
-							webhookBody.Timestamp.String(), startTime.String(),
-						)
-						assert.False(t, webhookBody.Timestamp.After(endTime))
-						if tt.user == nil {
-							assert.Nil(t, webhookBody.ActorFullName)
-							assert.Nil(t, webhookBody.ActorID)
-							assert.Nil(t, webhookBody.ActorEmail)
-						} else {
-							require.NotNil(t, webhookBody.ActorFullName)
-							assert.Equal(t, tt.user.Name, *webhookBody.ActorFullName)
-							require.NotNil(t, webhookBody.ActorID)
-							assert.Equal(t, tt.user.ID, *webhookBody.ActorID)
-							require.NotNil(t, webhookBody.ActorEmail)
-							assert.Equal(t, tt.user.Email, *webhookBody.ActorEmail)
-						}
-						assert.Equal(t, activity.ActivityName(), webhookBody.Type)
-						var details map[string]string
-						require.NoError(t, json.Unmarshal(*webhookBody.Details, &details))
-						assert.Len(t, details, 1)
-						assert.Equal(t, tt.name, details["name"])
-					}
-				}
-				require.True(t, ds.NewActivityFuncInvoked)
-				assert.Equal(t, tt.user, activityUser)
-			},
-		)
-	}
-}
-
-func TestActivityWebhooksDisabled(t *testing.T) {
-	ds := new(mock.Store)
-	svc, ctx := newTestService(t, ds, nil, nil)
-	startMockServer := func(t *testing.T) string {
-		// create a test http server
-		srv := httptest.NewServer(
-			http.HandlerFunc(
-				func(w http.ResponseWriter, r *http.Request) {
-					t.Error("should not be called")
-				},
-			),
-		)
-		t.Cleanup(srv.Close)
-		return srv.URL
-	}
-	mockUrl := startMockServer(t)
-
-	ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
-		return &fleet.AppConfig{
-			WebhookSettings: fleet.WebhookSettings{
-				ActivitiesWebhook: fleet.ActivitiesWebhookSettings{
-					Enable:         false,
-					DestinationURL: mockUrl,
-				},
-			},
-		}, nil
-	}
-	var activityUser *fleet.User
-	ds.NewActivityFunc = func(
-		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
-	) error {
-		activityUser = user
-		assert.NotEmpty(t, details)
-		assert.True(t, createdAt.After(time.Now().Add(-10*time.Second)))
-		assert.False(t, createdAt.After(time.Now()))
-		return nil
-	}
-	activity := ActivityTypeTest{Name: "no webhook"}
-	user := &fleet.User{
-		ID:    1,
-		Name:  "testUser",
-		Email: "testUser@example.com",
-	}
-	require.NoError(t, svc.NewActivity(ctx, user, activity))
-	require.True(t, ds.NewActivityFuncInvoked)
-	assert.Equal(t, user, activityUser)
-}
-
 func TestCancelHostUpcomingActivityAuth(t *testing.T) {
 	ds := new(mock.Store)
 	svc, ctx := newTestService(t, ds, nil, nil, &TestServerOpts{License: &fleet.LicenseInfo{Tier: fleet.TierPremium}})
@@ -389,6 +127,13 @@ func TestCancelHostUpcomingActivityAuth(t *testing.T) {
 	}
 	ds.GetHostUpcomingActivityMetaFunc = func(ctx context.Context, hostID uint, execID string) (*fleet.UpcomingActivityMeta, error) {
 		return &fleet.UpcomingActivityMeta{}, nil
+	}
+	// svc.CancelHostUpcomingActivity now looks up VPP release info before the
+	// cancel runs (so pre-activation cancels can still release the reserved
+	// seat). This test doesn't exercise VPP installs, so return notFound to
+	// skip the release path.
+	ds.GetVPPInstallReleaseInfoForCancelFunc = func(ctx context.Context, hostID uint, execID string) (*fleet.VPPInstallReleaseInfo, error) {
+		return nil, &notFoundError{}
 	}
 
 	cases := []struct {
@@ -481,4 +226,183 @@ func TestCancelHostUpcomingActivityAuth(t *testing.T) {
 			checkAuthErr(t, tt.shouldFailTeam, err)
 		})
 	}
+}
+
+func TestGetHostActivitiesWebhookSettings(t *testing.T) {
+	newLicenseCtx := func(t *testing.T, tier string) context.Context {
+		return license.NewContext(t.Context(), &fleet.LicenseInfo{Tier: tier})
+	}
+
+	teamID1, teamID2 := uint(1), uint(2)
+	hostInTeam := func(id uint, teamID *uint) *fleet.Host {
+		return &fleet.Host{ID: id, TeamID: teamID}
+	}
+
+	newDS := func(hosts []*fleet.Host, teamWebhooks map[uint]*fleet.HostActivitiesWebhookSettings, noTeamWebhook *fleet.HostActivitiesWebhookSettings) *mock.Store {
+		ds := new(mock.Store)
+		ds.ListHostsLiteByIDsFunc = func(ctx context.Context, ids []uint) ([]*fleet.Host, error) {
+			return hosts, nil
+		}
+		ds.TeamLitesByIDsFunc = func(ctx context.Context, ids []uint) ([]*fleet.TeamLite, error) {
+			teams := make([]*fleet.TeamLite, 0, len(ids))
+			for _, tid := range ids {
+				// ID 0 ("Unassigned") is always present, synthesized from the
+				// default team config like the real bulk query.
+				if tid == 0 {
+					teams = append(teams, &fleet.TeamLite{
+						ID:     0,
+						Config: fleet.TeamConfigLite{WebhookSettings: fleet.TeamWebhookSettings{HostActivitiesWebhook: noTeamWebhook}},
+					})
+					continue
+				}
+				// Fleets absent from teamWebhooks are "deleted": omitted from
+				// the result.
+				webhook, ok := teamWebhooks[tid]
+				if !ok {
+					continue
+				}
+				teams = append(teams, &fleet.TeamLite{
+					ID:     tid,
+					Config: fleet.TeamConfigLite{WebhookSettings: fleet.TeamWebhookSettings{HostActivitiesWebhook: webhook}},
+				})
+			}
+			return teams, nil
+		}
+		return ds
+	}
+
+	enabled := func(url string) *fleet.HostActivitiesWebhookSettings {
+		return &fleet.HostActivitiesWebhookSettings{Enable: true, DestinationURL: url}
+	}
+
+	t.Run("free tier returns nil without touching the datastore", func(t *testing.T) {
+		ds := newDS([]*fleet.Host{hostInTeam(1, &teamID1)}, map[uint]*fleet.HostActivitiesWebhookSettings{teamID1: enabled("https://example.com")}, nil)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierFree), []uint{1})
+		require.NoError(t, err)
+		require.Nil(t, settings)
+		require.False(t, ds.ListHostsLiteByIDsFuncInvoked)
+	})
+
+	t.Run("returns the host's fleet webhook", func(t *testing.T) {
+		ds := newDS([]*fleet.Host{hostInTeam(1, &teamID1)}, map[uint]*fleet.HostActivitiesWebhookSettings{teamID1: enabled("https://example.com/a")}, nil)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1})
+		require.NoError(t, err)
+		require.Len(t, settings, 1)
+		require.Equal(t, "https://example.com/a", settings[0].DestinationURL)
+	})
+
+	t.Run("dedups hosts in the same fleet", func(t *testing.T) {
+		ds := newDS(
+			[]*fleet.Host{hostInTeam(1, &teamID1), hostInTeam(2, &teamID1)},
+			map[uint]*fleet.HostActivitiesWebhookSettings{teamID1: enabled("https://example.com/a")},
+			nil,
+		)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1, 2})
+		require.NoError(t, err)
+		require.Len(t, settings, 1)
+		require.Equal(t, []uint{1, 2}, settings[0].HostIDs)
+	})
+
+	t.Run("hosts across fleets return one webhook per enabled fleet", func(t *testing.T) {
+		ds := newDS(
+			[]*fleet.Host{hostInTeam(1, &teamID1), hostInTeam(2, &teamID2), hostInTeam(3, nil)},
+			map[uint]*fleet.HostActivitiesWebhookSettings{
+				teamID1: enabled("https://example.com/a"),
+				teamID2: {Enable: false, DestinationURL: "https://example.com/disabled"},
+			},
+			enabled("https://example.com/no-team"),
+		)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1, 2, 3})
+		require.NoError(t, err)
+		// Each delivery carries only its own fleet's hosts (the fleet-2 host is
+		// absent entirely: that fleet's webhook is disabled).
+		hostsByURL := make(map[string][]uint, len(settings))
+		for _, s := range settings {
+			hostsByURL[s.DestinationURL] = s.HostIDs
+		}
+		require.Equal(t, map[string][]uint{
+			"https://example.com/a":       {1},
+			"https://example.com/no-team": {3},
+		}, hostsByURL)
+	})
+
+	t.Run("fleets sharing a destination URL yield separate scoped deliveries", func(t *testing.T) {
+		ds := newDS(
+			[]*fleet.Host{hostInTeam(1, &teamID1), hostInTeam(2, &teamID2)},
+			map[uint]*fleet.HostActivitiesWebhookSettings{
+				teamID1: enabled("https://example.com/shared"),
+				teamID2: enabled("https://example.com/shared"),
+			},
+			nil,
+		)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1, 2})
+		require.NoError(t, err)
+		// A delivery is one fleet's subscription: sharing a URL must not merge
+		// fleets' host IDs into one payload.
+		require.Len(t, settings, 2)
+		require.Equal(t, "https://example.com/shared", settings[0].DestinationURL)
+		require.Equal(t, []uint{1}, settings[0].HostIDs)
+		require.Equal(t, "https://example.com/shared", settings[1].DestinationURL)
+		require.Equal(t, []uint{2}, settings[1].HostIDs)
+	})
+
+	t.Run("a fleet and no-fleet sharing a destination stay separate deliveries", func(t *testing.T) {
+		ds := newDS(
+			[]*fleet.Host{hostInTeam(1, &teamID1), hostInTeam(2, nil)},
+			map[uint]*fleet.HostActivitiesWebhookSettings{teamID1: enabled("https://example.com/shared")},
+			enabled("https://example.com/shared"),
+		)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1, 2})
+		require.NoError(t, err)
+		require.Len(t, settings, 2)
+		require.Equal(t, []uint{1}, settings[0].HostIDs)
+		require.Equal(t, []uint{2}, settings[1].HostIDs)
+	})
+
+	t.Run("no-team host uses the default team config", func(t *testing.T) {
+		ds := newDS([]*fleet.Host{hostInTeam(1, nil)}, nil, enabled("https://example.com/no-team"))
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1})
+		require.NoError(t, err)
+		require.Len(t, settings, 1)
+		require.Equal(t, "https://example.com/no-team", settings[0].DestinationURL)
+	})
+
+	t.Run("deleted fleet is skipped", func(t *testing.T) {
+		ds := newDS([]*fleet.Host{hostInTeam(1, &teamID1)}, nil, nil) // fleet absent from the bulk lookup
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1})
+		require.NoError(t, err)
+		require.Empty(t, settings)
+	})
+
+	t.Run("nil or empty-URL webhooks are filtered", func(t *testing.T) {
+		ds := newDS(
+			[]*fleet.Host{hostInTeam(1, &teamID1), hostInTeam(2, &teamID2)},
+			map[uint]*fleet.HostActivitiesWebhookSettings{
+				teamID1: nil,
+				teamID2: {Enable: true, DestinationURL: ""},
+			},
+			nil,
+		)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), []uint{1, 2})
+		require.NoError(t, err)
+		require.Empty(t, settings)
+	})
+
+	t.Run("no host IDs short-circuits", func(t *testing.T) {
+		ds := new(mock.Store)
+		svc := &Service{ds: ds}
+		settings, err := svc.GetHostActivitiesWebhookSettings(newLicenseCtx(t, fleet.TierPremium), nil)
+		require.NoError(t, err)
+		require.Nil(t, settings)
+		require.False(t, ds.ListHostsLiteByIDsFuncInvoked)
+	})
 }

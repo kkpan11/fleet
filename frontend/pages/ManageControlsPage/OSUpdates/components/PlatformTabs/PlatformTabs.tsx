@@ -5,8 +5,12 @@ import TabText from "components/TabText";
 import CustomLink from "components/CustomLink";
 import { SUPPORT_LINK } from "utilities/constants";
 
+import EndUserOSRequirementPreview from "../EndUserOSRequirementPreview";
 import WindowsTargetForm from "../WindowsTargetForm";
-import { OSUpdatesTargetPlatform } from "../../OSUpdates";
+import {
+  OSUpdatesSupportedPlatform,
+  OSUpdatesTargetPlatform,
+} from "../../OSUpdates";
 import AppleOSTargetForm from "../AppleOSTargetForm";
 
 const baseClass = "platform-tabs";
@@ -15,10 +19,14 @@ interface IPlatformTabsProps {
   currentTeamId: number;
   defaultMacOSVersion: string;
   defaultMacOSDeadline: string;
+  defaultMacOSDeadlineDays: string;
+  defaultMacOSUpdateNewHosts: boolean;
   defaultIOSVersion: string;
   defaultIOSDeadline: string;
+  defaultIOSDeadlineDays: string;
   defaultIPadOSVersion: string;
   defaultIPadOSDeadline: string;
+  defaultIPadOSDeadlineDays: string;
   defaultWindowsDeadlineDays: string;
   defaultWindowsGracePeriodDays: string;
   selectedPlatform: OSUpdatesTargetPlatform;
@@ -32,10 +40,14 @@ interface IPlatformTabsProps {
 const PlatformTabs = ({
   currentTeamId,
   defaultMacOSDeadline,
+  defaultMacOSDeadlineDays,
   defaultMacOSVersion,
+  defaultMacOSUpdateNewHosts,
   defaultIOSDeadline,
+  defaultIOSDeadlineDays,
   defaultIOSVersion,
   defaultIPadOSDeadline,
+  defaultIPadOSDeadlineDays,
   defaultIPadOSVersion,
   defaultWindowsDeadlineDays,
   defaultWindowsGracePeriodDays,
@@ -61,27 +73,34 @@ const PlatformTabs = ({
     onSelectPlatform(platformByIndex[index]);
   };
 
+  // A platform is considered "configured" when it has a minimum version
+  // (Apple) or deadline days (Windows) set.
+  const isMacOSConfigured = !!defaultMacOSVersion;
+  const isWindowsConfigured = !!defaultWindowsDeadlineDays;
+  const isIOSConfigured = !!defaultIOSVersion;
+  const isIPadOSConfigured = !!defaultIPadOSVersion;
+
   return (
     <div className={baseClass}>
-      <TabNav>
+      <TabNav secondary>
         <Tabs
           defaultIndex={platformByIndex.indexOf(selectedPlatform)}
           onSelect={onTabChange}
         >
           <TabList>
             <Tab key="macOS" data-text="macOS">
-              <TabText>macOS</TabText>
+              <TabText showCheck={isMacOSConfigured}>macOS</TabText>
             </Tab>
             {isWindowsMdmEnabled && (
               <Tab key="Windows" data-text="Windows">
-                <TabText>Windows</TabText>
+                <TabText showCheck={isWindowsConfigured}>Windows</TabText>
               </Tab>
             )}
             <Tab key="iOS" data-text="iOS">
-              <TabText>iOS</TabText>
+              <TabText showCheck={isIOSConfigured}>iOS</TabText>
             </Tab>
             <Tab key="iPadOS" data-text="iPadOS">
-              <TabText>iPadOS</TabText>
+              <TabText showCheck={isIPadOSConfigured}>iPadOS</TabText>
             </Tab>
             {isAndroidMdmEnabled && (
               <Tab key="Android" data-text="Android">
@@ -89,19 +108,26 @@ const PlatformTabs = ({
               </Tab>
             )}
           </TabList>
-          <TabPanel>
+          <TabPanel className={`${baseClass}__tab-panel`}>
             <AppleOSTargetForm
               currentTeamId={currentTeamId}
               applePlatform="darwin"
               defaultMinOsVersion={defaultMacOSVersion}
               defaultDeadline={defaultMacOSDeadline}
+              defaultDeadlineDays={defaultMacOSDeadlineDays}
+              defaultUpdateNewHosts={defaultMacOSUpdateNewHosts}
               key={currentTeamId}
               refetchAppConfig={refetchAppConfig}
               refetchTeamConfig={refetchTeamConfig}
             />
+            <div className={`${baseClass}__nudge-preview`}>
+              <EndUserOSRequirementPreview
+                platform={selectedPlatform as OSUpdatesSupportedPlatform}
+              />
+            </div>
           </TabPanel>
           {isWindowsMdmEnabled && (
-            <TabPanel>
+            <TabPanel className={`${baseClass}__tab-panel`}>
               <WindowsTargetForm
                 currentTeamId={currentTeamId}
                 defaultDeadlineDays={defaultWindowsDeadlineDays}
@@ -110,32 +136,49 @@ const PlatformTabs = ({
                 refetchAppConfig={refetchAppConfig}
                 refetchTeamConfig={refetchTeamConfig}
               />
+              <div className={`${baseClass}__nudge-preview`}>
+                <EndUserOSRequirementPreview
+                  platform={selectedPlatform as OSUpdatesSupportedPlatform}
+                />
+              </div>
             </TabPanel>
           )}
-          <TabPanel>
+          <TabPanel className={`${baseClass}__tab-panel`}>
             <AppleOSTargetForm
               currentTeamId={currentTeamId}
               applePlatform="ios"
               defaultMinOsVersion={defaultIOSVersion}
               defaultDeadline={defaultIOSDeadline}
+              defaultDeadlineDays={defaultIOSDeadlineDays}
               key={currentTeamId}
               refetchAppConfig={refetchAppConfig}
               refetchTeamConfig={refetchTeamConfig}
             />
+            <div className={`${baseClass}__nudge-preview`}>
+              <EndUserOSRequirementPreview
+                platform={selectedPlatform as OSUpdatesSupportedPlatform}
+              />
+            </div>
           </TabPanel>
-          <TabPanel>
+          <TabPanel className={`${baseClass}__tab-panel`}>
             <AppleOSTargetForm
               currentTeamId={currentTeamId}
               applePlatform="ipados"
               defaultMinOsVersion={defaultIPadOSVersion}
               defaultDeadline={defaultIPadOSDeadline}
+              defaultDeadlineDays={defaultIPadOSDeadlineDays}
               key={currentTeamId}
               refetchAppConfig={refetchAppConfig}
               refetchTeamConfig={refetchTeamConfig}
             />
+            <div className={`${baseClass}__nudge-preview`}>
+              <EndUserOSRequirementPreview
+                platform={selectedPlatform as OSUpdatesSupportedPlatform}
+              />
+            </div>
           </TabPanel>
           {isAndroidMdmEnabled && (
-            <TabPanel>
+            <TabPanel className={`${baseClass}__tab-panel`}>
               <div className={`${baseClass}__coming-soon`}>
                 <p>
                   <b>Android updates are coming soon.</b>

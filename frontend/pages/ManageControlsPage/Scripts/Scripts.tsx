@@ -1,201 +1,95 @@
-import { AxiosError } from "axios";
-import React, { useCallback, useContext, useRef, useState } from "react";
-import { useQuery } from "react-query";
-import { InjectedRouter } from "react-router";
+import React from "react";
+import { InjectedRouter, Params } from "react-router/lib/Router";
 
-import { AppContext } from "context/app";
-import { IScript } from "interfaces/script";
-import PATHS from "router/paths";
-import scriptAPI, {
-  IListScriptsQueryKey,
-  IScriptsResponse,
-} from "services/entities/scripts";
+import { FLEET_WEBSITE_URL } from "utilities/constants";
 
+import SideNav from "pages/admin/components/SideNav";
 import CustomLink from "components/CustomLink";
-import DataError from "components/DataError";
-import InfoBanner from "components/InfoBanner";
+import PageDescription from "components/PageDescription";
 import Spinner from "components/Spinner";
-import Pagination from "components/Pagination";
-import UploadList from "../components/UploadList";
-import DeleteScriptModal from "./components/DeleteScriptModal";
-import EditScriptModal from "./components/EditScriptModal";
-import ScriptListHeading from "./components/ScriptListHeading";
-import ScriptListItem from "./components/ScriptListItem";
-import ScriptUploader from "./components/ScriptUploader";
+
+import useScriptNavItems from "./ScriptsNavItems";
 
 const baseClass = "scripts";
 
-const SCRIPTS_PER_PAGE = 10;
-
+export interface ScriptsLocation {
+  search: string;
+  pathname: string;
+  query: {
+    fleet_id?: string;
+    status?: string;
+    page?: string;
+    add_script?: string;
+  };
+}
 interface IScriptsProps {
-  router: InjectedRouter; // v3
-  teamIdForApi: number;
-  currentPage: number;
+  params: Params;
+  router: InjectedRouter;
+  location: ScriptsLocation;
+  // Undefined until the URL's fleet id resolves to an available fleet.
+  // Gate team-scoped queries on this being defined — anything fired during
+  // that window targets the wrong fleet.
+  teamIdForApi?: number;
 }
 
-const Scripts = ({ router, currentPage, teamIdForApi }: IScriptsProps) => {
-  const { isPremiumTier } = useContext(AppContext);
-  const [showDeleteScriptModal, setShowDeleteScriptModal] = useState(false);
-  const [showEditScripsModal, setShowEditScriptModal] = useState(false);
+const Scripts = ({ router, location, params, teamIdForApi }: IScriptsProps) => {
+  const { section } = params;
 
-  const selectedScript = useRef<IScript | null>(null);
+  const SCRIPTS_NAV_ITEMS = useScriptNavItems(teamIdForApi);
 
-  const {
-    data: { scripts, meta } = {},
-    isLoading,
-    isError,
-    refetch: refetchScripts,
-  } = useQuery<
-    IScriptsResponse,
-    AxiosError,
-    IScriptsResponse,
-    IListScriptsQueryKey[]
-  >(
-    [
-      {
-        scope: "scripts",
-        team_id: teamIdForApi,
-        page: currentPage,
-        per_page: SCRIPTS_PER_PAGE,
-      },
-    ],
-    ({ queryKey: [{ team_id, page, per_page }] }) =>
-      scriptAPI.getScripts({ team_id, page, per_page }),
-    {
-      retry: false,
-      refetchOnWindowFocus: false,
-      staleTime: 3000,
-    }
-  );
+  const DEFAULT_SCRIPTS_SECTION = SCRIPTS_NAV_ITEMS[0];
 
-  // pagination controls
-  const path = PATHS.CONTROLS_SCRIPTS;
-  const queryString = isPremiumTier ? `?team_id=${teamIdForApi}&` : "?";
-  const onPrevPage = useCallback(() => {
-    router.push(path.concat(`${queryString}page=${currentPage - 1}`));
-  }, [router, path, currentPage, queryString]);
-  const onNextPage = useCallback(() => {
-    router.push(path.concat(`${queryString}page=${currentPage + 1}`));
-  }, [router, path, currentPage, queryString]);
+  const currentFormSection =
+    SCRIPTS_NAV_ITEMS.find((item) => item.urlSection === section) ??
+    DEFAULT_SCRIPTS_SECTION;
 
-  const { config } = useContext(AppContext);
-  if (!config) return null;
+  // Redirect to the default section if the URL section is not in the filtered list
+  if (
+    section &&
+    currentFormSection === DEFAULT_SCRIPTS_SECTION &&
+    section !== DEFAULT_SCRIPTS_SECTION.urlSection
+  ) {
+    router.replace(DEFAULT_SCRIPTS_SECTION.path);
+    return null;
+  }
 
-  const onClickScript = (script: IScript) => {
-    selectedScript.current = script;
-    setShowEditScriptModal(true);
-  };
+  const CurrentCard = currentFormSection.Card;
 
-  const onEditScript = (script: IScript) => {
-    selectedScript.current = script;
-    setShowEditScriptModal(true);
-  };
-
-  const onExitEditScript = () => {
-    selectedScript.current = null;
-    setShowEditScriptModal(false);
-  };
-
-  const onClickDelete = (script: IScript) => {
-    selectedScript.current = script;
-    setShowDeleteScriptModal(true);
-  };
-
-  const onCancelDelete = () => {
-    setShowDeleteScriptModal(false);
-    selectedScript.current = null;
-  };
-
-  const onDeleteScript = () => {
-    selectedScript.current = null;
-    setShowDeleteScriptModal(false);
-    refetchScripts();
-  };
-
-  const onUploadScript = () => {
-    refetchScripts();
-  };
-
-  const renderScriptsList = () => {
-    if (isLoading) {
-      return <Spinner />;
-    }
-
-    if (isError) {
-      return <DataError />;
-    }
-
-    if (currentPage === 0 && !scripts?.length) {
-      return null;
-    }
-
-    return (
-      <>
-        <UploadList
-          keyAttribute="id"
-          listItems={scripts || []}
-          HeadingComponent={ScriptListHeading}
-          ListItemComponent={({ listItem }) => (
-            <ScriptListItem
-              script={listItem}
-              onDelete={onClickDelete}
-              onClickScript={onClickScript}
-              onEdit={onEditScript}
-            />
-          )}
-        />
-        <Pagination
-          disablePrev={isLoading || !meta?.has_previous_results}
-          disableNext={isLoading || !meta?.has_next_results}
-          hidePagination={
-            !isLoading && !meta?.has_previous_results && !meta?.has_next_results
-          }
-          onPrevPage={onPrevPage}
-          onNextPage={onNextPage}
-        />
-      </>
-    );
-  };
-
-  const renderScriptsDisabledBanner = () => (
-    <InfoBanner color="yellow">
-      <div>
-        <b>Running scripts is disabled in organization settings.</b> You can
-        still manage your library of macOS and Windows scripts below.
-      </div>
-    </InfoBanner>
-  );
+  // Wait for the fleet id to resolve before mounting children — they fire
+  // team-scoped queries eagerly.
+  if (teamIdForApi === undefined) {
+    return <Spinner />;
+  }
 
   return (
     <div className={baseClass}>
-      <p className={`${baseClass}__description`}>
-        Upload scripts to remediate issues on macOS, Windows, and Linux hosts.
-        You can run scripts on individual hosts.{" "}
-        <CustomLink
-          text="Learn more"
-          url="https://fleetdm.com/docs/using-fleet/scripts"
-          newTab
-        />
-      </p>
-
-      {config.server_settings.scripts_disabled && renderScriptsDisabledBanner()}
-      {renderScriptsList()}
-      <ScriptUploader currentTeamId={teamIdForApi} onUpload={onUploadScript} />
-      {showDeleteScriptModal && selectedScript.current && (
-        <DeleteScriptModal
-          scriptName={selectedScript.current?.name}
-          scriptId={selectedScript.current?.id}
-          onCancel={onCancelDelete}
-          onDone={onDeleteScript}
-        />
-      )}
-      {showEditScripsModal && selectedScript.current && (
-        <EditScriptModal
-          scriptId={selectedScript.current.id}
-          scriptName={selectedScript.current.name}
-          onExit={onExitEditScript}
-        />
-      )}
+      <PageDescription
+        variant="tab-panel"
+        content={
+          <>
+            Change configuration and remediate issues on macOS, Windows, and
+            Linux hosts.{" "}
+            <CustomLink
+              text="Learn more"
+              url={`${FLEET_WEBSITE_URL}/docs/using-fleet/scripts`}
+              newTab
+            />
+          </>
+        }
+      />
+      <SideNav
+        className={`${baseClass}__side-nav`}
+        navItems={SCRIPTS_NAV_ITEMS}
+        activeItem={currentFormSection.urlSection}
+        CurrentCard={
+          <CurrentCard
+            key={teamIdForApi}
+            teamId={teamIdForApi}
+            router={router}
+            location={location}
+          />
+        }
+      />
     </div>
   );
 };

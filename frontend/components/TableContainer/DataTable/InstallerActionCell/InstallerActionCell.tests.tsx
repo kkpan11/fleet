@@ -3,9 +3,13 @@ import { render, screen } from "@testing-library/react";
 
 import InstallerActionCell from "./InstallerActionCell";
 
-describe("Issue cell", () => {
+describe("InstallerAction cell", () => {
   it("renders add button if installer is available", async () => {
-    render(<InstallerActionCell value={{ id: 1, platform: "darwin" }} />);
+    render(
+      <InstallerActionCell
+        value={{ id: 1, platform: "darwin", slug: "test-app/darwin" }}
+      />
+    );
 
     expect(screen.getByText(/add/i)).toBeInTheDocument();
   });
@@ -17,11 +21,15 @@ describe("Issue cell", () => {
   it("renders checkmark if installer is already added", async () => {
     render(
       <InstallerActionCell
-        value={{ id: 1, platform: "darwin", software_title_id: 1 }}
+        value={{
+          id: 1,
+          platform: "darwin",
+          slug: "test-app/darwin",
+          software_title_id: 1,
+        }}
       />
     );
 
-    const icon = screen.getByTestId("success-icon");
-    expect(icon).toBeInTheDocument();
+    expect(screen.getByTestId("success-icon")).toBeInTheDocument();
   });
 });

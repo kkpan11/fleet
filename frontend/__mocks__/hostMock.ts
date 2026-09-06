@@ -1,4 +1,4 @@
-import { IHost } from "interfaces/host";
+import { IHost, IHostEndUser, IGeoLocation } from "interfaces/host";
 import { IHostMdmProfile } from "interfaces/mdm";
 import { pick } from "lodash";
 
@@ -18,6 +18,8 @@ const DEFAULT_HOST_PROFILE_MOCK: IHostMdmProfile = {
   platform: "darwin",
   status: "verified",
   detail: "This is verified",
+  scope: "device",
+  managed_local_account: "",
 };
 
 export const createMockHostMdmProfile = (
@@ -25,6 +27,8 @@ export const createMockHostMdmProfile = (
 ): IHostMdmProfile => {
   return { ...DEFAULT_HOST_PROFILE_MOCK, ...overrides };
 };
+
+export const DEFAULT_HOST_HOSTNAME = "9b20fc72a247";
 
 const DEFAULT_HOST_MOCK: IHost = {
   id: 1,
@@ -35,10 +39,12 @@ const DEFAULT_HOST_MOCK: IHost = {
   label_updated_at: "2022-01-02T12:00:00Z",
   policy_updated_at: "2022-01-02T12:00:00Z",
   last_enrolled_at: "2022-01-02T12:00:00Z",
+  last_mdm_enrolled_at: "2022-01-02T12:00:00Z",
+  last_mdm_checked_in_at: "",
   seen_time: "2022-04-06T02:11:41Z",
   refetch_requested: false,
   refetch_critical_queries_until: null,
-  hostname: "9b20fc72a247",
+  hostname: DEFAULT_HOST_HOSTNAME,
   display_name: "9b20fc72a247",
   display_text: "mock host 1",
   uuid: "09b244f8-0000-0000-b5cc-791a15f11073",
@@ -59,6 +65,7 @@ const DEFAULT_HOST_MOCK: IHost = {
   cpu_logical_cores: 8,
   hardware_vendor: "",
   hardware_model: "",
+  hardware_marketing_name: "",
   hardware_version: "",
   hardware_serial: "",
   computer_name: "9b20fc72a247",
@@ -72,12 +79,13 @@ const DEFAULT_HOST_MOCK: IHost = {
         status: null,
         detail: "",
       },
+      certificates: [],
     },
-    macos_settings: {
+    apple_settings: {
       disk_encryption: null,
       action_required: null,
     },
-    macos_setup: {
+    setup_experience: {
       bootstrap_package_status: "",
       details: "",
       bootstrap_package_name: "",
@@ -110,10 +118,27 @@ const DEFAULT_HOST_MOCK: IHost = {
   policies: [],
   device_mapping: [],
   end_users: [],
+  conditional_access_bypassed: false,
+  dep_assigned_to_fleet: false,
+  timezone: null,
 };
 
 const createMockHost = (overrides?: Partial<IHost>): IHost => {
   return { ...DEFAULT_HOST_MOCK, ...overrides };
+};
+
+export const createMockHostGeolocation = (
+  overrides: Partial<IGeoLocation> = {}
+): IGeoLocation => {
+  return {
+    country_iso: "US",
+    city_name: "Minneapolis",
+    geometry: {
+      type: "Point",
+      coordinates: [-93.2602, 44.9844], // [lng, lat]
+    },
+    ...overrides,
+  };
 };
 
 export const createMockHostResponse = { host: createMockHost() };
@@ -153,13 +178,15 @@ export const createMockHostSummary = (overrides?: Partial<IHost>) => {
 
 const DEFAULT_HOST_SOFTWARE_PACKAGE_MOCK: IHostSoftwarePackage = {
   name: "mock software.app",
-  version: "1.0.0",
+  version: "1.0.0", // Used in version comparison tests
   self_service: false,
   icon_url: "https://example.com/icon.png",
   last_install: {
     install_uuid: "123-abc",
     installed_at: "2022-01-01T12:00:00Z",
   },
+  last_uninstall: null,
+  has_uninstall_script: true,
 };
 
 export const createMockHostSoftwarePackage = (
@@ -170,6 +197,7 @@ export const createMockHostSoftwarePackage = (
 
 const DEFAULT_HOST_APP_STORE_APP_MOCK: IHostAppStoreApp = {
   app_store_id: "123456789",
+  platform: "darwin",
   version: "1.0.0",
   self_service: false,
   icon_url: "https://via.placeholder.com/512",
@@ -182,30 +210,31 @@ export const createMockHostAppStoreApp = (
   return { ...DEFAULT_HOST_APP_STORE_APP_MOCK, ...overrides };
 };
 
+export const DEFAULT_INSTALLED_VERSION = {
+  version: "1.0.0", // Used in version comparison tests
+  last_opened_at: "2022-01-01T12:00:00Z",
+  vulnerabilities: ["CVE-2020-0001"],
+  installed_paths: ["/Applications/mock.app"],
+  bundle_identifier: "com.mock.software",
+  signature_information: [
+    {
+      installed_path: "/Applications/mock.app",
+      team_identifier: "12345TEAMIDENT",
+      hash_sha256: "mockhashhere",
+    },
+  ],
+};
 const DEFAULT_HOST_SOFTWARE_MOCK: IHostSoftware = {
   id: 1,
   name: "mock software.app",
+  display_name: "Mock Software",
+  icon_url: null,
   software_package: createMockHostSoftwarePackage(),
   app_store_app: null,
   source: "apps",
   bundle_identifier: "com.test.mock",
   status: "installed",
-  installed_versions: [
-    {
-      version: "1.0.0",
-      last_opened_at: "2022-01-01T12:00:00Z",
-      vulnerabilities: ["CVE-2020-0001"],
-      installed_paths: ["/Applications/mock.app"],
-      bundle_identifier: "com.mock.software",
-      signature_information: [
-        {
-          installed_path: "/Applications/mock.app",
-          team_identifier: "12345TEAMIDENT",
-          hash_sha256: "mockhashhere",
-        },
-      ],
-    },
-  ],
+  installed_versions: [DEFAULT_INSTALLED_VERSION],
 };
 
 export const createMockHostSoftware = (
@@ -233,6 +262,21 @@ export const createMockGetHostSoftwareResponse = (
     ...DEFAULT_GET_HOST_SOFTWARE_RESPONSE_MOCK,
     ...overrides,
   };
+};
+
+export const DEFAULT_HOST_END_USER_MOCK: IHostEndUser = {
+  idp_department: "Engineering",
+  idp_info_updated_at: "2025-09-15T12:00:00Z",
+  idp_username: "jdoe",
+  idp_full_name: "John Doe",
+  idp_groups: ["GroupA", "GroupB"],
+  other_emails: [{ email: "other@example.com", source: "chrome" }],
+};
+
+export const createMockHostEndUser = (
+  overrides?: Partial<IHostEndUser>
+): IHostEndUser => {
+  return { ...DEFAULT_HOST_END_USER_MOCK, ...overrides };
 };
 
 export default createMockHost;

@@ -2,22 +2,26 @@ package scim
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/elimity-com/scim"
-	"github.com/elimity-com/scim/errors"
+	scimerrors "github.com/elimity-com/scim/errors"
 	"github.com/elimity-com/scim/optional"
 	"github.com/elimity-com/scim/schema"
 	"github.com/fleetdm/fleet/v4/server/authz"
+	"github.com/fleetdm/fleet/v4/server/config"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/service/middleware/auth"
 	"github.com/fleetdm/fleet/v4/server/service/middleware/log"
-	kitlog "github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -28,8 +32,12 @@ func RegisterSCIM(
 	mux *http.ServeMux,
 	ds fleet.Datastore,
 	svc fleet.Service,
-	logger kitlog.Logger,
+	logger *slog.Logger,
+	fleetConfig *config.FleetConfig,
 ) error {
+	if fleetConfig == nil {
+		return errors.New("fleet config is nil")
+	}
 	config := scim.ServiceProviderConfig{
 		DocumentationURI: optional.NewString("https://fleetdm.com/docs/get-started/why-fleet"),
 		MaxResults:       maxResults,
@@ -151,7 +159,7 @@ func RegisterSCIM(
 		},
 	}
 
-	scimLogger := kitlog.With(logger, "component", "SCIM")
+	scimLogger := logger.With("component", "SCIM")
 	resourceTypes := []scim.ResourceType{
 		{
 			ID:          optional.NewString("User"),
@@ -159,7 +167,65 @@ func RegisterSCIM(
 			Endpoint:    "/Users",
 			Description: optional.NewString("User Account"),
 			Schema:      userSchema,
-			Handler:     NewUserHandler(ds, scimLogger),
+			SchemaExtensions: []scim.SchemaExtension{
+				{
+					Schema: schema.Schema{
+						// Fleet stores only `department`, but we declare the full RFC 7643
+						// §4.3 enterprise attribute set so the elimity SCIM library accepts
+						// (rather than 400s) PATCH payloads from IdPs that bundle these
+						// alongside `department`. The handler reads only what it needs and
+						// silently drops the rest — see the `default` branches in
+						// UserHandler.Patch.
+						Attributes: []schema.CoreAttribute{
+							schema.SimpleCoreAttribute(schema.SimpleStringParams(schema.StringParams{
+								Name:     "department",
+								Required: false,
+							})),
+							schema.SimpleCoreAttribute(schema.SimpleStringParams(schema.StringParams{
+								Name:     "employeeNumber",
+								Required: false,
+							})),
+							schema.SimpleCoreAttribute(schema.SimpleStringParams(schema.StringParams{
+								Name:     "costCenter",
+								Required: false,
+							})),
+							schema.SimpleCoreAttribute(schema.SimpleStringParams(schema.StringParams{
+								Name:     "organization",
+								Required: false,
+							})),
+							schema.SimpleCoreAttribute(schema.SimpleStringParams(schema.StringParams{
+								Name:     "division",
+								Required: false,
+							})),
+							schema.ComplexCoreAttribute(schema.ComplexParams{
+								Name:        "manager",
+								Description: optional.NewString("The User's manager. A complex type that optionally allows service providers to represent organizational hierarchy by referencing the 'id' attribute of another User."),
+								SubAttributes: []schema.SimpleParams{
+									schema.SimpleStringParams(schema.StringParams{
+										Name: "value",
+									}),
+									schema.SimpleReferenceParams(schema.ReferenceParams{
+										Name:           "$ref",
+										ReferenceTypes: []schema.AttributeReferenceType{"User"},
+									}),
+									// `displayName` is ReadOnly per RFC 7643 §4.3. The elimity
+									// library silently strips ReadOnly sub-attrs from client
+									// input, so we don't need to tolerate it in the handler.
+									schema.SimpleStringParams(schema.StringParams{
+										Name:       "displayName",
+										Mutability: schema.AttributeMutabilityReadOnly(),
+									}),
+								},
+							}),
+						},
+						Description: optional.NewString("Enterprise User"),
+						ID:          "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
+						Name:        optional.NewString("Enterprise User"),
+					},
+					Required: false,
+				},
+			},
+			Handler: NewUserHandler(ds, svc.NewActivity, scimLogger),
 		},
 		{
 			ID:          optional.NewString("Group"),
@@ -177,7 +243,7 @@ func RegisterSCIM(
 	}
 
 	serverOpts := []scim.ServerOption{
-		scim.WithLogger(&scimErrorLogger{Logger: scimLogger}),
+		scim.WithLogger(&scimErrorLogger{logger: scimLogger}),
 	}
 
 	server, err := scim.NewServer(serverArgs, serverOpts...)
@@ -193,12 +259,19 @@ func RegisterSCIM(
 		return err
 	}
 
-	// TODO: Add APM/OpenTelemetry tracing and Prometheus middleware
+	dumpPayloadsEnabled := debugSCIMPayloadsEnabled()
+
+	// Apply middleware including OTEL instrumentation
 	applyMiddleware := func(prefix string, server http.Handler) http.Handler {
 		handler := http.StripPrefix(prefix, server)
 		handler = AuthorizationMiddleware(authorizer, scimLogger, handler)
+		handler = debugPayloadDumpMiddleware(scimLogger, dumpPayloadsEnabled, handler)
 		handler = auth.AuthenticatedUserMiddleware(svc, scimErrorHandler, handler)
 		handler = LastRequestMiddleware(ds, scimLogger, handler)
+		// Placed before (outside) LastRequestMiddleware so that ignored SCIM
+		// requests don't overwrite the last-sync status owned by the Google
+		// Workspace sync.
+		handler = GoogleWorkspaceExclusionMiddleware(ds, scimLogger, handler)
 		handler = log.LogResponseEndMiddleware(scimLogger, handler)
 		handler = auth.SetRequestsContextMiddleware(svc, handler)
 		return handler
@@ -206,14 +279,169 @@ func RegisterSCIM(
 
 	// We cannot use Go URL path pattern like {version} because the http.StripPrefix method
 	// that gets us to the root SCIM path does not support wildcards: https://github.com/golang/go/issues/64909
-	mux.Handle("/api/v1/fleet/scim/", applyMiddleware("/api/v1/fleet/scim", server))
-	mux.Handle("/api/latest/fleet/scim/", applyMiddleware("/api/latest/fleet/scim", server))
+	// Apply OTEL instrumentation at the mux level (outermost)
+	mux.Handle("/api/v1/fleet/scim/", scimOTELMiddleware(applyMiddleware("/api/v1/fleet/scim", server), "/api/v1/fleet/scim", *fleetConfig))
+	mux.Handle("/api/latest/fleet/scim/", scimOTELMiddleware(applyMiddleware("/api/latest/fleet/scim", server), "/api/latest/fleet/scim", *fleetConfig))
 	return nil
+}
+
+// scimOTELMiddleware provides OpenTelemetry instrumentation for SCIM endpoints
+// It creates proper span names without exposing sensitive IDs
+func scimOTELMiddleware(next http.Handler, prefix string, cfg config.FleetConfig) http.Handler {
+	if !cfg.Logging.TracingEnabled || cfg.Logging.TracingType != "opentelemetry" {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Determine the SCIM route pattern based on the path
+		// OTEL is the outermost middleware, so we see the full path including prefix
+		fullPath := r.URL.Path
+
+		// Remove the prefix to get the SCIM-specific path
+		scimPath := strings.TrimPrefix(fullPath, prefix)
+		// Handle both "/Schemas" and "Schemas" by trimming the leading slash
+		scimPath = strings.TrimPrefix(scimPath, "/")
+
+		var route string
+		// Normalize the path to create a route pattern without exposing IDs
+		switch {
+		case strings.HasPrefix(scimPath, "Users"):
+			segments := strings.Split(scimPath, "/")
+			if len(segments) == 1 || (len(segments) == 2 && segments[1] == "") {
+				route = prefix + "/Users"
+			} else {
+				// Individual user operations - don't expose the user ID
+				route = prefix + "/Users/{id}"
+			}
+		case strings.HasPrefix(scimPath, "Groups"):
+			segments := strings.Split(scimPath, "/")
+			if len(segments) == 1 || (len(segments) == 2 && segments[1] == "") {
+				route = prefix + "/Groups"
+			} else {
+				// Individual group operations - don't expose the group ID
+				route = prefix + "/Groups/{id}"
+			}
+		case strings.HasPrefix(scimPath, "Schemas"):
+			segments := strings.Split(scimPath, "/")
+			if len(segments) == 1 || (len(segments) == 2 && segments[1] == "") {
+				route = prefix + "/Schemas"
+			} else {
+				route = prefix + "/Schemas/{id}"
+			}
+		case scimPath == "ServiceProviderConfig" || scimPath == "ServiceProviderConfig/":
+			route = prefix + "/ServiceProviderConfig"
+		case scimPath == "ResourceTypes" || scimPath == "ResourceTypes/":
+			route = prefix + "/ResourceTypes"
+		default:
+			// For any other path, use the full path but check for potential IDs
+			// If the path looks like it might contain an ID (has multiple segments),
+			// we should sanitize it
+			segments := strings.Split(strings.Trim(scimPath, "/"), "/")
+			if len(segments) > 1 {
+				// Might be something like CustomResource/123
+				// Replace the last segment with {id} if it looks like an ID
+				route = prefix + "/" + segments[0] + "/{id}"
+			} else {
+				// Single segment path, use as is
+				route = prefix + "/" + scimPath
+			}
+		}
+
+		// Create the instrumented handler with the proper route
+		instrumentedHandler := otelhttp.NewHandler(
+			otelhttp.WithRouteTag(route, next),
+			"", // Empty operation name - will be set by span name formatter
+			otelhttp.WithSpanNameFormatter(func(operation string, req *http.Request) string {
+				return req.Method + " " + route
+			}),
+		)
+		instrumentedHandler.ServeHTTP(w, r)
+	})
+}
+
+// debugSCIMPayloadsEnabled reports whether the FLEET_DEBUG_SCIM_PAYLOADS environment
+// variable is set to a truthy value.
+func debugSCIMPayloadsEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLEET_DEBUG_SCIM_PAYLOADS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// debugPayloadDumpMiddleware logs the raw SCIM request body to scimLogger when enabled
+// is true. The full body is read into memory, written to the log, and then restored
+// for the downstream handler via a fresh io.ReadCloser.
+func debugPayloadDumpMiddleware(logger *slog.Logger, enabled bool, next http.Handler) http.Handler {
+	if !enabled {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if r.Body == nil || r.Body == http.NoBody {
+			logger.WarnContext(ctx, "scim payload dump",
+				"method", r.Method, "path", r.URL.Path, "size", 0, "body", "")
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			// Fail the request explicitly rather than passing an empty body to the
+			// downstream handler — that would surface as a confusing JSON parse
+			// error and mask the real read failure.
+			logger.ErrorContext(ctx, "scim payload dump: failed to read body — failing request to surface error",
+				"method", r.Method, "path", r.URL.Path, "err", err)
+			http.Error(w, "internal error reading request body", http.StatusInternalServerError)
+			return
+		}
+
+		logger.WarnContext(ctx, "scim payload dump",
+			"method", r.Method, "path", r.URL.Path,
+			"size", len(body), "body", string(body))
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// GoogleWorkspaceExclusionMiddleware short-circuits SCIM requests when a Google
+// Workspace integration is configured. Google Workspace and SCIM are mutually
+// exclusive sources for IdP host vitals: while Google Workspace is configured,
+// Fleet pulls the directory itself and must ignore SCIM pushes so they cannot
+// clobber the synced data. It is placed before LastRequestMiddleware so ignored
+// requests don't overwrite the last-sync status.
+func GoogleWorkspaceExclusionMiddleware(ds fleet.Datastore, logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		appConfig, err := ds.AppConfig(ctx)
+		if err != nil {
+			// Fail open: if the (cached) config can't be read, fall back to normal
+			// SCIM handling rather than breaking provisioning on a transient error.
+			logger.ErrorContext(ctx, "scim: failed to load app config for google workspace exclusion", "err", err)
+			next.ServeHTTP(w, r)
+			return
+		}
+		if len(appConfig.Integrations.GoogleWorkspace) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		logger.WarnContext(ctx, "ignoring SCIM request because a Google Workspace integration is configured",
+			"method", r.Method, "path", r.URL.Path)
+		w.Header().Set("Content-Type", "application/scim+json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:Error"},
+			"detail":  "SCIM provisioning is disabled because a Google Workspace integration is configured in Fleet.",
+			"status":  fmt.Sprintf("%d", http.StatusConflict),
+		})
+	})
 }
 
 // LastRequestMiddleware saves the details of the last request to SCIM endpoints in the datastore.
 // These details can be used as a debug tool by the Fleet admin to see if SCIM integration is working.
-func LastRequestMiddleware(ds fleet.Datastore, logger kitlog.Logger, next http.Handler) http.Handler {
+func LastRequestMiddleware(ds fleet.Datastore, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		multi := newMultiResponseWriter(w)
 		next.ServeHTTP(multi, r)
@@ -222,10 +450,16 @@ func LastRequestMiddleware(ds fleet.Datastore, logger kitlog.Logger, next http.H
 		switch {
 		case multi.statusCode == 0 || (multi.statusCode >= 200 && multi.statusCode < 300):
 			status = "success"
-		case multi.statusCode == http.StatusUnauthorized:
-			// We do not save unauthenticated error details; we simply log them.
-			level.Info(logger).Log(
-				"msg", "unauthenticated request",
+		case multi.statusCode == http.StatusUnauthorized || multi.statusCode == http.StatusForbidden:
+			// We do not save authentication (401) or authorization (403) failures; we
+			// simply log them. Otherwise an authenticated-but-unauthorized user (e.g. an
+			// observer) could overwrite the admin-visible last_request telemetry with
+			// their rejected attempts.
+			msg := "unauthenticated request"
+			if multi.statusCode == http.StatusForbidden {
+				msg = "unauthorized request"
+			}
+			logger.InfoContext(r.Context(), msg,
 				"origin", r.Header.Get("Origin"),
 				"ip", r.RemoteAddr,
 				"method", r.Method,
@@ -237,13 +471,13 @@ func LastRequestMiddleware(ds fleet.Datastore, logger kitlog.Logger, next http.H
 		case multi.statusCode >= 400:
 			status = "error"
 			// Attempt to parse the response body as a SCIM error.
-			var parsedScimError errors.ScimError
+			var parsedScimError scimerrors.ScimError
 			if err := json.Unmarshal(multi.body.Bytes(), &parsedScimError); err == nil {
 				details = parsedScimError.Detail
 			} else {
 				details = multi.body.String()
 			}
-			if multi.statusCode == errors.ScimErrorInvalidValue.Status && details == errors.ScimErrorInvalidValue.Detail &&
+			if multi.statusCode == scimerrors.ScimErrorInvalidValue.Status && details == scimerrors.ScimErrorInvalidValue.Detail &&
 				strings.Contains(r.URL.Path, "/Users") {
 				// We customize the error message here since we can't do it inside the 3rd party SCIM library.
 				details = `Missing required attributes. "userName", "givenName", and "familyName" are required. Please configure your identity provider to send required attributes to Fleet.`
@@ -251,7 +485,7 @@ func LastRequestMiddleware(ds fleet.Datastore, logger kitlog.Logger, next http.H
 		default:
 			status = "error"
 			details = fmt.Sprintf("Unhandled status code: %d", multi.statusCode)
-			level.Error(logger).Log("msg", "unhandled status code", "status", multi.statusCode, "body", multi.body.String())
+			logger.ErrorContext(r.Context(), "unhandled status code", "status", multi.statusCode, "body", multi.body.String())
 		}
 		if len(details) > fleet.SCIMMaxFieldLength {
 			details = details[:fleet.SCIMMaxFieldLength]
@@ -261,12 +495,12 @@ func LastRequestMiddleware(ds fleet.Datastore, logger kitlog.Logger, next http.H
 			Details: details,
 		})
 		if err != nil {
-			level.Error(logger).Log("msg", "failed to update last scim request", "err", err)
+			logger.ErrorContext(r.Context(), "failed to update last scim request", "err", err)
 		}
 	})
 }
 
-func AuthorizationMiddleware(authorizer *authz.Authorizer, logger kitlog.Logger, next http.Handler) http.Handler {
+func AuthorizationMiddleware(authorizer *authz.Authorizer, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := authorizer.Authorize(r.Context(), &fleet.ScimUser{}, fleet.ActionWrite)
 		if err != nil {
@@ -277,14 +511,14 @@ func AuthorizationMiddleware(authorizer *authz.Authorizer, logger kitlog.Logger,
 	})
 }
 
-func errorHandler(w http.ResponseWriter, logger kitlog.Logger, detail string, status int) {
-	scimErr := errors.ScimError{
+func errorHandler(w http.ResponseWriter, logger *slog.Logger, detail string, status int) {
+	scimErr := scimerrors.ScimError{
 		Status: status,
 		Detail: detail,
 	}
 	raw, err := json.Marshal(scimErr)
 	if err != nil {
-		level.Error(logger).Log("msg", "failed marshaling scim error", "scimError", scimErr, "err", err)
+		logger.ErrorContext(context.TODO(), "failed marshaling scim error", "scimError", scimErr, "err", err)
 		return
 	}
 
@@ -292,20 +526,18 @@ func errorHandler(w http.ResponseWriter, logger kitlog.Logger, detail string, st
 	w.WriteHeader(scimErr.Status)
 	_, err = w.Write(raw)
 	if err != nil {
-		level.Error(logger).Log("msg", "failed writing response", "err", err)
+		logger.ErrorContext(context.TODO(), "failed writing response", "err", err)
 	}
 }
 
 type scimErrorLogger struct {
-	kitlog.Logger
+	logger *slog.Logger
 }
 
 var _ scim.Logger = &scimErrorLogger{}
 
 func (l *scimErrorLogger) Error(args ...interface{}) {
-	level.Error(l.Logger).Log(
-		"error", fmt.Sprint(args...),
-	)
+	l.logger.ErrorContext(context.TODO(), fmt.Sprint(args...))
 }
 
 type multiResponseWriter struct {

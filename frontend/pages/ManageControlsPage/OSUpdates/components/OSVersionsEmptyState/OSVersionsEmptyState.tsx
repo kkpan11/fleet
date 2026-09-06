@@ -1,19 +1,16 @@
 import React from "react";
 
-import EmptyTable from "components/EmptyTable";
-
-const baseClass = "os-versions-empty-state";
+import EmptyState from "components/EmptyState";
 
 const OSVersionsEmptyState = () => {
   return (
-    <EmptyTable
-      className={`${baseClass}__empty-table`}
+    <EmptyState
       header="No OS versions detected"
       info={
-        <span>
+        <>
           This report is updated every hour to protect
           <br /> the performance of your devices.
-        </span>
+        </>
       }
     />
   );

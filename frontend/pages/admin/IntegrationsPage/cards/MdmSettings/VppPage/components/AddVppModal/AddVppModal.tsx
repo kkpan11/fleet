@@ -1,14 +1,13 @@
-import React, { useCallback, useContext, useState } from "react";
+import React, { useCallback, useState } from "react";
 
-import { NotificationContext } from "context/notification";
 import mdmAppleAPI from "services/entities/mdm_apple";
 
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
+import CustomLink from "components/CustomLink";
 import FileUploader from "components/FileUploader";
-import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
+import { notify } from "components/ToastNotification";
 
-import VppSetupSteps from "../VppSetupSteps";
 import { getErrorMessage } from "./helpers";
 
 const baseClass = "add-vpp-modal";
@@ -19,8 +18,6 @@ interface IAddVppModalProps {
 }
 
 const AddVppModal = ({ onCancel, onAdded }: IAddVppModalProps) => {
-  const { renderFlash } = useContext(NotificationContext);
-
   const [tokenFile, setTokenFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -35,21 +32,21 @@ const AddVppModal = ({ onCancel, onAdded }: IAddVppModalProps) => {
     setIsUploading(true);
     if (!tokenFile) {
       setIsUploading(false);
-      renderFlash("error", "No token selected.");
+      notify.error("No token selected.");
       return;
     }
 
     try {
       await mdmAppleAPI.uploadVppToken(tokenFile);
-      renderFlash("success", "Added successfully.");
+      notify.success("Added successfully.");
       onAdded();
     } catch (e) {
-      renderFlash("error", getErrorMessage(e));
+      notify.error(getErrorMessage(e), { response: e });
       onCancel();
     } finally {
       setIsUploading(false);
     }
-  }, [tokenFile, renderFlash, onAdded, onCancel]);
+  }, [tokenFile, onAdded, onCancel]);
 
   return (
     <Modal
@@ -58,30 +55,35 @@ const AddVppModal = ({ onCancel, onAdded }: IAddVppModalProps) => {
       onExit={onCancel}
       width="large"
     >
-      <>
-        <VppSetupSteps extendendSteps />
-        <FileUploader
-          className={`${baseClass}__file-uploader ${
-            isUploading ? `${baseClass}__file-uploader--loading` : ""
-          }`}
-          accept=".vpptoken"
-          message="Content token (.vpptoken)"
-          graphicName="file-vpp"
-          buttonType="link"
-          buttonMessage={isUploading ? "Uploading..." : "Upload"}
-          fileDetails={tokenFile ? { name: tokenFile.name } : undefined}
-          onFileUpload={onSelectFile}
+      <p className={`${baseClass}__description`}>
+        Follow the step-by-step guide to add VPP.{" "}
+        <CustomLink
+          url="https://fleetdm.com/learn-more-about/add-vpp"
+          text="Learn how"
+          newTab
         />
-        <div className="modal-cta-wrap">
-          <Button
-            onClick={uploadVppToken}
-            isLoading={isUploading}
-            disabled={!tokenFile || isUploading}
-          >
-            Add VPP
-          </Button>
-        </div>
-      </>
+      </p>
+      <FileUploader
+        className={`${baseClass}__file-uploader ${
+          isUploading ? `${baseClass}__file-uploader--loading` : ""
+        }`}
+        accept=".vpptoken"
+        message="Content token (.vpptoken)"
+        graphicName="file-vpp"
+        buttonType="secondary"
+        buttonMessage={isUploading ? "Uploading..." : "Upload"}
+        fileDetails={tokenFile ? { name: tokenFile.name } : undefined}
+        onFileUpload={onSelectFile}
+      />
+      <div className="modal-cta-wrap">
+        <Button
+          onClick={uploadVppToken}
+          isLoading={isUploading}
+          disabled={!tokenFile || isUploading}
+        >
+          Add VPP
+        </Button>
+      </div>
     </Modal>
   );
 };

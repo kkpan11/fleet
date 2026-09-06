@@ -3,18 +3,16 @@ import React from "react";
 import { http, HttpResponse } from "msw";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { baseUrl, createCustomRenderer } from "test/test-utils";
+import {
+  baseUrl,
+  createCustomRenderer,
+  waitForLoadingToFinish,
+} from "test/test-utils";
 import createMockPolicy from "__mocks__/policyMock";
 import mockServer from "test/mock-server";
 
 import { APP_CONTEXT_ALL_TEAMS_ID } from "interfaces/team";
 import PoliciesPaginatedList, { IFormPolicy } from "./PoliciesPaginatedList";
-
-const waitForLoadingToFinish = async (container: HTMLElement) => {
-  await waitFor(() => {
-    expect(container.querySelector(".loading-overlay")).not.toBeInTheDocument();
-  });
-};
 
 const globalPolicies = [
   createMockPolicy({
@@ -53,14 +51,14 @@ const globalPoliciesCountHandler = http.get(baseUrl("/policies/count"), () => {
   });
 });
 
-const teamPoliciesHandler = http.get(baseUrl("/teams/2/policies"), () => {
+const teamPoliciesHandler = http.get(baseUrl("/fleets/2/policies"), () => {
   return HttpResponse.json({
     policies: teamPolicies,
   });
 });
 
 const teamPoliciesCountHandler = http.get(
-  baseUrl("/teams/2/policies/count"),
+  baseUrl("/fleets/2/policies/count"),
   () => {
     return HttpResponse.json({
       count: teamPolicies.length,

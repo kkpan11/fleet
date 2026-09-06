@@ -13,19 +13,26 @@ import {
   formatOperatingSystemDisplayName,
   IOperatingSystemVersion,
 } from "interfaces/operating_system";
-import { ISoftwareVulnerability } from "interfaces/software";
+import {
+  ISoftwareVulnerability,
+  ROLLING_ARCH_LINUX_NAMES,
+} from "interfaces/software";
 
 import TextCell from "components/TableContainer/DataTable/TextCell";
 import HeaderCell from "components/TableContainer/DataTable/HeaderCell";
 import ViewAllHostsLink from "components/ViewAllHostsLink";
 import LinkCell from "components/TableContainer/DataTable/LinkCell";
+import TooltipWrapper from "components/TooltipWrapper";
+import CustomLink from "components/CustomLink";
 
 import VulnerabilitiesCell from "pages/SoftwarePage/components/tables/VulnerabilitiesCell";
-import SoftwareIcon from "pages/SoftwarePage/components/icons/SoftwareIcon";
+import OSIcon from "pages/SoftwarePage/components/icons/OSIcon";
 import {
   INumberCellProps,
   IStringCellProps,
 } from "interfaces/datatable_config";
+import { isVulnUnsupportedPlatform } from "interfaces/platform";
+import TooltipWrapperArchLinuxRolling from "components/TooltipWrapperArchLinuxRolling";
 
 type ITableColumnConfig = Column<IOperatingSystemVersion>;
 
@@ -65,11 +72,11 @@ const generateDefaultTableHeaders = (
         );
       }
 
-      const { name, os_version_id, platform } = cellProps.row.original;
+      const { name_only, os_version_id, platform } = cellProps.row.original;
 
       const softwareOsDetailsPath = getPathWithQueryParams(
         PATHS.SOFTWARE_OS_DETAILS(os_version_id),
-        { team_id: teamId }
+        { fleet_id: teamId }
       );
 
       const onClickSoftware = (e: React.MouseEvent) => {
@@ -84,8 +91,8 @@ const generateDefaultTableHeaders = (
           path={softwareOsDetailsPath}
           customOnClick={onClickSoftware}
           tooltipTruncate
-          prefix={<SoftwareIcon name={platform} />}
-          value={name}
+          prefix={<OSIcon name={platform} />}
+          value={name_only}
         />
       );
     },
@@ -93,10 +100,18 @@ const generateDefaultTableHeaders = (
   {
     Header: "Version",
     disableSortBy: true,
-    accessor: "version",
-    Cell: (cellProps: IVersionCellProps) => (
-      <TextCell value={cellProps.cell.value} />
-    ),
+    Cell: (cellProps: IVersionCellProps) => {
+      const { version, name_only } = cellProps.row.original;
+      if (
+        ROLLING_ARCH_LINUX_NAMES.includes(name_only) &&
+        version === "rolling"
+      ) {
+        return (
+          <TextCell value={<TooltipWrapperArchLinuxRolling capitalized />} />
+        );
+      }
+      return <TextCell value={version} />;
+    },
   },
   {
     Header: "Vulnerabilities",
@@ -104,10 +119,37 @@ const generateDefaultTableHeaders = (
     accessor: "vulnerabilities",
     Cell: (cellProps: IVulnCellProps) => {
       const platform = cellProps.row.original.platform;
-      if (platform !== "darwin" && platform !== "windows") {
-        return <TextCell value="Not supported" grey />;
+      if (isVulnUnsupportedPlatform(platform)) {
+        return (
+          <TooltipWrapper
+            tipContent={
+              <>
+                Vulnerabilities are currently supported on
+                <br />
+                macOS, Windows, Linux, and Android.{" "}
+                <CustomLink
+                  url="https://fleetdm.com/guides/vulnerability-processing#coverage"
+                  variant="tooltip-link"
+                  text="Learn more"
+                  newTab
+                />
+              </>
+            }
+            position="top"
+            underline={false}
+            showArrow
+            fixedPositionStrategy
+          >
+            <TextCell value="Not supported" grey />
+          </TooltipWrapper>
+        );
       }
-      return <VulnerabilitiesCell vulnerabilities={cellProps.cell.value} />;
+      return (
+        <VulnerabilitiesCell
+          vulnerabilities={cellProps.cell.value}
+          vulnerabilitiesCount={cellProps.row.original.vulnerabilities_count}
+        />
+      );
     },
   },
   {
@@ -140,7 +182,7 @@ const generateDefaultTableHeaders = (
         <ViewAllHostsLink
           queryParams={{
             os_version_id,
-            team_id: teamId,
+            fleet_id: teamId,
           }}
           className="os-hosts-link"
           rowHover

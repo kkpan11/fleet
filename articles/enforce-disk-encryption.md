@@ -8,35 +8,39 @@ In Fleet, you can enforce disk encryption for your macOS and Windows hosts, and 
 
 When disk encryption is enforced, hosts' disk encryption keys will be stored in Fleet.
 
-For macOS hosts that automatically enroll, disk encryption is enforced during Setup Assistant. For Windows, currently disk encryption is enforced on the C: volume (default system/OS drive) only on hosts with a [TPM chip](https://support.microsoft.com/en-us/topic/what-s-a-trusted-platform-module-tpm-705f241d-025d-4470-80c5-4feeb24fa1ee). For Linux, encryption requires end user interaction.
+For macOS hosts that automatically enroll, end users are forced to enable disk encryption during Setup Assistant and the disk encryption key is automatically escrowed to Fleet. For hosts that manually enroll, end users are forced to enable disk encryption. The key gets escrowed the next time they log out and log back in. For both enroll methods, end users can't defer.
+
+> On macOS 15.7, if the end user account type is set to **Standard** or **Skip (no account)** during [setup experience](https://fleetdm.com/guides/setup-experience), FileVault cannot be enabled locally through System Settings. To encrypt the disk on these hosts, enforce disk encryption via Fleet using the steps below. This issue does not affect macOS 26.
+
+For Windows, currently disk encryption is enforced on the C: volume (default system/OS drive) only on hosts with a [TPM chip](https://support.microsoft.com/en-us/topic/what-s-a-trusted-platform-module-tpm-705f241d-025d-4470-80c5-4feeb24fa1ee). For Linux, encryption requires end user interaction.
 
 ## Enforce disk encryption
 
-You can enforce disk encryption using the Fleet UI, Fleet API, or [Fleet's GitOps workflow](https://github.com/fleetdm/fleet-gitops).
+You can enforce disk encryption using the Fleet UI, Fleet API, or [GitOps](https://fleetdm.com/docs/configuration/yaml-files).
 
 #### Fleet UI:
 
 1. In Fleet, head to the **Controls > OS settings > Disk encryption** page.
 
-2. Choose which team you want to enforce disk encryption on by selecting the desired team in the teams dropdown in the upper left corner.
+2. Choose which fleet you want to enforce disk encryption on by selecting the desired fleet in the fleets dropdown in the upper left corner.
 
 3. Check the box next to **Turn on** and select **Save**.
 
 #### Fleet API: 
 
-API documentation is [here](https://fleetdm.com/docs/rest-api/rest-api#update-disk-encryption-enforcement).
+You can use the [Update disk encryption enforcement API endpoint](https://fleetdm.com/docs/rest-api/rest-api#update-disk-encryption-enforcement) to manage disk encryption settings via the API.
 
 ### Disk encryption status
 
 In the Fleet UI, head to the **Controls > OS settings > Disk encryption** tab. You will see a table that shows the status of disk encryption on your hosts. 
 
-* Verified: the host turned disk encryption on and sent their key to Fleet. Fleet verified with osquery. See instructions for viewing the disk encryption key [here](#view-disk-encryption-key).
+* Verified: the host turned disk encryption on and sent their key to Fleet, and Fleet has verified the key with osquery. The [encryption key can be viewed within Fleet](#view-disk-encryption-key).
 
-* Verifying: the host acknowledged the MDM command to install the disk encryption profile. Fleet is verifying with osquery and retrieving the disk encryption key.
+* Verifying: the host acknowledged the MDM command to install the disk encryption profile. Fleet is verifying with osquery and retrieving the disk encryption key. On Windows, this means the encryption key has been escrowed to Fleet but disk encryption may still be physically completing in the background. The host will transition to "Verified" once osquery confirms encryption is complete and BitLocker protection is active.
 
 > It may take up to two hours for Fleet to collect and store the disk encryption keys from all hosts.
 
-* Action required (pending): the end user must take action to turn disk encryption on or reset their disk encryption key. 
+* Action required (pending): the end user must take action to turn disk encryption on or reset their disk encryption key. On Windows, this status also appears when the disk is encrypted and the key is escrowed but BitLocker protection is off (e.g., suspended for a BIOS update or due to a TPM configuration issue).
 
 * Enforcing (pending): the host will receive the MDM command to install the configuration profile when the host comes online.
 
@@ -72,7 +76,7 @@ How to view the disk encryption key:
 
 2. On the **Host details** page, select **Actions > Show disk encryption key**.
 
-> The disk encryption key is deleted if a host is transferred to a team with disk encryption turned off. To re-escrow they key, transfer the host back to a team with disk encryption on.
+> The disk encryption key is deleted if a host is assigned to a fleet with disk encryption turned off. To re-escrow they key, transfer the host back to a fleet with disk encryption on.
 
 ## Use disk encryption key to login
 
@@ -94,7 +98,7 @@ First, in Fleet, head to the host's **Host details** page in Fleet and check it'
 
 #### On (automatic)
 
-1. Login to [Microsoft Azure](portal.azure.com) (Entra) and navigate to the **Users** page.
+1. Login to [Microsoft Azure](https://portal.azure.com) (Entra) and navigate to the **Users** page.
 
 2. Select the end user's user and select **Reset password**.
 
@@ -126,9 +130,27 @@ passwd -d <username>
 
 ## Migrate macOS hosts
 
-When migrating macOS hosts from another MDM solution, in order to complete the process of encrypting the hard drive and escrowing the key in Fleet, your end users must log out or restart their Mac.
+When migrating macOS hosts from another MDM solution, in order to complete the process of encrypting the hard drive and escrowing the key in Fleet, your end users must log out and log back in.
 
 Share [these guided instructions](https://fleetdm.com/guides/mdm-migration#how-to-turn-on-disk-encryption) with your end users.
+
+## Advanced
+
+### Custom disk encryption profiles
+
+If you need FileVault or BitLocker settings Fleet doesn't manage directly, you can upload your own configuration profile alongside or instead of Fleet's enforcement. See [Custom disk encryption profiles](https://fleetdm.com/guides/custom-disk-encryption-profiles).
+
+### Escrow Buddy
+
+Fleet uses [Escrow Buddy](https://github.com/macadmins/escrow-buddy) to escrow disk encryption keys from macOS hosts. Escrow Buddy is installed only on macOS hosts that are assigned to a team in Fleet with disk encryption enforced. If a host is then transferred to a team that doesn't enforce disk encryption, Escrow Buddy stays installed.
+
+### Encryption key changes
+
+Currently, on macOS and Linux, Fleet detects when the disk encryption key changes and escrows a new key. Fleet doesn't do this on Windows.
+
+On macOS hosts, if an end user with local admin permissions changes the key using the `sudo fdesetup changerecovery -personal` command, Fleet will escrow that new key.
+
+For Linux, Fleet will prompt the end user to escrow a new key. [Learn more](#enforce-disk-encryption-on-linux).
 
 <meta name="category" value="guides">
 <meta name="authorGitHubUsername" value="noahtalerman">

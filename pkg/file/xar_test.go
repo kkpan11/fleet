@@ -104,13 +104,20 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			expectedPackageIDs: []string{"org.golang.go"},
 		},
 		{
+			file:               "distribution-globalprotect.xml",
+			expectedName:       "GlobalProtect",
+			expectedVersion:    "6.2.8-948",
+			expectedBundleID:   "com.paloaltonetworks.globalprotect.pkg",
+			expectedPackageIDs: []string{"com.paloaltonetworks.globalprotect.pkg"},
+		},
+		{
 			file:             "distribution-microsoft-teams.xml",
 			expectedName:     "Microsoft Teams",
 			expectedVersion:  "24124.1412.2911.3341",
 			expectedBundleID: "com.microsoft.teams2",
 			expectedPackageIDs: []string{
-				"com.microsoft.teams2", "com.microsoft.package.Microsoft_AutoUpdate.app",
-				"com.microsoft.MSTeamsAudioDevice",
+				"com.microsoft.MSTeamsAudioDevice", "com.microsoft.package.Microsoft_AutoUpdate.app",
+				"com.microsoft.teams2",
 			},
 		},
 		{
@@ -143,8 +150,8 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			expectedVersion:  "2.38.173",
 			expectedBundleID: "com.box.desktop",
 			expectedPackageIDs: []string{
-				"com.box.desktop.installer.desktop", "com.box.desktop.installer.local.appsupport",
-				"com.box.desktop.installer.autoupdater", "com.box.desktop.installer.osxfuse",
+				"com.box.desktop.installer.autoupdater", "com.box.desktop.installer.desktop",
+				"com.box.desktop.installer.local.appsupport", "com.box.desktop.installer.osxfuse",
 			},
 		},
 		{
@@ -154,7 +161,7 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			expectedBundleID: "com.iriun.macwebcam",
 			// Note: "com.iriun.pkg.multicam" is part of the installer package, but it is not actually installed by default.
 			// We can't reliably determine which packages are installed by the installer, so we just list all of them.
-			expectedPackageIDs: []string{"com.iriun.pkg.webcam.tmp", "com.iriun.pkg.multicam"},
+			expectedPackageIDs: []string{"com.iriun.pkg.multicam", "com.iriun.pkg.webcam.tmp"},
 		},
 		{
 			file:             "distribution-microsoftexcel.xml",
@@ -162,7 +169,7 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			expectedVersion:  "16.86",
 			expectedBundleID: "com.microsoft.Excel",
 			expectedPackageIDs: []string{
-				"com.microsoft.package.Microsoft_Excel.app", "com.microsoft.package.Microsoft_AutoUpdate.app",
+				"com.microsoft.package.Microsoft_AutoUpdate.app", "com.microsoft.package.Microsoft_Excel.app",
 				"com.microsoft.pkg.licensing",
 			},
 		},
@@ -172,7 +179,7 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			expectedVersion:  "16.86",
 			expectedBundleID: "com.microsoft.Word",
 			expectedPackageIDs: []string{
-				"com.microsoft.package.Microsoft_Word.app", "com.microsoft.package.Microsoft_AutoUpdate.app",
+				"com.microsoft.package.Microsoft_AutoUpdate.app", "com.microsoft.package.Microsoft_Word.app",
 				"com.microsoft.pkg.licensing",
 			},
 		},
@@ -182,7 +189,7 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			expectedVersion:  "16.86",
 			expectedBundleID: "com.microsoft.Powerpoint",
 			expectedPackageIDs: []string{
-				"com.microsoft.package.Microsoft_PowerPoint.app", "com.microsoft.package.Microsoft_AutoUpdate.app",
+				"com.microsoft.package.Microsoft_AutoUpdate.app", "com.microsoft.package.Microsoft_PowerPoint.app",
 				"com.microsoft.pkg.licensing",
 			},
 		},
@@ -211,15 +218,32 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			file:               "distribution-sentinelone.xml",
 			expectedName:       "SentinelOne",
 			expectedVersion:    "24.3.2.7753",
-			expectedBundleID:   "com.sentinelone.sentinel-agent",
+			expectedBundleID:   "com.sentinelone.SentinelAgent",
 			expectedPackageIDs: []string{"com.sentinelone.pkg.sentinel-agent", "com.sentinelone.sentinel-agent"},
 		},
 		{
-			file:               "distribution-cold-turkey.xml",
-			expectedName:       "Cold Turkey Blocker",
-			expectedVersion:    "4.5",
-			expectedBundleID:   "com.getcoldturkey.coldturkeyblocker",
-			expectedPackageIDs: []string{"com.getcoldturkey.coldturkeyblocker", "com.getcoldturkey.blocker-firefox-ext", "com.getcoldturkey.blocker-edge-ext", "com.getcoldturkey.blocker-chrome-ext"},
+			file:             "distribution-cold-turkey.xml",
+			expectedName:     "Cold Turkey Blocker",
+			expectedVersion:  "4.5",
+			expectedBundleID: "com.getcoldturkey.coldturkeyblocker",
+			expectedPackageIDs: []string{
+				"com.getcoldturkey.blocker-chrome-ext", "com.getcoldturkey.blocker-edge-ext",
+				"com.getcoldturkey.blocker-firefox-ext", "com.getcoldturkey.coldturkeyblocker",
+			},
+		},
+		{
+			file:               "distribution-privileges.xml",
+			expectedName:       "Privileges",
+			expectedVersion:    "2.4.0",
+			expectedBundleID:   "corp.sap.privileges",
+			expectedPackageIDs: []string{"corp.sap.privileges.pkg"},
+		},
+		{
+			file:               "distribution-cisco-secure-client.xml",
+			expectedName:       "Cisco Secure Client",
+			expectedVersion:    "5.1.3.62",
+			expectedBundleID:   "com.cisco.secureclient.gui",
+			expectedPackageIDs: []string{"com.cisco.pkg.anyconnect.vpn"},
 		},
 	}
 
@@ -229,7 +253,7 @@ func TestParseRealDistributionFiles(t *testing.T) {
 			require.NoError(t, err)
 			metadata, err := parseDistributionFile(rawXML)
 			require.NoError(t, err)
-			assert.ElementsMatch(t, tt.expectedPackageIDs, metadata.PackageIDs)
+			assert.Equal(t, tt.expectedPackageIDs, metadata.PackageIDs)
 			require.Equal(t, tt.expectedName, metadata.Name)
 			require.Equal(t, tt.expectedVersion, metadata.Version)
 			require.Equal(t, tt.expectedBundleID, metadata.BundleIdentifier)
@@ -248,20 +272,27 @@ func TestParsePackageInfoFiles(t *testing.T) {
 	}{
 		{
 			file:               "packageInfo-oktaVerify.xml",
-			expectedName:       "Okta Verify.app",
+			expectedName:       "Okta Verify",
 			expectedVersion:    "9.27.0",
 			expectedBundleID:   "com.okta.mobile",
 			expectedPackageIDs: []string{"com.okta.mobile"},
 		},
 		{
 			file:             "packageInfo-iriunWebcam.xml",
-			expectedName:     "IriunWebcam.app",
+			expectedName:     "IriunWebcam",
 			expectedVersion:  "2.8.10",
 			expectedBundleID: "com.iriun.macwebcam",
 			expectedPackageIDs: []string{
-				"com.iriun.macwebcam", "com.iriun.macwebcam.extension4", "com.iriun.macwebcam.extension",
-				"com.iriun.mic",
+				"com.iriun.macwebcam", "com.iriun.macwebcam.extension",
+				"com.iriun.macwebcam.extension4", "com.iriun.mic",
 			},
+		},
+		{
+			file:               "packageinfo-subEthaEdit-modded.xml",
+			expectedName:       "SubEthaEdit",
+			expectedVersion:    "5.2.4",
+			expectedBundleID:   "de.codingmonkeys.SubEthaEdit.MacFULL",
+			expectedPackageIDs: []string{"de.codingmonkeys.SubEthaEdit.MacFULL"},
 		},
 		{
 			file:               "packageInfo-scriptOnly.xml",
@@ -275,14 +306,14 @@ func TestParsePackageInfoFiles(t *testing.T) {
 			expectedName:       "",
 			expectedVersion:    "",
 			expectedBundleID:   "",
-			expectedPackageIDs: []string{},
+			expectedPackageIDs: []string(nil),
 		},
 		{
 			file:               "packageInfo-versionOnly.xml",
 			expectedName:       "",
 			expectedVersion:    "test-version",
 			expectedBundleID:   "",
-			expectedPackageIDs: []string{},
+			expectedPackageIDs: []string(nil),
 		},
 	}
 
@@ -292,7 +323,7 @@ func TestParsePackageInfoFiles(t *testing.T) {
 			require.NoError(t, err)
 			metadata, err := parsePackageInfoFile(rawXML)
 			require.NoError(t, err)
-			assert.ElementsMatch(t, tt.expectedPackageIDs, metadata.PackageIDs)
+			assert.Equal(t, tt.expectedPackageIDs, metadata.PackageIDs)
 			assert.Equal(t, tt.expectedName, metadata.Name)
 			assert.Equal(t, tt.expectedVersion, metadata.Version)
 			assert.Equal(t, tt.expectedBundleID, metadata.BundleIdentifier)
@@ -308,10 +339,16 @@ func TestIsValidAppFilePath(t *testing.T) {
 		{"baz.app", true},
 		{"foo/bar/baz.app", false},
 		{"Applications/baz.app", true},
-		{"Applications/foo/baz.app", false},
+		{"Applications/foo/baz.app", true},
 		{"foo/baz.app", false},
 		{"baz.txt", true},
 		{"Applications/baz.txt", false},
+		{"Applications/Cisco/Cisco Secure Client.app", true},
+		{"Applications/Foo with spaces.app", true},
+		{"Applications/foo", false},
+		{"foo", true},
+		{"Applications/foo.app/bar.app", false},
+		{"Applications/foo.app/Helpers/bar.app", false},
 	}
 
 	for _, test := range tests {

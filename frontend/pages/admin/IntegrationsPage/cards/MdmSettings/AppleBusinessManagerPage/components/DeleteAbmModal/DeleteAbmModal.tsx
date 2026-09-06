@@ -1,11 +1,10 @@
-import React, { useCallback, useContext, useState } from "react";
+import React, { useCallback, useState } from "react";
 
 import mdmAbmAPI from "services/entities/mdm_apple_bm";
-import { IMdmAbmToken } from "interfaces/mdm";
-import { NotificationContext } from "context/notification";
 
 import Button from "components/buttons/Button";
 import Modal from "components/Modal";
+import { notify } from "components/ToastNotification";
 
 const baseClass = "delete-abm-modal";
 
@@ -22,8 +21,6 @@ const DeleteAbmModal = ({
   onCancel,
   onDeletedToken,
 }: IDeleteAbmModalProps) => {
-  const { renderFlash } = useContext(NotificationContext);
-
   const [isDeleting, setIsDeleting] = useState(false);
 
   const onDeleteToken = useCallback(async () => {
@@ -31,54 +28,47 @@ const DeleteAbmModal = ({
 
     try {
       await mdmAbmAPI.deleteToken(tokenId);
-      renderFlash("success", "Deleted successfully.");
+      notify.success("Deleted successfully.");
       onDeletedToken();
     } catch (e) {
       // TODO: Check API sends back correct error messages
-      renderFlash(
-        "error",
-        "Couldn’t disable automatic enrollment. Please try again."
-      );
+      notify.error("Couldn’t disable automatic enrollment. Please try again.", {
+        response: e,
+      });
       onCancel();
     }
-  }, [onCancel, onDeletedToken, renderFlash, tokenId]);
+  }, [onCancel, onDeletedToken, tokenId]);
 
   return (
     <Modal
-      title="Delete ABM"
+      title="Delete AB"
       className={baseClass}
       onExit={onCancel}
       isContentDisabled={isDeleting}
     >
-      <>
-        <p>
-          New hosts purchased in the <b>{tokenOrgName}</b> won&apos;t
-          automatically enroll to Fleet.{" "}
-        </p>
-        <p>
-          If you want to re-enable automatic enrollment, you&apos;ll have to
-          upload a new ABM token.
-        </p>
+      <p>
+        New hosts purchased in the <b>{tokenOrgName}</b> won&apos;t
+        automatically enroll to Fleet.{" "}
+      </p>
+      <p>
+        If you want to re-enable automatic enrollment, you&apos;ll have to
+        upload a new AB token.
+      </p>
 
-        <div className="modal-cta-wrap">
-          <Button
-            type="button"
-            variant="alert"
-            onClick={onDeleteToken}
-            disabled={isDeleting}
-            isLoading={isDeleting}
-          >
-            Delete
-          </Button>
-          <Button
-            onClick={onCancel}
-            disabled={isDeleting}
-            variant="inverse-alert"
-          >
-            Cancel
-          </Button>
-        </div>
-      </>
+      <div className="modal-cta-wrap">
+        <Button
+          type="button"
+          variant="alert"
+          onClick={onDeleteToken}
+          disabled={isDeleting}
+          isLoading={isDeleting}
+        >
+          Delete
+        </Button>
+        <Button onClick={onCancel} disabled={isDeleting} variant="secondary">
+          Cancel
+        </Button>
+      </div>
     </Modal>
   );
 };

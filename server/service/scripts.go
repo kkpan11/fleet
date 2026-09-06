@@ -5,47 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"time"
 
-	"github.com/docker/go-units"
 	"github.com/fleetdm/fleet/v4/pkg/file"
 	"github.com/fleetdm/fleet/v4/pkg/scripts"
 	"github.com/fleetdm/fleet/v4/server/authz"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/contexts/license"
-	"github.com/fleetdm/fleet/v4/server/contexts/logging"
 	"github.com/fleetdm/fleet/v4/server/fleet"
-	"github.com/fleetdm/fleet/v4/server/ptr"
-	"github.com/gorilla/mux"
 )
 
 ////////////////////////////////////////////////////////////////////////////////
 // Run Script on a Host (async)
 ////////////////////////////////////////////////////////////////////////////////
 
-type runScriptRequest struct {
-	HostID         uint   `json:"host_id"`
-	ScriptID       *uint  `json:"script_id"`
-	ScriptContents string `json:"script_contents"`
-	ScriptName     string `json:"script_name"`
-	TeamID         uint   `json:"team_id"`
-}
-
-type runScriptResponse struct {
-	Err         error  `json:"error,omitempty"`
-	HostID      uint   `json:"host_id,omitempty"`
-	ExecutionID string `json:"execution_id,omitempty"`
-}
-
-func (r runScriptResponse) Error() error { return r.Err }
-func (r runScriptResponse) Status() int  { return http.StatusAccepted }
-
 func runScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*runScriptRequest)
+	req := request.(*fleet.RunScriptRequest)
 
 	var noWait time.Duration
 	result, err := svc.RunHostScript(ctx, &fleet.HostScriptRequestPayload{
@@ -56,40 +33,14 @@ func runScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Servi
 		TeamID:         req.TeamID,
 	}, noWait)
 	if err != nil {
-		return runScriptResponse{Err: err}, nil
+		return fleet.RunScriptResponse{Err: err}, nil
 	}
-	return runScriptResponse{HostID: result.HostID, ExecutionID: result.ExecutionID}, nil
+	return fleet.RunScriptResponse{HostID: result.HostID, ExecutionID: result.ExecutionID}, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Run Script on a Host (sync)
 ////////////////////////////////////////////////////////////////////////////////
-
-type runScriptSyncRequest struct {
-	HostID         uint   `json:"host_id"`
-	ScriptID       *uint  `json:"script_id"`
-	ScriptContents string `json:"script_contents"`
-	ScriptName     string `json:"script_name"`
-	TeamID         uint   `json:"team_id"`
-}
-
-type runScriptSyncResponse struct {
-	Err error `json:"error,omitempty"`
-	*fleet.HostScriptResult
-	HostTimeout bool `json:"host_timeout"`
-}
-
-func (r runScriptSyncResponse) Error() error { return r.Err }
-func (r runScriptSyncResponse) Status() int {
-	if r.HostTimeout {
-		// The more proper response for a timeout on the server would be: StatusGatewayTimeout = 504
-		// However, as described in https://github.com/fleetdm/fleet/issues/15430 we will send:
-		// StatusRequestTimeout = 408 // RFC 9110, 15.5.9
-		// See: https://github.com/fleetdm/fleet/issues/15430#issuecomment-1847345617
-		return http.StatusRequestTimeout
-	}
-	return http.StatusOK
-}
 
 // this is to be used only by tests, to be able to use a shorter timeout.
 var testRunScriptWaitForResult time.Duration
@@ -100,7 +51,7 @@ func runScriptSyncEndpoint(ctx context.Context, request interface{}, svc fleet.S
 		waitForResult = testRunScriptWaitForResult
 	}
 
-	req := request.(*runScriptSyncRequest)
+	req := request.(*fleet.RunScriptSyncRequest)
 	result, err := svc.RunHostScript(ctx, &fleet.HostScriptRequestPayload{
 		HostID:         req.HostID,
 		ScriptID:       req.ScriptID,
@@ -111,7 +62,7 @@ func runScriptSyncEndpoint(ctx context.Context, request interface{}, svc fleet.S
 	var hostTimeout bool
 	if err != nil {
 		if !errors.Is(err, context.DeadlineExceeded) {
-			return runScriptSyncResponse{Err: err}, nil
+			return fleet.RunScriptSyncResponse{Err: err}, nil
 		}
 		// We should still return the execution id and host id in this timeout case,
 		// so the user knows what script request to look at in the UI. We cannot
@@ -121,7 +72,7 @@ func runScriptSyncEndpoint(ctx context.Context, request interface{}, svc fleet.S
 		hostTimeout = true
 	}
 	result.Message = result.UserMessage(hostTimeout, result.Timeout)
-	return runScriptSyncResponse{
+	return fleet.RunScriptSyncResponse{
 		HostScriptResult: result,
 		HostTimeout:      hostTimeout,
 	}, nil
@@ -177,9 +128,13 @@ func (svc *Service) RunHostScript(ctx context.Context, request *fleet.HostScript
 	}
 
 	if request.ScriptContents != "" {
-		if err := svc.ds.ValidateEmbeddedSecrets(ctx, []string{request.ScriptContents}); err != nil {
+		if err := fleet.ValidateEmbeddedSecretsAndCustomHostVitals(ctx, svc.ds, []string{request.ScriptContents}); err != nil {
 			svc.authz.SkipAuthorization(ctx)
 			return nil, fleet.NewInvalidArgumentError("script", err.Error())
+		}
+		if err := fleet.ValidateFleetVariablesInScript(request.ScriptContents, license.IsPremium(ctx)); err != nil {
+			svc.authz.SkipAuthorization(ctx)
+			return nil, err
 		}
 	}
 
@@ -247,7 +202,7 @@ func (svc *Service) RunHostScript(ctx context.Context, request *fleet.HostScript
 			hostTmID = *host.TeamID
 		}
 		if scriptTmID != hostTmID {
-			return nil, fleet.NewInvalidArgumentError("script_id", `The script does not belong to the same team (or no team) as the host.`)
+			return nil, fleet.NewInvalidArgumentError("script_id", `The script does not belong to the same fleet (or "Unassigned") as the host.`)
 		}
 
 		isQueued, err := svc.ds.IsExecutionPendingForHost(ctx, request.HostID, *request.ScriptID)
@@ -350,44 +305,25 @@ func (svc *Service) RunHostScript(ctx context.Context, request *fleet.HostScript
 	}
 }
 
-// //////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // Get script result for a host
-// //////////////////////////////////////////////////////////////////////////////
-type getScriptResultRequest struct {
-	ExecutionID string `url:"execution_id"`
-}
-
-type getScriptResultResponse struct {
-	ScriptContents string    `json:"script_contents"`
-	ScriptID       *uint     `json:"script_id"`
-	ExitCode       *int64    `json:"exit_code"`
-	Output         string    `json:"output"`
-	Message        string    `json:"message"`
-	HostName       string    `json:"hostname"`
-	HostTimeout    bool      `json:"host_timeout"`
-	HostID         uint      `json:"host_id"`
-	ExecutionID    string    `json:"execution_id"`
-	Runtime        int       `json:"runtime"`
-	CreatedAt      time.Time `json:"created_at"`
-
-	Err error `json:"error,omitempty"`
-}
-
-func (r getScriptResultResponse) Error() error { return r.Err }
+////////////////////////////////////////////////////////////////////////////////
 
 func getScriptResultEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*getScriptResultRequest)
+	req := request.(*fleet.GetScriptResultRequest)
 	scriptResult, err := svc.GetScriptResult(ctx, req.ExecutionID)
 	if err != nil {
-		return getScriptResultResponse{Err: err}, nil
+		return fleet.GetScriptResultResponse{Err: err}, nil
 	}
 
-	// TODO: move this logic out of the endpoint function and consolidate in either the service
-	// method or the fleet package
+	return setUpGetScriptResultResponse(scriptResult), nil
+}
+
+func setUpGetScriptResultResponse(scriptResult *fleet.HostScriptResult) *fleet.GetScriptResultResponse {
 	hostTimeout := scriptResult.HostTimeout(scripts.MaxServerWaitTime)
 	scriptResult.Message = scriptResult.UserMessage(hostTimeout, scriptResult.Timeout)
 
-	return &getScriptResultResponse{
+	return &fleet.GetScriptResultResponse{
 		ScriptContents: scriptResult.ScriptContents,
 		ScriptID:       scriptResult.ScriptID,
 		ExitCode:       scriptResult.ExitCode,
@@ -399,7 +335,7 @@ func getScriptResultEndpoint(ctx context.Context, request interface{}, svc fleet
 		ExecutionID:    scriptResult.ExecutionID,
 		Runtime:        scriptResult.Runtime,
 		CreatedAt:      scriptResult.CreatedAt,
-	}, nil
+	}
 }
 
 func (svc *Service) GetScriptResult(ctx context.Context, execID string) (*fleet.HostScriptResult, error) {
@@ -446,61 +382,20 @@ func (svc *Service) GetScriptResult(ctx context.Context, execID string) (*fleet.
 // Create a (saved) script (via a multipart file upload)
 ////////////////////////////////////////////////////////////////////////////////
 
-type createScriptRequest struct {
-	TeamID *uint
-	Script *multipart.FileHeader
-}
-
-func (createScriptRequest) DecodeRequest(ctx context.Context, r *http.Request) (interface{}, error) {
-	var decoded createScriptRequest
-
-	err := r.ParseMultipartForm(512 * units.MiB) // same in-memory size as for other multipart requests we have
-	if err != nil {
-		return nil, &fleet.BadRequestError{
-			Message:     "failed to parse multipart form",
-			InternalErr: err,
-		}
-	}
-
-	val := r.MultipartForm.Value["team_id"]
-	if len(val) > 0 {
-		teamID, err := strconv.ParseUint(val[0], 10, 64)
-		if err != nil {
-			return nil, &fleet.BadRequestError{Message: fmt.Sprintf("failed to decode team_id in multipart form: %s", err.Error())}
-		}
-		decoded.TeamID = ptr.Uint(uint(teamID))
-	}
-
-	fhs, ok := r.MultipartForm.File["script"]
-	if !ok || len(fhs) < 1 {
-		return nil, &fleet.BadRequestError{Message: "no file headers for script"}
-	}
-	decoded.Script = fhs[0]
-
-	return &decoded, nil
-}
-
-type createScriptResponse struct {
-	Err      error `json:"error,omitempty"`
-	ScriptID uint  `json:"script_id,omitempty"`
-}
-
-func (r createScriptResponse) Error() error { return r.Err }
-
 func createScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*createScriptRequest)
+	req := request.(*fleet.CreateScriptRequest)
 
 	scriptFile, err := req.Script.Open()
 	if err != nil {
-		return &createScriptResponse{Err: err}, nil
+		return &fleet.CreateScriptResponse{Err: err}, nil
 	}
 	defer scriptFile.Close()
 
 	script, err := svc.NewScript(ctx, req.TeamID, filepath.Base(req.Script.Filename), scriptFile)
 	if err != nil {
-		return createScriptResponse{Err: err}, nil
+		return fleet.CreateScriptResponse{Err: err}, nil
 	}
-	return createScriptResponse{ScriptID: script.ID}, nil
+	return fleet.CreateScriptResponse{ScriptID: script.ID}, nil
 }
 
 func (svc *Service) NewScript(ctx context.Context, teamID *uint, name string, r io.Reader) (*fleet.Script, error) {
@@ -519,8 +414,12 @@ func (svc *Service) NewScript(ctx context.Context, teamID *uint, name string, r 
 		ScriptContents: file.Dos2UnixNewlines(string(b)),
 	}
 
-	if err := svc.ds.ValidateEmbeddedSecrets(ctx, []string{script.ScriptContents}); err != nil {
+	if err := fleet.ValidateEmbeddedSecretsAndCustomHostVitals(ctx, svc.ds, []string{script.ScriptContents}); err != nil {
 		return nil, fleet.NewInvalidArgumentError("script", err.Error())
+	}
+
+	if err := fleet.ValidateFleetVariablesInScript(script.ScriptContents, license.IsPremium(ctx)); err != nil {
+		return nil, err
 	}
 
 	if err := script.ValidateNewScript(); err != nil {
@@ -536,7 +435,7 @@ func (svc *Service) NewScript(ctx context.Context, teamID *uint, name string, r 
 		if errors.As(err, &existsErr) {
 			err = fleet.NewInvalidArgumentError("script", "A script with this name already exists.").WithStatus(http.StatusConflict)
 		} else if errors.As(err, &fkErr) {
-			err = fleet.NewInvalidArgumentError("team_id", "The team does not exist.").WithStatus(http.StatusNotFound)
+			err = fleet.NewInvalidArgumentError("team_id/fleet_id", "The fleet does not exist.").WithStatus(http.StatusNotFound)
 		}
 		return nil, ctxerr.Wrap(ctx, err, "create script")
 	}
@@ -569,24 +468,13 @@ func (svc *Service) NewScript(ctx context.Context, teamID *uint, name string, r 
 // Delete a (saved) script
 ////////////////////////////////////////////////////////////////////////////////
 
-type deleteScriptRequest struct {
-	ScriptID uint `url:"script_id"`
-}
-
-type deleteScriptResponse struct {
-	Err error `json:"error,omitempty"`
-}
-
-func (r deleteScriptResponse) Error() error { return r.Err }
-func (r deleteScriptResponse) Status() int  { return http.StatusNoContent }
-
 func deleteScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*deleteScriptRequest)
+	req := request.(*fleet.DeleteScriptRequest)
 	err := svc.DeleteScript(ctx, req.ScriptID)
 	if err != nil {
-		return deleteScriptResponse{Err: err}, nil
+		return fleet.DeleteScriptResponse{Err: err}, nil
 	}
-	return deleteScriptResponse{}, nil
+	return fleet.DeleteScriptResponse{}, nil
 }
 
 func (svc *Service) DeleteScript(ctx context.Context, scriptID uint) error {
@@ -627,26 +515,13 @@ func (svc *Service) DeleteScript(ctx context.Context, scriptID uint) error {
 // List (saved) scripts (paginated)
 ////////////////////////////////////////////////////////////////////////////////
 
-type listScriptsRequest struct {
-	TeamID      *uint             `query:"team_id,optional"`
-	ListOptions fleet.ListOptions `url:"list_options"`
-}
-
-type listScriptsResponse struct {
-	Meta    *fleet.PaginationMetadata `json:"meta"`
-	Scripts []*fleet.Script           `json:"scripts"`
-	Err     error                     `json:"error,omitempty"`
-}
-
-func (r listScriptsResponse) Error() error { return r.Err }
-
 func listScriptsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*listScriptsRequest)
+	req := request.(*fleet.ListScriptsRequest)
 	scripts, meta, err := svc.ListScripts(ctx, req.TeamID, req.ListOptions)
 	if err != nil {
-		return listScriptsResponse{Err: err}, nil
+		return fleet.ListScriptsResponse{Err: err}, nil
 	}
-	return listScriptsResponse{
+	return fleet.ListScriptsResponse{
 		Meta:    meta,
 		Scripts: scripts,
 	}, nil
@@ -674,61 +549,22 @@ func (svc *Service) ListScripts(ctx context.Context, teamID *uint, opt fleet.Lis
 // Get/download a (saved) script
 ////////////////////////////////////////////////////////////////////////////////
 
-type getScriptRequest struct {
-	ScriptID uint   `url:"script_id"`
-	Alt      string `query:"alt,optional"`
-}
-
-type getScriptResponse struct {
-	*fleet.Script
-	Err error `json:"error,omitempty"`
-}
-
-func (r getScriptResponse) Error() error { return r.Err }
-
-type downloadFileResponse struct {
-	Err         error `json:"error,omitempty"`
-	filename    string
-	content     []byte
-	contentType string // optional, defaults to application/octet-stream
-}
-
-func (r downloadFileResponse) Error() error { return r.Err }
-
-func (r downloadFileResponse) HijackRender(ctx context.Context, w http.ResponseWriter) {
-	w.Header().Set("Content-Length", strconv.Itoa(len(r.content)))
-	if r.contentType == "" {
-		r.contentType = "application/octet-stream"
-	}
-	w.Header().Set("Content-Type", r.contentType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment;filename="%s"`, r.filename))
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	// OK to just log the error here as writing anything on
-	// `http.ResponseWriter` sets the status code to 200 (and it can't be
-	// changed.) Clients should rely on matching content-length with the
-	// header provided
-	if n, err := w.Write(r.content); err != nil {
-		logging.WithExtras(ctx, "err", err, "bytes_copied", n)
-	}
-}
-
 func getScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*getScriptRequest)
+	req := request.(*fleet.GetScriptRequest)
 
 	downloadRequested := req.Alt == "media"
 	script, content, err := svc.GetScript(ctx, req.ScriptID, downloadRequested)
 	if err != nil {
-		return getScriptResponse{Err: err}, nil
+		return fleet.GetScriptResponse{Err: err}, nil
 	}
 
 	if downloadRequested {
-		return downloadFileResponse{
-			content:  content,
-			filename: fmt.Sprintf("%s %s", time.Now().Format(time.DateOnly), script.Name),
+		return fleet.DownloadFileResponse{
+			Content:  content,
+			Filename: fmt.Sprintf("%s %s", time.Now().Format(time.DateOnly), script.Name),
 		}, nil
 	}
-	return getScriptResponse{Script: script}, nil
+	return fleet.GetScriptResponse{Script: script}, nil
 }
 
 func (svc *Service) GetScript(ctx context.Context, scriptID uint, withContent bool) (*fleet.Script, []byte, error) {
@@ -751,68 +587,20 @@ func (svc *Service) GetScript(ctx context.Context, scriptID uint, withContent bo
 // Update Script Contents
 ////////////////////////////////////////////////////////////////////////////////
 
-type updateScriptRequest struct {
-	Script   *multipart.FileHeader
-	ScriptID uint
-}
-
-func (updateScriptRequest) DecodeRequest(ctx context.Context, r *http.Request) (interface{}, error) {
-	var decoded updateScriptRequest
-
-	err := r.ParseMultipartForm(512 * units.MiB) // same in-memory size as for other multipart requests we have
-	if err != nil {
-		return nil, &fleet.BadRequestError{
-			Message:     "failed to parse multipart form",
-			InternalErr: err,
-		}
-	}
-
-	vars := mux.Vars(r)
-	scriptIDStr, ok := vars["script_id"]
-	if !ok {
-		return nil, &fleet.BadRequestError{Message: "missing script id"}
-	}
-	scriptID, err := strconv.ParseUint(scriptIDStr, 10, 64)
-	if err != nil {
-		return nil, &fleet.BadRequestError{Message: "invalid script id"}
-	}
-	// Check if scriptID exceeds the maximum value for uint, code linter
-	if scriptID > uint64(^uint(0)) {
-		return nil, &fleet.BadRequestError{Message: "script id out of bounds"}
-	}
-
-	decoded.ScriptID = uint(scriptID)
-
-	fhs, ok := r.MultipartForm.File["script"]
-	if !ok || len(fhs) < 1 {
-		return nil, &fleet.BadRequestError{Message: "no file headers for script"}
-	}
-	decoded.Script = fhs[0]
-
-	return &decoded, nil
-}
-
-type updateScriptResponse struct {
-	Err      error `json:"error,omitempty"`
-	ScriptID uint  `json:"script_id,omitempty"`
-}
-
-func (r updateScriptResponse) Error() error { return r.Err }
-
 func updateScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*updateScriptRequest)
+	req := request.(*fleet.UpdateScriptRequest)
 
 	scriptFile, err := req.Script.Open()
 	if err != nil {
-		return &updateScriptResponse{Err: err}, nil
+		return &fleet.UpdateScriptResponse{Err: err}, nil
 	}
 	defer scriptFile.Close()
 
 	script, err := svc.UpdateScript(ctx, req.ScriptID, scriptFile)
 	if err != nil {
-		return updateScriptResponse{Err: err}, nil
+		return fleet.UpdateScriptResponse{Err: err}, nil
 	}
-	return updateScriptResponse{ScriptID: script.ID}, nil
+	return fleet.UpdateScriptResponse{ScriptID: script.ID}, nil
 }
 
 func (svc *Service) UpdateScript(ctx context.Context, scriptID uint, r io.Reader) (*fleet.Script, error) {
@@ -833,8 +621,12 @@ func (svc *Service) UpdateScript(ctx context.Context, scriptID uint, r io.Reader
 
 	scriptContents := file.Dos2UnixNewlines(string(b))
 
-	if err := svc.ds.ValidateEmbeddedSecrets(ctx, []string{scriptContents}); err != nil {
+	if err := fleet.ValidateEmbeddedSecretsAndCustomHostVitals(ctx, svc.ds, []string{scriptContents}); err != nil {
 		return nil, fleet.NewInvalidArgumentError("script", err.Error())
+	}
+
+	if err := fleet.ValidateFleetVariablesInScript(scriptContents, license.IsPremium(ctx)); err != nil {
+		return nil, err
 	}
 
 	if err := fleet.ValidateHostScriptContents(scriptContents, true); err != nil {
@@ -875,26 +667,13 @@ func (svc *Service) UpdateScript(ctx context.Context, scriptID uint, r io.Reader
 // Get Host Script Details
 ////////////////////////////////////////////////////////////////////////////////
 
-type getHostScriptDetailsRequest struct {
-	HostID      uint              `url:"id"`
-	ListOptions fleet.ListOptions `url:"list_options"`
-}
-
-type getHostScriptDetailsResponse struct {
-	Scripts []*fleet.HostScriptDetail `json:"scripts"`
-	Meta    *fleet.PaginationMetadata `json:"meta"`
-	Err     error                     `json:"error,omitempty"`
-}
-
-func (r getHostScriptDetailsResponse) Error() error { return r.Err }
-
 func getHostScriptDetailsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*getHostScriptDetailsRequest)
+	req := request.(*fleet.GetHostScriptDetailsRequest)
 	scripts, meta, err := svc.GetHostScriptDetails(ctx, req.HostID, req.ListOptions)
 	if err != nil {
-		return getHostScriptDetailsResponse{Err: err}, nil
+		return fleet.GetHostScriptDetailsResponse{Err: err}, nil
 	}
-	return getHostScriptDetailsResponse{
+	return fleet.GetHostScriptDetailsResponse{
 		Scripts: scripts,
 		Meta:    meta,
 	}, nil
@@ -934,36 +713,13 @@ func (svc *Service) GetHostScriptDetails(ctx context.Context, hostID uint, opt f
 // Batch Replace Scripts
 ////////////////////////////////////////////////////////////////////////////////
 
-type batchSetScriptsRequest struct {
-	TeamID   *uint                 `json:"-" query:"team_id,optional"`
-	TeamName *string               `json:"-" query:"team_name,optional"`
-	DryRun   bool                  `json:"-" query:"dry_run,optional"` // if true, apply validation but do not save changes
-	Scripts  []fleet.ScriptPayload `json:"scripts"`
-}
-
-type batchSetScriptsResponse struct {
-	Scripts []fleet.ScriptResponse `json:"scripts"`
-	Err     error                  `json:"error,omitempty"`
-}
-
-type batchScriptExecutionSummaryRequest struct {
-	BatchExecutionID string `url:"batch_execution_id"`
-}
-
-type batchScriptExecutionSummaryResponse struct {
-	fleet.BatchExecutionSummary
-	Err error `json:"error,omitempty"`
-}
-
-func (r batchSetScriptsResponse) Error() error { return r.Err }
-
 func batchSetScriptsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*batchSetScriptsRequest)
+	req := request.(*fleet.BatchSetScriptsRequest)
 	scriptList, err := svc.BatchSetScripts(ctx, req.TeamID, req.TeamName, req.Scripts, req.DryRun)
 	if err != nil {
-		return batchSetScriptsResponse{Err: err}, nil
+		return fleet.BatchSetScriptsResponse{Err: err}, nil
 	}
-	return batchSetScriptsResponse{Scripts: scriptList}, nil
+	return fleet.BatchSetScriptsResponse{Scripts: scriptList}, nil
 }
 
 func (svc *Service) BatchSetScripts(ctx context.Context, maybeTmID *uint, maybeTmName *string, payloads []fleet.ScriptPayload, dryRun bool) ([]fleet.ScriptResponse, error) {
@@ -1008,6 +764,21 @@ func (svc *Service) BatchSetScripts(ctx context.Context, maybeTmID *uint, maybeT
 				fleet.NewInvalidArgumentError(fmt.Sprintf("scripts[%d]", i), err.Error()))
 		}
 
+		// unlike the embedded secrets validation below, this is a static check,
+		// so it runs before the post-loop dryRun return to surface errors on
+		// gitops dry runs (like the rest of this loop, it is skipped when a dry
+		// run targets a team that doesn't exist yet)
+		if err := fleet.ValidateFleetVariablesInScript(script.ScriptContents, license.IsPremium(ctx)); err != nil {
+			// re-key validation errors on the indexed field, matching the rest
+			// of this loop, so callers can tell which script failed
+			var argErr *fleet.InvalidArgumentError
+			if errors.As(err, &argErr) && len(argErr.Invalid()) > 0 {
+				return nil, ctxerr.Wrap(ctx,
+					fleet.NewInvalidArgumentError(fmt.Sprintf("scripts[%d]", i), argErr.Invalid()[0]["reason"]))
+			}
+			return nil, ctxerr.Wrap(ctx, err, "validate fleet variables in script")
+		}
+
 		if byName[script.Name] {
 			return nil, ctxerr.Wrap(ctx,
 				fleet.NewInvalidArgumentError(fmt.Sprintf("scripts[%d]", i), fmt.Sprintf("Couldn’t edit scripts. More than one script has the same file name: %q", script.Name)),
@@ -1022,7 +793,7 @@ func (svc *Service) BatchSetScripts(ctx context.Context, maybeTmID *uint, maybeT
 		return nil, nil
 	}
 
-	if err := svc.ds.ValidateEmbeddedSecrets(ctx, scriptContents); err != nil {
+	if err := fleet.ValidateEmbeddedSecretsAndCustomHostVitals(ctx, svc.ds, scriptContents); err != nil {
 		return nil, fleet.NewInvalidArgumentError("script", err.Error())
 	}
 
@@ -1041,21 +812,97 @@ func (svc *Service) BatchSetScripts(ctx context.Context, maybeTmID *uint, maybeT
 	return scriptResponses, nil
 }
 
-func (r batchScriptExecutionSummaryResponse) Error() error { return r.Err }
-
+// Deprecated summary endpoint, to be removed in favor of the status endpoint
+// once the batch script details page is ready.
 func batchScriptExecutionSummaryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*batchScriptExecutionSummaryRequest)
+	req := request.(*fleet.BatchScriptExecutionSummaryRequest)
 	summary, err := svc.BatchScriptExecutionSummary(ctx, req.BatchExecutionID)
 	if err != nil {
-		return batchScriptExecutionSummaryResponse{Err: err}, nil
+		return fleet.BatchScriptExecutionSummaryResponse{Err: err}, nil
 	}
-	return batchScriptExecutionSummaryResponse{BatchExecutionSummary: *summary}, nil
+	return fleet.BatchScriptExecutionSummaryResponse{
+		ScriptID:    *summary.ScriptID,
+		ScriptName:  summary.ScriptName,
+		TeamID:      summary.TeamID,
+		CreatedAt:   summary.CreatedAt,
+		NumTargeted: summary.NumTargeted,
+		NumPending:  summary.NumPending,
+		NumRan:      summary.NumRan,
+		NumErrored:  summary.NumErrored,
+		NumCanceled: summary.NumCanceled,
+	}, nil
 }
 
-func (svc *Service) BatchScriptExecutionSummary(ctx context.Context, batchExecutionID string) (*fleet.BatchExecutionSummary, error) {
-	summary, err := svc.ds.BatchExecuteSummary(ctx, batchExecutionID)
+func batchScriptExecutionHostResultsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
+	req := request.(*fleet.BatchScriptExecutionHostResultsRequest)
+	hosts, meta, count, err := svc.BatchScriptExecutionHostResults(ctx, req.BatchExecutionID, req.BatchExecutionStatus, req.ListOptions)
 	if err != nil {
+		return fleet.BatchScriptExecutionHostResultsResponse{Err: err}, nil
+	}
+	return fleet.BatchScriptExecutionHostResultsResponse{Hosts: hosts, Meta: *meta, Count: count}, nil
+}
+
+func batchScriptExecutionStatusEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
+	req := request.(*fleet.BatchScriptExecutionStatusRequest)
+	status, err := svc.BatchScriptExecutionStatus(ctx, req.BatchExecutionID)
+	if err != nil {
+		return fleet.BatchScriptExecutionStatusResponse{Err: err}, nil
+	}
+	return fleet.BatchScriptExecutionStatusResponse{BatchActivity: *status}, nil
+}
+
+func batchScriptExecutionListEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
+	req := request.(*fleet.BatchScriptExecutionListRequest)
+
+	page := 0
+	pageSize := 0
+	if req.Page != nil {
+		page = int(*req.Page) //nolint:gosec // dismiss G115
+	}
+	if req.PerPage != nil {
+		pageSize = int(*req.PerPage) //nolint:gosec // dismiss G115
+	}
+	// Set query offset based on the specified page and page size.
+	offset := uint(page * pageSize) //nolint:gosec // dismiss G115
+	filter := fleet.BatchExecutionStatusFilter{
+		TeamID: &req.TeamID,
+		Status: req.Status,
+		Offset: &offset,
+		Limit:  req.PerPage,
+	}
+	list, count, err := svc.BatchScriptExecutionList(ctx, filter)
+	if err != nil {
+		return fleet.BatchScriptExecutionStatusResponse{Err: err}, nil
+	}
+	// Get the # of results returned by this query.
+	listSize := len(list)
+	// We have previous results if we're not on the first page.
+	hasPreviousResults := req.Page != nil && *req.Page > 0
+	// Calculate the number of results on this page + all previous pages.
+	resultsSeen := (page * pageSize) + listSize
+	// If it's less than the total count, we have more results.
+	hasNextResults := resultsSeen < int(count)
+	return fleet.BatchScriptExecutionListResponse{
+		BatchScriptExecutions: list,
+		Count:                 uint(count), //nolint:gosec // dismiss G115
+		Meta: fleet.PaginationMetadata{
+			HasNextResults:     hasNextResults,
+			HasPreviousResults: hasPreviousResults,
+		},
+	}, nil
+}
+
+func (svc *Service) BatchScriptExecutionSummary(ctx context.Context, batchExecutionID string) (*fleet.BatchActivity, error) {
+	summary, err := svc.ds.BatchExecuteSummary(ctx, batchExecutionID)
+	if err != nil && !fleet.IsNotFound(err) {
+		svc.authz.SkipAuthorization(ctx)
 		return nil, ctxerr.Wrap(ctx, err, "get batch script summary")
+	} else if err != nil && fleet.IsNotFound(err) {
+		if err := svc.authz.Authorize(ctx, &fleet.Script{}, fleet.ActionRead); err != nil {
+			return nil, err
+		}
+
+		return nil, err // return the not found from the db.
 	}
 
 	if err := svc.authz.Authorize(ctx, &fleet.Script{TeamID: summary.TeamID}, fleet.ActionRead); err != nil {
@@ -1063,6 +910,166 @@ func (svc *Service) BatchScriptExecutionSummary(ctx context.Context, batchExecut
 	}
 
 	return summary, nil
+}
+
+func batchScriptCancelEndpoint(ctx context.Context, request any, svc fleet.Service) (fleet.Errorer, error) {
+	req := request.(*fleet.BatchScriptCancelRequest)
+	if err := svc.BatchScriptCancel(ctx, req.BatchExecutionID); err != nil {
+		return fleet.BatchScriptCancelResponse{Err: err}, nil
+	}
+
+	return fleet.BatchScriptCancelResponse{}, nil
+}
+
+func (svc *Service) BatchScriptCancel(ctx context.Context, batchExecutionID string) error {
+	summaryList, err := svc.ds.ListBatchScriptExecutions(ctx, fleet.BatchExecutionStatusFilter{
+		ExecutionID: &batchExecutionID,
+	})
+	if err != nil && !fleet.IsNotFound(err) {
+		svc.authz.SkipAuthorization(ctx)
+		return ctxerr.Wrap(ctx, err, "get batch script summary")
+	} else if err != nil && fleet.IsNotFound(err) {
+		if authErr := svc.authz.Authorize(ctx, &fleet.Script{}, fleet.ActionRead); authErr != nil {
+			return authErr
+		}
+		return err // return the not found from the db.
+	}
+
+	if len(summaryList) > 1 {
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("batch_execution_id", "expected a single batch execution status, got multiple"))
+	}
+
+	summary := (summaryList)[0]
+
+	if err := svc.authz.Authorize(ctx, &fleet.Script{TeamID: summary.TeamID}, fleet.ActionWrite); err != nil {
+		return err
+	}
+	if err := svc.ds.CancelBatchScript(ctx, batchExecutionID); err != nil {
+		return ctxerr.Wrap(ctx, err, "canceling batch script")
+	}
+
+	batchActivity, err := svc.ds.GetBatchActivity(ctx, batchExecutionID)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "getting canceled activity stats")
+	}
+
+	ctxUser := authz.UserFromContext(ctx)
+
+	targeted := uint(0)
+	if batchActivity.NumTargeted != nil {
+		// No nil dereference in case this is not set for some reason
+		targeted = *batchActivity.NumTargeted
+	}
+
+	canceled := uint(0)
+	if batchActivity.NumCanceled != nil {
+		canceled = *batchActivity.NumCanceled
+	}
+
+	if err := svc.NewActivity(ctx, ctxUser, fleet.ActivityTypeBatchScriptCanceled{
+		BatchExecutionID: batchExecutionID,
+		ScriptName:       batchActivity.ScriptName,
+		HostCount:        targeted,
+		CanceledCount:    canceled,
+	}); err != nil {
+		return ctxerr.Wrap(ctx, err, "creating activity for cancel batch script")
+	}
+
+	return nil
+}
+
+func (svc *Service) BatchScriptExecutionStatus(ctx context.Context, batchExecutionID string) (*fleet.BatchActivity, error) {
+	summaryList, err := svc.ds.ListBatchScriptExecutions(ctx, fleet.BatchExecutionStatusFilter{
+		ExecutionID: &batchExecutionID,
+	})
+	if err != nil && !fleet.IsNotFound(err) {
+		svc.authz.SkipAuthorization(ctx)
+		return nil, ctxerr.Wrap(ctx, err, "get batch script summary")
+	} else if err != nil && fleet.IsNotFound(err) {
+		if authErr := svc.authz.Authorize(ctx, &fleet.Script{}, fleet.ActionRead); authErr != nil {
+			return nil, authErr
+		}
+		return nil, err // return the not found from the db.
+	}
+
+	if len(summaryList) > 1 {
+		return nil, ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("batch_execution_id", "expected a single batch execution status, got multiple"))
+	}
+
+	summary := (summaryList)[0]
+
+	if authErr := svc.authz.Authorize(ctx, &fleet.Script{TeamID: summary.TeamID}, fleet.ActionRead); authErr != nil {
+		return nil, authErr
+	}
+
+	return &summary, nil
+}
+
+func (svc *Service) BatchScriptExecutionHostResults(ctx context.Context, batchExecutionID string, status fleet.BatchScriptExecutionStatus, opt fleet.ListOptions) (hosts []fleet.BatchScriptHost, meta *fleet.PaginationMetadata, count uint, err error) {
+	// Get the batch activity.
+	batchActivity, err := svc.ds.GetBatchActivity(ctx, batchExecutionID)
+	if err != nil {
+		svc.authz.SkipAuthorization(ctx)
+		return nil, nil, 0, ctxerr.Wrap(ctx, err, "getting batch activity")
+	}
+	if batchActivity.ScriptID == nil {
+		svc.authz.SkipAuthorization(ctx)
+		return nil, nil, 0, ctxerr.Wrap(ctx, err, "batch activity has no script ID")
+	}
+
+	// Get the script referred to by the batch activity.
+	script, err := svc.ds.Script(ctx, *batchActivity.ScriptID)
+	if err != nil {
+		svc.authz.SkipAuthorization(ctx)
+		return nil, nil, 0, ctxerr.Wrap(ctx, err, "getting script")
+	}
+	if script == nil {
+		svc.authz.SkipAuthorization(ctx)
+		return nil, nil, 0, ctxerr.Wrap(ctx, err, "script not found")
+	}
+
+	// Authorize based on the script's team ID.
+	if err = svc.authz.Authorize(ctx, &fleet.Script{TeamID: script.TeamID}, fleet.ActionRead); err != nil {
+		return nil, nil, 0, err
+	}
+
+	// Validate the supplied batch execution status.
+	if !status.IsValid() {
+		return nil, nil, 0, fleet.NewInvalidArgumentError("batch_execution_status", "invalid batch execution status")
+	}
+
+	// Always include pagination info.
+	opt.IncludeMetadata = true
+	// Default sort order is name ascending.
+	if opt.OrderKey == "" {
+		opt.OrderKey = "display_name"
+		opt.OrderDirection = fleet.OrderAscending
+	}
+
+	hosts, meta, count, err = svc.ds.ListBatchScriptHosts(ctx, batchExecutionID, status, opt)
+	if err != nil {
+		return nil, nil, 0, ctxerr.Wrap(ctx, err, "list batch script hosts")
+	}
+
+	return hosts, meta, count, nil
+}
+
+func (svc *Service) BatchScriptExecutionList(ctx context.Context, filter fleet.BatchExecutionStatusFilter) ([]fleet.BatchActivity, int64, error) {
+	if err := svc.authz.Authorize(ctx, &fleet.Script{TeamID: filter.TeamID}, fleet.ActionRead); err != nil {
+		return nil, 0, err
+	}
+	// Get the count first.
+	count, err := svc.ds.CountBatchScriptExecutions(ctx, filter)
+	if err != nil {
+		return nil, 0, nil
+	}
+
+	summaryList, err := svc.ds.ListBatchScriptExecutions(ctx, filter)
+	if err != nil {
+		return nil, 0, ctxerr.Wrap(ctx, err, "get batch script list")
+	}
+
+	return summaryList, count, nil
 }
 
 func (svc *Service) authorizeScriptByID(ctx context.Context, scriptID uint, authzAction string) (*fleet.Script, error) {
@@ -1093,30 +1100,18 @@ func (svc *Service) authorizeScriptByID(ctx context.Context, scriptID uint, auth
 // Bulk script execution
 ////////////////////////////////////////////////////////////////////////////////
 
-type batchScriptRunRequest struct {
-	ScriptID uint                    `json:"script_id"`
-	HostIDs  []uint                  `json:"host_ids"`
-	Filters  *map[string]interface{} `json:"filters"`
-}
-type batchScriptRunResponse struct {
-	BatchExecutionID string `json:"batch_execution_id"`
-	Err              error  `json:"error,omitempty"`
-}
-
-func (r batchScriptRunResponse) Error() error { return r.Err }
-
 func batchScriptRunEndpoint(ctx context.Context, request any, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*batchScriptRunRequest)
-	batchID, err := svc.BatchScriptExecute(ctx, req.ScriptID, req.HostIDs, req.Filters)
+	req := request.(*fleet.BatchScriptRunRequest)
+	batchID, err := svc.BatchScriptExecute(ctx, req.ScriptID, req.HostIDs, req.Filters, req.NotBefore)
 	if err != nil {
-		return batchScriptRunResponse{Err: err}, nil
+		return fleet.BatchScriptRunResponse{Err: err}, nil
 	}
-	return batchScriptRunResponse{BatchExecutionID: batchID}, nil
+	return fleet.BatchScriptRunResponse{BatchExecutionID: batchID}, nil
 }
 
 const MAX_BATCH_EXECUTION_HOSTS = 5000
 
-func (svc *Service) BatchScriptExecute(ctx context.Context, scriptID uint, hostIDs []uint, filters *map[string]interface{}) (string, error) {
+func (svc *Service) BatchScriptExecute(ctx context.Context, scriptID uint, hostIDs []uint, filters *map[string]any, notBefore *time.Time) (string, error) {
 	// If we are given both host IDs and filters, return an error
 	if len(hostIDs) > 0 && filters != nil {
 		return "", fleet.NewInvalidArgumentError("filters", "cannot specify both host_ids and filters")
@@ -1137,6 +1132,11 @@ func (svc *Service) BatchScriptExecute(ctx context.Context, scriptID uint, hostI
 	// Use the authorize script by ID to handle authz
 	script, err := svc.authorizeScriptByID(ctx, scriptID, fleet.ActionWrite)
 	if err != nil {
+		return "", err
+	}
+
+	// Authorize the actual execution with the script's team
+	if err := svc.authz.Authorize(ctx, &fleet.HostScriptResult{TeamID: script.TeamID}, fleet.ActionWrite); err != nil {
 		return "", err
 	}
 
@@ -1198,22 +1198,42 @@ func (svc *Service) BatchScriptExecute(ctx context.Context, scriptID uint, hostI
 			continue
 		}
 		if host.TeamID == nil || script.TeamID == nil || *host.TeamID != *script.TeamID {
-			return "", fleet.NewInvalidArgumentError("host_ids", "all hosts must be on the same team as the script")
+			return "", fleet.NewInvalidArgumentError("host_ids", "all hosts must be on the same fleet as the script")
 		}
 	}
 
-	batchID, err := svc.ds.BatchExecuteScript(ctx, userId, scriptID, hostIDsToExecute)
+	if notBefore == nil || notBefore.Before(time.Now()) {
+		batchID, err := svc.ds.BatchExecuteScript(ctx, userId, scriptID, hostIDsToExecute)
+		if err != nil {
+			return "", fleet.NewUserMessageError(err, http.StatusBadRequest)
+		}
+
+		if err := svc.NewActivity(ctx, ctxUser, fleet.ActivityTypeRanScriptBatch{
+			ScriptName:       script.Name,
+			BatchExecutionID: batchID,
+			HostCount:        uint(len(hostIDsToExecute)),
+			TeamID:           script.TeamID,
+		}); err != nil {
+			return "", ctxerr.Wrap(ctx, err, "creating activity for batch run scripts")
+		}
+
+		return batchID, nil
+	}
+
+	notBeforeUTC := notBefore.UTC()
+	batchID, err := svc.ds.BatchScheduleScript(ctx, userId, scriptID, hostIDsToExecute, notBeforeUTC)
 	if err != nil {
 		return "", fleet.NewUserMessageError(err, http.StatusBadRequest)
 	}
 
-	if err := svc.NewActivity(ctx, ctxUser, fleet.ActivityTypeRanScriptBatch{
-		ScriptName:       script.Name,
-		BatchExeuctionID: batchID,
+	if err := svc.NewActivity(ctx, ctxUser, fleet.ActivityTypeBatchScriptScheduled{
+		ScriptName:       &script.Name,
+		BatchExecutionID: batchID,
 		HostCount:        uint(len(hostIDsToExecute)),
 		TeamID:           script.TeamID,
+		NotBefore:        &notBeforeUTC,
 	}); err != nil {
-		return "", ctxerr.Wrap(ctx, err, "creating activity for batch run scripts")
+		return "", ctxerr.Wrap(ctx, err, "creating activity for scheduled batch run scripts")
 	}
 
 	return batchID, nil
@@ -1223,28 +1243,14 @@ func (svc *Service) BatchScriptExecute(ctx context.Context, scriptID uint, hostI
 // Lock host
 ////////////////////////////////////////////////////////////////////////////////
 
-type lockHostRequest struct {
-	HostID  uint `url:"id"`
-	ViewPin bool `query:"view_pin,optional"`
-}
-
-type lockHostResponse struct {
-	Err           error                     `json:"error,omitempty"`
-	DeviceStatus  fleet.DeviceStatus        `json:"device_status,omitempty"`
-	PendingAction fleet.PendingDeviceAction `json:"pending_action,omitempty"`
-	UnlockPIN     string                    `json:"unlock_pin,omitempty"`
-}
-
-func (r lockHostResponse) Error() error { return r.Err }
-
 func lockHostEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*lockHostRequest)
+	req := request.(*fleet.LockHostRequest)
 	unlockPIN, err := svc.LockHost(ctx, req.HostID, req.ViewPin)
 	if err != nil {
-		return lockHostResponse{Err: err}, nil
+		return fleet.LockHostResponse{Err: err}, nil
 	}
 	// We bail from locking if the host is locked or wiped, so we can assume the host is unlocked at this point
-	response := &lockHostResponse{DeviceStatus: fleet.DeviceStatusUnlocked, PendingAction: fleet.PendingActionLock}
+	response := &fleet.LockHostResponse{DeviceStatus: fleet.DeviceStatusUnlocked, PendingAction: fleet.PendingActionLock}
 
 	if req.ViewPin && unlockPIN != "" {
 		response.UnlockPIN = unlockPIN
@@ -1264,29 +1270,15 @@ func (svc *Service) LockHost(ctx context.Context, _ uint, _ bool) (string, error
 // Unlock host
 ////////////////////////////////////////////////////////////////////////////////
 
-type unlockHostRequest struct {
-	HostID uint `url:"id"`
-}
-
-type unlockHostResponse struct {
-	HostID        *uint                     `json:"host_id,omitempty"`
-	UnlockPIN     string                    `json:"unlock_pin,omitempty"`
-	DeviceStatus  fleet.DeviceStatus        `json:"device_status,omitempty"`
-	PendingAction fleet.PendingDeviceAction `json:"pending_action,omitempty"`
-	Err           error                     `json:"error,omitempty"`
-}
-
-func (r unlockHostResponse) Error() error { return r.Err }
-
 func unlockHostEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*unlockHostRequest)
+	req := request.(*fleet.UnlockHostRequest)
 	pin, err := svc.UnlockHost(ctx, req.HostID)
 	if err != nil {
-		return unlockHostResponse{Err: err}, nil
+		return fleet.UnlockHostResponse{Err: err}, nil
 	}
 
 	// We bail if a host is unlocked or wiped, so we can assume the host is locked at this point
-	resp := unlockHostResponse{HostID: &req.HostID, DeviceStatus: fleet.DeviceStatusLocked, PendingAction: fleet.PendingActionUnlock}
+	resp := fleet.UnlockHostResponse{HostID: &req.HostID, DeviceStatus: fleet.DeviceStatusLocked, PendingAction: fleet.PendingActionUnlock}
 	// only macOS hosts return an unlock PIN, for other platforms the UnlockHost
 	// call triggers the unlocking without further user action.
 	if pin != "" {
@@ -1307,31 +1299,86 @@ func (svc *Service) UnlockHost(ctx context.Context, hostID uint) (string, error)
 // Wipe host
 ////////////////////////////////////////////////////////////////////////////////
 
-type wipeHostRequest struct {
-	HostID uint `url:"id"`
-}
-
-type wipeHostResponse struct {
-	Err           error                     `json:"error,omitempty"`
-	DeviceStatus  fleet.DeviceStatus        `json:"device_status,omitempty"`
-	PendingAction fleet.PendingDeviceAction `json:"pending_action,omitempty"`
-}
-
-func (r wipeHostResponse) Error() error { return r.Err }
-
 func wipeHostEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
-	req := request.(*wipeHostRequest)
-	if err := svc.WipeHost(ctx, req.HostID); err != nil {
-		return wipeHostResponse{Err: err}, nil
+	req := request.(*fleet.WipeHostRequest)
+	if err := svc.WipeHost(ctx, req.HostID, req.Metadata); err != nil {
+		return fleet.WipeHostResponse{Err: err}, nil
 	}
 	// We bail if a host is locked or wiped, so we can assume the host is unlocked at this point
-	return wipeHostResponse{DeviceStatus: fleet.DeviceStatusUnlocked, PendingAction: fleet.PendingActionWipe}, nil
+	return fleet.WipeHostResponse{DeviceStatus: fleet.DeviceStatusUnlocked, PendingAction: fleet.PendingActionWipe}, nil
 }
 
-func (svc *Service) WipeHost(ctx context.Context, hostID uint) error {
-	// skipauth: No authorization check needed due to implementation returning
-	// only license error.
-	svc.authz.SkipAuthorization(ctx)
+func (svc *Service) WipeHost(ctx context.Context, hostID uint, _ *fleet.MDMWipeMetadata) error {
+	// First ensure the user has access to list hosts, then check the specific
+	// host once team_id is loaded.
+	if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
+		return err
+	}
+	host, err := svc.ds.Host(ctx, hostID)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "get host")
+	}
 
-	return fleet.ErrMissingLicense
+	// Authorize again with team loaded now that we have the host's team_id.
+	// Authorize as "execute mdm_command", which is the correct access
+	// requirement and is what happens for macOS platforms.
+	if err := svc.authz.Authorize(ctx, fleet.MDMCommandAuthz{TeamID: host.TeamID}, fleet.ActionWrite); err != nil {
+		return err
+	}
+
+	// On Fleet Free, Wipe is only available for Android (COBO) hosts. Wipe for macOS, Windows, Linux and iOS/iPadOS
+	// remains a Fleet Premium feature, implemented by the ee WipeHost method which shadows this one on Premium
+	// deployments (so Android-on-Premium also goes through ee, not here).
+	if host.FleetPlatform() != "android" {
+		return fleet.ErrMissingLicense
+	}
+
+	if err := fleet.ValidateAndroidWipeRequest(ctx, svc.ds, host); err != nil {
+		return ctxerr.Wrap(ctx, err, "validate android wipe request")
+	}
+
+	// the wipe command requires the host to be MDM-enrolled in Fleet
+	connected, err := svc.ds.IsHostConnectedToFleetMDM(ctx, host)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "checking if host is connected to Fleet")
+	}
+	if !connected {
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("host_id", "Can't wipe the host because it doesn't have MDM turned on."))
+	}
+
+	// validations based on host's actions status (pending lock, unlock, wipe)
+	lockWipe, err := svc.ds.GetHostLockWipeStatus(ctx, host)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "get host lock/wipe status")
+	}
+	switch {
+	case lockWipe.IsPendingLock():
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("host_id", "Host has pending lock request. Host cannot be wiped until lock is complete."))
+	case lockWipe.IsPendingUnlock():
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("host_id", "Host has pending unlock request. Host cannot be wiped until unlock is complete."))
+	case lockWipe.IsPendingWipe():
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("host_id", "Host has pending wipe request. The host will be wiped when it comes online."))
+	case lockWipe.IsLocked():
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("host_id", "Host is locked. Host cannot be wiped until it is unlocked."))
+	case lockWipe.IsWiped():
+		return ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("host_id", "Host is already wiped.").WithStatus(http.StatusConflict))
+	}
+
+	// all good, go ahead with queuing the wipe request.
+	if err := svc.androidSvc.WipeAndroidHost(ctx, host.ID); err != nil {
+		return ctxerr.Wrap(ctx, err, "enqueuing wipe request for android")
+	}
+
+	if err := svc.NewActivity(
+		ctx,
+		authz.UserFromContext(ctx),
+		fleet.ActivityTypeWipedHost{
+			HostID:          host.ID,
+			HostDisplayName: host.DisplayName(),
+			HostPlatform:    host.FleetPlatform(),
+		},
+	); err != nil {
+		return ctxerr.Wrap(ctx, err, "create activity for wipe host request")
+	}
+	return nil
 }

@@ -7,17 +7,25 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/docker/go-units"
+	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	platform_http "github.com/fleetdm/fleet/v4/server/platform/http"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 )
 
 type putSetupExperienceSoftwareRequest struct {
-	TeamID   uint   `json:"team_id"`
+	Platform string `json:"platform"`
+	TeamID   uint   `json:"team_id" renameto:"fleet_id"`
 	TitleIDs []uint `json:"software_title_ids"`
+}
+
+func (r *putSetupExperienceSoftwareRequest) ValidateRequest() error {
+	return validateSetupExperiencePlatform(r.Platform)
 }
 
 type putSetupExperienceSoftwareResponse struct {
@@ -28,16 +36,15 @@ func (r putSetupExperienceSoftwareResponse) Error() error { return r.Err }
 
 func putSetupExperienceSoftware(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*putSetupExperienceSoftwareRequest)
-
-	err := svc.SetSetupExperienceSoftware(ctx, req.TeamID, req.TitleIDs)
+	platform := transformPlatformForSetupExperience(req.Platform)
+	err := svc.SetSetupExperienceSoftware(ctx, platform, req.TeamID, req.TitleIDs)
 	if err != nil {
 		return &putSetupExperienceSoftwareResponse{Err: err}, nil
 	}
-
 	return &putSetupExperienceSoftwareResponse{}, nil
 }
 
-func (svc *Service) SetSetupExperienceSoftware(ctx context.Context, teamID uint, titleIDs []uint) error {
+func (svc *Service) SetSetupExperienceSoftware(ctx context.Context, platform string, teamID uint, titleIDs []uint) error {
 	// skipauth: No authorization check needed due to implementation returning
 	// only license error.
 	svc.authz.SkipAuthorization(ctx)
@@ -46,8 +53,14 @@ func (svc *Service) SetSetupExperienceSoftware(ctx context.Context, teamID uint,
 }
 
 type getSetupExperienceSoftwareRequest struct {
+	// Platforms can be a comma separated list
+	Platforms string `query:"platform,optional"`
 	fleet.ListOptions
-	TeamID uint `query:"team_id"`
+	TeamID uint `query:"team_id" renameto:"fleet_id"`
+}
+
+func (r *getSetupExperienceSoftwareRequest) ValidateRequest() error {
+	return validateSetupExperiencePlatform(r.Platforms)
 }
 
 type getSetupExperienceSoftwareResponse struct {
@@ -61,16 +74,15 @@ func (r getSetupExperienceSoftwareResponse) Error() error { return r.Err }
 
 func getSetupExperienceSoftware(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*getSetupExperienceSoftwareRequest)
-
-	titles, count, meta, err := svc.ListSetupExperienceSoftware(ctx, req.TeamID, req.ListOptions)
+	platform := transformPlatformListForSetupExperience(req.Platforms)
+	titles, count, meta, err := svc.ListSetupExperienceSoftware(ctx, platform, req.TeamID, req.ListOptions)
 	if err != nil {
 		return &getSetupExperienceSoftwareResponse{Err: err}, nil
 	}
-
 	return &getSetupExperienceSoftwareResponse{SoftwareTitles: titles, Count: count, Meta: meta}, nil
 }
 
-func (svc *Service) ListSetupExperienceSoftware(ctx context.Context, teamID uint, opts fleet.ListOptions) ([]fleet.SoftwareTitleListResult, int, *fleet.PaginationMetadata, error) {
+func (svc *Service) ListSetupExperienceSoftware(ctx context.Context, platform string, teamID uint, opts fleet.ListOptions) ([]fleet.SoftwareTitleListResult, int, *fleet.PaginationMetadata, error) {
 	// skipauth: No authorization check needed due to implementation returning
 	// only license error.
 	svc.authz.SkipAuthorization(ctx)
@@ -79,7 +91,7 @@ func (svc *Service) ListSetupExperienceSoftware(ctx context.Context, teamID uint
 }
 
 type getSetupExperienceScriptRequest struct {
-	TeamID *uint  `query:"team_id,optional"`
+	TeamID *uint  `query:"team_id,optional" renameto:"fleet_id"`
 	Alt    string `query:"alt,optional"`
 }
 
@@ -101,9 +113,9 @@ func getSetupExperienceScriptEndpoint(ctx context.Context, request interface{}, 
 	}
 
 	if downloadRequested {
-		return downloadFileResponse{
-			content:  content,
-			filename: fmt.Sprintf("%s %s", time.Now().Format(time.DateOnly), script.Name),
+		return fleet.DownloadFileResponse{
+			Content:  content,
+			Filename: fmt.Sprintf("%s %s", time.Now().Format(time.DateOnly), script.Name),
 		}, nil
 	}
 
@@ -126,7 +138,7 @@ type setSetupExperienceScriptRequest struct {
 func (setSetupExperienceScriptRequest) DecodeRequest(ctx context.Context, r *http.Request) (interface{}, error) {
 	var decoded setSetupExperienceScriptRequest
 
-	err := r.ParseMultipartForm(512 * units.MiB) // same in-memory size as for other multipart requests we have
+	err := parseMultipartForm(ctx, r, platform_http.MaxMultipartFormSize)
 	if err != nil {
 		return nil, &fleet.BadRequestError{
 			Message:     "failed to parse multipart form",
@@ -134,15 +146,15 @@ func (setSetupExperienceScriptRequest) DecodeRequest(ctx context.Context, r *htt
 		}
 	}
 
-	val := r.MultipartForm.Value["team_id"]
+	val := r.MultipartForm.Value["fleet_id"]
 	if len(val) > 0 {
-		teamID, err := strconv.ParseUint(val[0], 10, 64)
+		fleetID, err := strconv.ParseUint(val[0], 10, 64)
 		if err != nil {
-			return nil, &fleet.BadRequestError{Message: fmt.Sprintf("failed to decode team_id in multipart form: %s", err.Error())}
+			return nil, &fleet.BadRequestError{Message: fmt.Sprintf("failed to decode fleet_id in multipart form: %s", err.Error())}
 		}
 		// // TODO: do we want to allow end users to specify team_id=0? if so, we'll need to convert it to nil here so that we can
 		// // use it in the auth layer where team_id=0 is not allowed?
-		decoded.TeamID = ptr.Uint(uint(teamID))
+		decoded.TeamID = ptr.Uint(uint(fleetID)) // nolint:gosec // ignore G115
 	}
 
 	fhs, ok := r.MultipartForm.File["script"]
@@ -185,7 +197,7 @@ func (svc *Service) SetSetupExperienceScript(ctx context.Context, teamID *uint, 
 }
 
 type deleteSetupExperienceScriptRequest struct {
-	TeamID *uint `query:"team_id,optional"`
+	TeamID *uint `query:"team_id,optional" renameto:"fleet_id"`
 }
 
 type deleteSetupExperienceScriptResponse struct {
@@ -193,8 +205,6 @@ type deleteSetupExperienceScriptResponse struct {
 }
 
 func (r deleteSetupExperienceScriptResponse) Error() error { return r.Err }
-
-// func (r deleteSetupExperienceScriptResponse) Status() int  { return http.StatusNoContent }
 
 func deleteSetupExperienceScriptEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
 	req := request.(*deleteSetupExperienceScriptRequest)
@@ -215,7 +225,7 @@ func (svc *Service) DeleteSetupExperienceScript(ctx context.Context, teamID *uin
 	return fleet.ErrMissingLicense
 }
 
-func (svc *Service) SetupExperienceNextStep(ctx context.Context, hostUUID string) (bool, error) {
+func (svc *Service) SetupExperienceNextStep(ctx context.Context, host *fleet.Host) (bool, error) {
 	// skipauth: No authorization check needed due to implementation returning
 	// only license error.
 	svc.authz.SkipAuthorization(ctx)
@@ -223,46 +233,239 @@ func (svc *Service) SetupExperienceNextStep(ctx context.Context, hostUUID string
 	return false, fleet.ErrMissingLicense
 }
 
+func (svc *Service) IsAllSetupExperienceSoftwareRequired(ctx context.Context, host *fleet.Host) (bool, error) {
+	return isAllSetupExperienceSoftwareRequired(ctx, svc.ds, host)
+}
+
+func isAllSetupExperienceSoftwareRequired(ctx context.Context, ds fleet.Datastore, host *fleet.Host) (bool, error) {
+	// Only macOS and Windows support canceling setup if software fails.
+	if host.Platform != "darwin" && host.Platform != "windows" {
+		return false, nil
+	}
+
+	teamID := host.TeamID
+	if teamID == nil || *teamID == 0 {
+		ac, err := ds.AppConfig(ctx)
+		if err != nil {
+			return false, ctxerr.Wrap(ctx, err, "getting app config")
+		}
+		if host.Platform == "windows" {
+			return ac.MDM.MacOSSetup.RequireAllSoftwareWindows, nil
+		}
+		return ac.MDM.MacOSSetup.RequireAllSoftware, nil
+	}
+
+	team, err := ds.TeamLite(ctx, *teamID)
+	if err != nil {
+		return false, ctxerr.Wrap(ctx, err, "load team")
+	}
+	if host.Platform == "windows" {
+		return team.Config.MDM.MacOSSetup.RequireAllSoftwareWindows, nil
+	}
+	return team.Config.MDM.MacOSSetup.RequireAllSoftware, nil
+}
+
+func (svc *Service) MaybeCancelPendingSetupExperienceSteps(ctx context.Context, host *fleet.Host) error {
+	return maybeCancelPendingSetupExperienceSteps(ctx, svc.ds, host, svc.NewActivity)
+}
+
+func maybeCancelPendingSetupExperienceSteps(ctx context.Context, ds fleet.Datastore, host *fleet.Host, newActivityFn fleet.NewActivityFunc) error {
+	// Only macOS and Windows support canceling setup experience steps.
+	if host.Platform != "darwin" && host.Platform != "windows" {
+		return nil
+	}
+
+	requireAllSoftware, err := isAllSetupExperienceSoftwareRequired(ctx, ds, host)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "checking if all software is required")
+	}
+	if !requireAllSoftware {
+		return nil
+	}
+
+	// Gate the cancel cascade on the host being actively in a Fleet-tracked ESP. The authoritative
+	// signal is mdm_windows_enrollments.awaiting_configuration: it transitions to Pending only when
+	// the device enrolls via WindowsMDMEnrollTypeAutomatic while the device is in OOBE, advances to Active once ESP commands are enqueued, and returns to
+	// None on completion/failure/timeout. All non-ESP enrollment paths stay at None, which is
+	// exactly the set of cases that must skip the cancellation cascade and activity emission:
+	//   - post-OOBE BYOD via work/school account in Settings
+	//   - post-OOBE manual orbit install that triggers programmatic Windows MDM enrollment
+	//   - post-OOBE manual orbit install with no Windows MDM at all (no enrollment row)
+	//   - any host that previously completed/timed-out ESP
+	//
+	// The primary lookup is keyed on mdm_windows_enrollments.host_uuid, which osquery's
+	// directIngestMDMDeviceIDWindows populates lazily on its first poll after enrollment. A
+	// fast-failing install can race that ingest, so when the primary lookup misses we fall back
+	// to the most-recent unlinked enrollment whose device_name matches host.ComputerName. Without
+	// the fallback an OOBE host that fails an install before osquery links the enrollment would
+	// be misread as having no MDM enrollment and would skip cancellation when it should fire.
+	// Follow-up bug: https://github.com/fleetdm/fleet/issues/45380
+	if host.Platform == "windows" {
+		var awaiting fleet.WindowsMDMAwaitingConfiguration
+		state, err := ds.GetMDMWindowsHostConfigState(ctx, host.UUID)
+		if err != nil && !fleet.IsNotFound(err) {
+			return ctxerr.Wrap(ctx, err, "load windows host config state for setup-experience cancel gate")
+		}
+		if state != nil {
+			awaiting = state.AwaitingConfiguration
+		}
+		if fleet.IsNotFound(err) && host.ComputerName != "" {
+			device, err := ds.MDMWindowsGetUnlinkedEnrolledDeviceWithDeviceName(ctx, host.ComputerName)
+			if err != nil && !fleet.IsNotFound(err) {
+				return ctxerr.Wrap(ctx, err, "load windows enrollment by device name for awaiting_configuration fallback")
+			}
+			if device != nil {
+				awaiting = device.AwaitingConfiguration
+			}
+		}
+		if awaiting != fleet.WindowsMDMAwaitingConfigurationPending &&
+			awaiting != fleet.WindowsMDMAwaitingConfigurationActive {
+			return nil
+		}
+	}
+	hostUUID, err := fleet.HostUUIDForSetupExperience(host)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "failed to get host's UUID for the setup experience")
+	}
+	statuses, err := ds.ListSetupExperienceResultsByHostUUID(ctx, hostUUID, ptr.ValOrZero(host.TeamID))
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "retrieving setup experience status results for next step")
+	}
+
+	for _, status := range statuses {
+		if err := status.IsValid(); err != nil {
+			return ctxerr.Wrap(ctx, err, "invalid row")
+		}
+		if status.Status != fleet.SetupExperienceStatusPending && status.Status != fleet.SetupExperienceStatusRunning {
+			continue
+		}
+		// Cancel any upcoming software installs, vpp installs or script runs.
+		var executionID string
+		switch {
+		case status.HostSoftwareInstallsExecutionID != nil:
+			executionID = *status.HostSoftwareInstallsExecutionID
+		case status.NanoCommandUUID != nil:
+			executionID = *status.NanoCommandUUID
+		case status.ScriptExecutionID != nil:
+			executionID = *status.ScriptExecutionID
+		default:
+			continue
+		}
+		if _, err := ds.CancelHostUpcomingActivity(ctx, host.ID, executionID); err != nil {
+			return ctxerr.Wrap(ctx, err, "cancelling upcoming setup experience activity")
+		}
+	}
+	// Cancel any pending setup experience steps for the host in the database.
+	if err := ds.CancelPendingSetupExperienceSteps(ctx, hostUUID); err != nil {
+		return ctxerr.Wrap(ctx, err, "cancelling pending setup experience steps")
+	}
+
+	// Emit the canceled_setup_experience activity once at cancellation time.
+	// Find the software item that failed and triggered this cancellation from the
+	// already-loaded statuses (no extra DB call).
+	if newActivityFn != nil {
+		for _, s := range statuses {
+			if s.Status == fleet.SetupExperienceStatusFailure && s.IsForSoftware() {
+				if err := newActivityFn(ctx, nil, fleet.ActivityTypeCanceledSetupExperience{
+					HostID:          host.ID,
+					HostDisplayName: host.DisplayName(),
+					SoftwareTitle:   s.Name,
+					SoftwareTitleID: ptr.ValOrZero(s.SoftwareTitleID),
+				}); err != nil {
+					return ctxerr.Wrap(ctx, err, "creating canceled setup experience activity")
+				}
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
 // maybeUpdateSetupExperienceStatus attempts to update the status of a setup experience result in
 // the database. If the given result is of a supported type (namely SetupExperienceScriptResult,
 // SetupExperienceSoftwareInstallResult, and SetupExperienceVPPInstallResult), it returns a boolean
 // indicating whether the datastore was updated and an error if one occurred. If the result is not of a
 // supported type, it returns false and an error indicated that the type is not supported.
-// If the skipPending parameter is true, the datastore will only be updated if the given result
-// status is not pending.
-func maybeUpdateSetupExperienceStatus(ctx context.Context, ds fleet.Datastore, result interface{}, requireTerminalStatus bool) (bool, error) {
+// The datastore will only be updated if the given result status is a terminal status.
+func maybeUpdateSetupExperienceStatus(ctx context.Context, ds fleet.Datastore, result any, newActivityFn fleet.NewActivityFunc) (bool, error) {
+	var updated bool
+	var err error
+	var status fleet.SetupExperienceStatusResultStatus
+	var hostUUID string
 	switch v := result.(type) {
 	case fleet.SetupExperienceScriptResult:
-		status := v.SetupExperienceStatus()
+		status = v.SetupExperienceStatus()
 		if !status.IsValid() {
 			return false, fmt.Errorf("invalid status: %s", status)
-		} else if requireTerminalStatus && !status.IsTerminalStatus() {
+		} else if !status.IsTerminalStatus() {
 			return false, nil
 		}
 		return ds.MaybeUpdateSetupExperienceScriptStatus(ctx, v.HostUUID, v.ExecutionID, status)
 
 	case fleet.SetupExperienceSoftwareInstallResult:
-		status := v.SetupExperienceStatus()
-		fmt.Println(status)
+		status = v.SetupExperienceStatus()
+		hostUUID = v.HostUUID
 		if !status.IsValid() {
 			return false, fmt.Errorf("invalid status: %s", status)
-		} else if requireTerminalStatus && !status.IsTerminalStatus() {
+		} else if !status.IsTerminalStatus() {
 			return false, nil
 		}
-		return ds.MaybeUpdateSetupExperienceSoftwareInstallStatus(ctx, v.HostUUID, v.ExecutionID, status)
+		updated, err = ds.MaybeUpdateSetupExperienceSoftwareInstallStatus(ctx, v.HostUUID, v.ExecutionID, status)
 
 	case fleet.SetupExperienceVPPInstallResult:
 		// NOTE: this case is also implemented in the CommandAndReportResults method of
 		// MDMAppleCheckinAndCommandService
-		status := v.SetupExperienceStatus()
+		status = v.SetupExperienceStatus()
+		hostUUID = v.HostUUID
 		if !status.IsValid() {
 			return false, fmt.Errorf("invalid status: %s", status)
-		} else if requireTerminalStatus && !status.IsTerminalStatus() {
+		} else if !status.IsTerminalStatus() {
 			return false, nil
 		}
-		return ds.MaybeUpdateSetupExperienceVPPStatus(ctx, v.HostUUID, v.CommandUUID, status)
+		updated, err = ds.MaybeUpdateSetupExperienceVPPStatus(ctx, v.HostUUID, v.CommandUUID, status)
 
 	default:
 		return false, fmt.Errorf("unsupported result type: %T", result)
 	}
+
+	// For software / vpp installs, if we updated the status to failure and the host is macOS,
+	// we may need to cancel the rest of the setup experience.
+	if updated && err == nil && status == fleet.SetupExperienceStatusFailure {
+		// Look up the host by UUID to get its platform and team.
+		host, getHostUUIDErr := ds.HostByIdentifier(ctx, hostUUID)
+		if getHostUUIDErr != nil {
+			return updated, fmt.Errorf("getting host by UUID: %w", getHostUUIDErr)
+		}
+		cancelErr := maybeCancelPendingSetupExperienceSteps(ctx, ds, host, newActivityFn)
+		if cancelErr != nil {
+			return updated, fmt.Errorf("cancel setup experience after software install failure: %w", cancelErr)
+		}
+	}
+	return updated, err
+}
+
+func validateSetupExperiencePlatform(platforms string) error {
+	for platform := range strings.SplitSeq(platforms, ",") {
+		if platform != "" && !slices.Contains(fleet.SetupExperienceSupportedPlatforms, platform) {
+			quotedPlatforms := strings.Join(fleet.SetupExperienceSupportedPlatforms, "\", \"")
+			quotedPlatforms = fmt.Sprintf("\"%s\"", quotedPlatforms)
+			return badRequestf("platform %q unsupported, platform must be one of %s", platform, quotedPlatforms)
+		}
+	}
+	return nil
+}
+
+func transformPlatformForSetupExperience(platform string) string {
+	if platform == "" || platform == "macos" {
+		return "darwin"
+	}
+	return platform
+}
+
+func transformPlatformListForSetupExperience(platforms string) string {
+	if platforms == "" {
+		return "darwin"
+	}
+	return strings.ReplaceAll(platforms, "macos", "darwin")
 }

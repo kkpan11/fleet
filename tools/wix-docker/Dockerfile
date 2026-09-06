@@ -1,4 +1,11 @@
-FROM debian:stable-slim@sha256:90128f59a7c6f6fdcb6493f587ea352d5c7507f52a6ddfba66fc56cd3d99dc2b
+FROM debian:trixie-slim@sha256:f6e2cfac5cf956ea044b4bd75e6397b4372ad88fe00908045e9a0d21712ae3ba
+
+LABEL maintainer="Fleet Developers"
+LABEL org.opencontainers.image.vendor="Fleet Device Management Inc."
+LABEL org.opencontainers.image.title="wix"
+LABEL org.opencontainers.image.source="https://github.com/fleetdm/fleet"
+LABEL org.opencontainers.image.url="https://fleetdm.com"
+LABEL org.opencontainers.image.documentation="https://fleetdm.com/docs"
 
 RUN true \
     && dpkg --add-architecture i386 \
@@ -10,6 +17,7 @@ RUN true \
     wget \
     unzip \
     osslsigncode \
+    && apt upgrade -y \
     && mkdir /wix \
     && rm -rf /var/lib/apt/lists/*
 

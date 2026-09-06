@@ -22,7 +22,7 @@ func (svc *Service) GetSSOUser(ctx context.Context, auth fleet.Auth) (*fleet.Use
 	// email, we do it here to avoid hitting the database early if
 	// the email happens to be invalid.
 	if err := fleet.ValidateEmail(auth.UserID()); err != nil {
-		return nil, ctxerr.New(ctx, "validating SSO response")
+		return nil, ctxerr.Wrap(ctx, err, "validating SSO response email")
 	}
 
 	user, err := svc.Service.GetSSOUser(ctx, auth)
@@ -39,9 +39,15 @@ func (svc *Service) GetSSOUser(ctx context.Context, auth fleet.Auth) (*fleet.Use
 		}
 
 		// Load custom roles from SSO attributes.
-		ssoRolesInfo, err := fleet.RolesFromSSOAttributes(auth.AssertionAttributes())
+		ssoRolesInfo, coercedAttrs, err := fleet.RolesFromSSOAttributes(auth.AssertionAttributes())
 		if err != nil {
 			return nil, ctxerr.Wrap(ctx, err, "invalid SSO attributes")
+		}
+		if len(coercedAttrs) > 0 {
+			svc.logger.WarnContext(ctx,
+				"SAML role attribute(s) coerced to null due to empty value",
+				"attributes", coercedAttrs,
+			)
 		}
 		if !ssoRolesInfo.IsSet() {
 			// If role attributes were not set, then there's nothing to do here.
@@ -66,7 +72,7 @@ func (svc *Service) GetSSOUser(ctx context.Context, auth fleet.Auth) (*fleet.Use
 		user.GlobalRole = newGlobalRole
 		user.Teams = newTeamsRoles
 
-		err = svc.ds.SaveUser(ctx, user)
+		err = svc.ds.SaveUser(ctx, user) // TODO see if we can use TeamLite through this workflow
 		if err != nil {
 			return nil, ctxerr.Wrap(ctx, err, "save user")
 		}
@@ -92,9 +98,15 @@ func (svc *Service) GetSSOUser(ctx context.Context, auth fleet.Auth) (*fleet.Use
 		teamRoles  []fleet.UserTeam
 	)
 	// Attempt to retrieve user roles from SAML custom attributes.
-	ssoRolesInfo, err := fleet.RolesFromSSOAttributes(auth.AssertionAttributes())
+	ssoRolesInfo, coercedAttrs, err := fleet.RolesFromSSOAttributes(auth.AssertionAttributes())
 	if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "invalid SSO attributes")
+	}
+	if len(coercedAttrs) > 0 {
+		svc.logger.WarnContext(ctx,
+			"SAML role attribute(s) coerced to null due to empty value",
+			"attributes", coercedAttrs,
+		)
 	}
 	if ssoRolesInfo.IsSet() {
 		globalRole, teamRoles, err = svc.userRolesFromSSOAttributes(ctx, ssoRolesInfo)
@@ -156,7 +168,7 @@ func rolesChanged(oldGlobal *string, oldTeams []fleet.UserTeam, newGlobal *strin
 // to a `fleet.User` struct fields `GlobalRole` and `Teams` respectively.
 func (svc *Service) userRolesFromSSOAttributes(ctx context.Context, ssoRolesInfo fleet.SSORolesInfo) (globalRole *string, teamsRoles []fleet.UserTeam, err error) {
 	for _, teamRole := range ssoRolesInfo.Teams {
-		team, err := svc.ds.Team(ctx, teamRole.ID)
+		team, err := svc.ds.TeamWithExtras(ctx, teamRole.ID)
 		if err != nil {
 			return nil, nil, ctxerr.Wrap(ctx, err, "invalid team")
 		}

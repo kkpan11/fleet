@@ -9,8 +9,6 @@ import (
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
-	"github.com/fleetdm/fleet/v4/server/mdm/apple/mobileconfig"
-	"github.com/go-kit/log/level"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 )
@@ -23,19 +21,23 @@ type encryptionKey struct {
 	NotFound  bool
 }
 
-func (ds *Datastore) SetOrUpdateHostDiskEncryptionKey(ctx context.Context, host *fleet.Host, encryptedBase64Key, clientError string,
-	decryptable *bool) error {
-
+func (ds *Datastore) SetOrUpdateHostDiskEncryptionKey(
+	ctx context.Context,
+	host *fleet.Host,
+	encryptedBase64Key,
+	clientError string,
+	decryptable *bool,
+) (bool, error) {
 	existingKey, err := ds.getExistingHostDiskEncryptionKey(ctx, host)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "getting existing key, if present")
+		return false, ctxerr.Wrap(ctx, err, "getting existing key, if present")
 	}
 
 	// We use the same timestamp for base and archive tables so that it can be used as an additional debug tool if needed.
-	var incomingKey = encryptionKey{Base: encryptedBase64Key, CreatedAt: time.Now().UTC()}
-	err = ds.archiveHostDiskEncryptionKey(ctx, host, incomingKey, existingKey)
+	incomingKey := encryptionKey{Base: encryptedBase64Key, CreatedAt: time.Now().UTC()}
+	archived, err := ds.archiveHostDiskEncryptionKey(ctx, host, incomingKey, existingKey)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "archiving key")
+		return false, ctxerr.Wrap(ctx, err, "archiving key")
 	}
 
 	if existingKey.NotFound {
@@ -45,16 +47,15 @@ INSERT INTO host_disk_encryption_keys
 VALUES
   (?, ?, ?, ?, ?)`, host.ID, incomingKey.Base, clientError, decryptable, incomingKey.CreatedAt)
 		if err == nil {
-			return nil
+			return archived, nil
 		}
 		var mysqlErr *mysql.MySQLError
 		switch {
 		case errors.As(err, &mysqlErr) && mysqlErr.Number == 1062:
-			level.Error(ds.logger).Log("msg", "Primary key already exists in host_disk_encryption_keys. Falling back to update", "host_id",
-				host)
+			ds.logger.ErrorContext(ctx, "Primary key already exists in host_disk_encryption_keys. Falling back to update", "host_id", host.ID)
 			// This should never happen unless there is a bug in the code or an infra issue (like huge replication lag).
 		default:
-			return ctxerr.Wrap(ctx, err, "inserting key")
+			return false, ctxerr.Wrap(ctx, err, "inserting key")
 		}
 	}
 
@@ -71,9 +72,9 @@ UPDATE host_disk_encryption_keys SET
 WHERE host_id = ?
 `, incomingKey.Base, decryptable, incomingKey.Base, clientError, host.ID)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "updating key")
+		return false, ctxerr.Wrap(ctx, err, "updating key")
 	}
-	return nil
+	return archived, nil
 }
 
 func (ds *Datastore) getExistingHostDiskEncryptionKey(ctx context.Context, host *fleet.Host) (encryptionKey, error) {
@@ -90,8 +91,17 @@ func (ds *Datastore) getExistingHostDiskEncryptionKey(ctx context.Context, host 
 	return existingKey, nil
 }
 
-func (ds *Datastore) archiveHostDiskEncryptionKey(ctx context.Context, host *fleet.Host, incomingKey encryptionKey,
-	existingKey encryptionKey) error {
+// archiveHostDiskEncryptionKey archives the existing key into the archive table.
+// If the incoming key is different from the existing key, it is archived.
+// If the incoming key is the same as the existing key, it is not archived.
+// If the incoming key is empty, it is not archived.
+// Returns whether the key was archived.
+func (ds *Datastore) archiveHostDiskEncryptionKey(
+	ctx context.Context,
+	host *fleet.Host,
+	incomingKey encryptionKey,
+	existingKey encryptionKey,
+) (bool, error) {
 	// We archive only valid and different keys to reduce noise.
 	if (incomingKey.Base != "" && existingKey.Base != incomingKey.Base) ||
 		(incomingKey.Salt != "" && existingKey.Salt != incomingKey.Salt) {
@@ -102,10 +112,11 @@ VALUES (?, ?, ?, ?, ?, ?)`
 			incomingKey.Salt,
 			incomingKey.KeySlot, incomingKey.CreatedAt)
 		if err != nil {
-			return ctxerr.Wrap(ctx, err, "inserting key into archive")
+			return false, ctxerr.Wrap(ctx, err, "inserting key into archive")
 		}
+		return true, nil
 	}
-	return nil
+	return false, nil
 }
 
 func (ds *Datastore) DeleteLUKSData(ctx context.Context, hostID, keySlot uint) error {
@@ -116,23 +127,33 @@ DELETE FROM host_disk_encryption_keys WHERE host_id = ? AND key_slot = ?`, hostI
 	})
 }
 
-func (ds *Datastore) SaveLUKSData(ctx context.Context, host *fleet.Host, encryptedBase64Passphrase string, encryptedBase64Salt string,
-	keySlot uint) error {
-	if encryptedBase64Passphrase == "" || encryptedBase64Salt == "" { // should have been caught at service level
-		return errors.New("passphrase and salt must be set")
+func (ds *Datastore) SaveLUKSData(
+	ctx context.Context,
+	host *fleet.Host,
+	encryptedBase64Passphrase string,
+	encryptedBase64Salt string,
+	keySlot *uint,
+) (bool, error) {
+	// Salt and key slot are empty/nil for TPM-backed FDE recovery keys, where
+	// snapd owns the LUKS key slots; only the passphrase/recovery key itself is
+	// guaranteed to be present.
+	if encryptedBase64Passphrase == "" { // should have been caught at service level
+		return false, errors.New("passphrase must be set")
 	}
 
 	existingKey, err := ds.getExistingHostDiskEncryptionKey(ctx, host)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "getting existing LUKS key, if present")
+		return false, ctxerr.Wrap(ctx, err, "getting existing LUKS key, if present")
 	}
 
 	// We use the same timestamp for base and archive tables so that it can be used as an additional debug tool if needed.
-	var incomingKey = encryptionKey{Base: encryptedBase64Passphrase, Salt: encryptedBase64Salt, KeySlot: &keySlot,
-		CreatedAt: time.Now().UTC()}
-	err = ds.archiveHostDiskEncryptionKey(ctx, host, incomingKey, existingKey)
+	incomingKey := encryptionKey{
+		Base: encryptedBase64Passphrase, Salt: encryptedBase64Salt, KeySlot: keySlot,
+		CreatedAt: time.Now().UTC(),
+	}
+	archived, err := ds.archiveHostDiskEncryptionKey(ctx, host, incomingKey, existingKey)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "archiving LUKS key")
+		return false, ctxerr.Wrap(ctx, err, "archiving LUKS key")
 	}
 
 	if existingKey.NotFound {
@@ -142,17 +163,17 @@ INSERT INTO host_disk_encryption_keys
 VALUES
   (?, ?, ?, ?, TRUE, ?)`, host.ID, incomingKey.Base, incomingKey.Salt, incomingKey.KeySlot, incomingKey.CreatedAt)
 		if err == nil {
-			return nil
+			return archived, nil
 		}
 		var mysqlErr *mysql.MySQLError
 		switch {
 		case errors.As(err, &mysqlErr) && mysqlErr.Number == 1062:
-			level.Error(ds.logger).Log("msg", "Primary key already exists in LUKS host_disk_encryption_keys. Falling back to update",
+			ds.logger.ErrorContext(ctx, "Primary key already exists in LUKS host_disk_encryption_keys. Falling back to update",
 				"host_id",
 				host)
 			// This should never happen unless there is a bug in the code or an infra issue (like huge replication lag).
 		default:
-			return ctxerr.Wrap(ctx, err, "inserting LUKS key")
+			return false, ctxerr.Wrap(ctx, err, "inserting LUKS key")
 		}
 	}
 
@@ -167,10 +188,9 @@ UPDATE host_disk_encryption_keys SET
 WHERE host_id = ?
 `, incomingKey.Base, incomingKey.Salt, incomingKey.KeySlot, host.ID)
 	if err != nil {
-		return ctxerr.Wrap(ctx, err, "updating LUKS key")
+		return false, ctxerr.Wrap(ctx, err, "updating LUKS key")
 	}
-	return nil
-
+	return archived, nil
 }
 
 func (ds *Datastore) IsHostPendingEscrow(ctx context.Context, hostID uint) bool {
@@ -280,25 +300,105 @@ WHERE host_id = ?`, hostID)
 	return &key, nil
 }
 
+func (ds *Datastore) GetHostArchivedDiskEncryptionKey(ctx context.Context, host *fleet.Host) (*fleet.HostArchivedDiskEncryptionKey, error) {
+	// TODO: Are we sure that host id is the right way to find the archived key? Are we concerned
+	// about cases where host with the same hardware serial has been deleted and recreated? If we
+	// learn that this is a real world concern, we should consider using the hardware serial as the primary
+	// key (or part of a composite index) for finding archived keys.
+	sqlFmt := `
+SELECT
+	host_id, 
+	base64_encrypted, 
+	base64_encrypted_salt,
+	key_slot,
+	created_at
+FROM host_disk_encryption_keys_archive
+%s
+ORDER BY created_at DESC
+LIMIT 1`
+
+	var key fleet.HostArchivedDiskEncryptionKey
+	err := sqlx.GetContext(ctx, ds.reader(ctx), &key, fmt.Sprintf(sqlFmt, `WHERE host_id = ?`), host.ID)
+	if err == sql.ErrNoRows && host.HardwareSerial != "" {
+		// If we didn't find a key by host ID, try to find it by hardware serial.
+		ds.logger.DebugContext(ctx, "get archived disk encryption key by host serial", "serial", host.HardwareSerial, "host_id", host.ID)
+		err = sqlx.GetContext(ctx, ds.reader(ctx), &key, fmt.Sprintf(sqlFmt, `WHERE hardware_serial = ?`), host.HardwareSerial)
+	}
+
+	msg := fmt.Sprintf("for host %d with serial %s", host.ID, host.HardwareSerial)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil, ctxerr.Wrap(ctx, notFound("HostDiskEncryptionKey").WithMessage(msg))
+	case err != nil:
+		return nil, ctxerr.Wrapf(ctx, err, "get archived disk encryption key %s", msg)
+	default:
+		return &key, nil
+	}
+}
+
+func (ds *Datastore) IsHostDiskEncryptionKeyArchived(ctx context.Context, hostID uint) (bool, error) {
+	// TODO: Are we sure that host id is the right way to find the archived key? Are we concerned
+	// about cases where host with the same hardware serial has been deleted and recreated? If we
+	// learn that this is a real world concern, we should consider using the hardware serial as the primary
+	// key (or part of a composite index) for finding archived keys.
+	var exists bool
+	if err := sqlx.GetContext(ctx, ds.reader(ctx), &exists, `SELECT EXISTS(SELECT 1 FROM host_disk_encryption_keys_archive WHERE host_id = ?)`, hostID); err != nil {
+		return false, ctxerr.Wrap(ctx, err, "checking if host disk encryption key is archived")
+	}
+	return exists, nil
+}
+
 func (ds *Datastore) CleanupDiskEncryptionKeysOnTeamChange(ctx context.Context, hostIDs []uint, newTeamID *uint) error {
+	diskEncryption, err := ds.GetConfigEnableDiskEncryption(ctx, newTeamID)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "get destination fleet disk encryption settings")
+	}
 	return ds.withTx(ctx, func(tx sqlx.ExtContext) error {
-		return cleanupDiskEncryptionKeysOnTeamChangeDB(ctx, tx, hostIDs, newTeamID)
+		return cleanupDiskEncryptionKeysOnTeamChangeDB(ctx, tx, hostIDs, diskEncryption)
 	})
 }
 
-func cleanupDiskEncryptionKeysOnTeamChangeDB(ctx context.Context, tx sqlx.ExtContext, hostIDs []uint, newTeamID *uint) error {
-	// We are using Apple's encryption profile to determine if any hosts, including Windows and Linux, are encrypted.
-	// This is a safe assumption since encryption is enabled for the whole team.
-	_, err := getMDMAppleConfigProfileByTeamAndIdentifierDB(ctx, tx, newTeamID, mobileconfig.FleetFileVaultPayloadIdentifier)
+// cleanupDiskEncryptionKeysOnTeamChangeDB drops the escrowed keys of moved hosts
+// whose platform no longer escrows to Fleet in the destination fleet. Each
+// platform has its own setting.
+func cleanupDiskEncryptionKeysOnTeamChangeDB(ctx context.Context, tx sqlx.ExtContext, hostIDs []uint, diskEncryption fleet.DiskEncryptionConfig) error {
+	if len(hostIDs) == 0 {
+		return nil
+	}
+
+	stmt, args, err := sqlx.In(`SELECT id, platform FROM hosts WHERE id IN (?)`, hostIDs)
 	if err != nil {
-		if fleet.IsNotFound(err) {
-			// the new team does not have a filevault profile so we need to delete the existing ones
-			if err := bulkDeleteHostDiskEncryptionKeysDB(ctx, tx, hostIDs); err != nil {
-				return ctxerr.Wrap(ctx, err, "reconcile filevault profiles on team change bulk delete host disk encryption keys")
-			}
-		} else {
-			return ctxerr.Wrap(ctx, err, "reconcile filevault profiles on team change get profile")
+		return ctxerr.Wrap(ctx, err, "building host platform query")
+	}
+	var hosts []struct {
+		ID       uint   `db:"id"`
+		Platform string `db:"platform"`
+	}
+	if err := sqlx.SelectContext(ctx, tx, &hosts, stmt, args...); err != nil {
+		return ctxerr.Wrap(ctx, err, "selecting host platforms")
+	}
+
+	toDelete := make([]uint, 0, len(hosts))
+	for _, h := range hosts {
+		// FleetPlatform() rather than a platform list in SQL, so this agrees with
+		// every other per-platform decision in the codebase
+		host := fleet.Host{Platform: h.Platform}
+		var keep bool
+		switch host.FleetPlatform() {
+		case "darwin":
+			keep = diskEncryption.MacOSEscrowEnabled
+		case "windows":
+			keep = diskEncryption.WindowsEnabled
+		case "linux":
+			keep = diskEncryption.LinuxEscrowEnabled
 		}
+		if !keep {
+			toDelete = append(toDelete, h.ID)
+		}
+	}
+
+	if err := bulkDeleteHostDiskEncryptionKeysDB(ctx, tx, toDelete); err != nil {
+		return ctxerr.Wrap(ctx, err, "bulk delete host disk encryption keys on fleet change")
 	}
 	return nil
 }

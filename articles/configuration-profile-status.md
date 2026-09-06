@@ -21,7 +21,7 @@ failed profiles to affected hosts.
 
 ## How to use
 
-1. Navigate to **Controls > OSSettings > Custom Settings** in the Fleet UI.
+1. Navigate to **Controls > OS Settings > Configuration profiles** in the Fleet UI.
 2. Each cofiguration profile row now includes an info icon that when clicked will show you the
    aggregate status for that profile:
     - **Verified**: The profile was installed on the host and was this has been verified by Fleet
@@ -29,7 +29,7 @@ failed profiles to affected hosts.
     - **Pending**: the profile is pending install on the host
     - **Failed**: the profile failed to be installed on the host
 
-![](../website/assets/images/articles/profile-aggregate-stauts-650-440@2x.png)
+![](../website/assets/images/articles/profile-aggregate-stauts-650x440@2x.png)
 
 3. To resend a profile to all hosts where instialltion failed
     - Hover over the **Failed** status row.

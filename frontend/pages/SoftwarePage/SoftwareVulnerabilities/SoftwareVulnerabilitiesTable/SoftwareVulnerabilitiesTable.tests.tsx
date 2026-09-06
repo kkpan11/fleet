@@ -1,24 +1,13 @@
 import React from "react";
 import { screen, waitFor } from "@testing-library/react";
-import { createCustomRenderer } from "test/test-utils";
+import { createCustomRenderer, createMockRouter } from "test/test-utils";
 
 import { createMockVulnerabilitiesResponse } from "__mocks__/vulnerabilitiesMock";
 import createMockUser from "__mocks__/userMock";
 
 import SoftwareVulnerabilitiesTable from "./SoftwareVulnerabilitiesTable";
 
-// TODO: figure out how to mock the router properly.
-const mockRouter = {
-  push: jest.fn(),
-  replace: jest.fn(),
-  goBack: jest.fn(),
-  goForward: jest.fn(),
-  go: jest.fn(),
-  setRouteLeaveHook: jest.fn(),
-  isActive: jest.fn(),
-  createHref: jest.fn(),
-  createPath: jest.fn(),
-};
+const mockRouter = createMockRouter();
 
 describe("Software Vulnerabilities table", () => {
   it("Renders the page-wide disabled state when software inventory is disabled", () => {
@@ -94,7 +83,9 @@ describe("Software Vulnerabilities table", () => {
     expect(screen.getByText("No vulnerabilities detected")).toBeInTheDocument();
     expect(screen.getByText("0 items")).toBeInTheDocument();
     expect(
-      screen.getByText("Expecting to see vulnerabilities? Check back later.")
+      screen.getByText(
+        "Vulnerability data will appear after the next scheduled check-in."
+      )
     ).toBeInTheDocument();
     expect(screen.queryByText("Vulnerability")).toBeNull();
   });

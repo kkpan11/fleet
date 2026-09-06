@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useContext } from "react";
-import { useQuery } from "react-query";
+import { useQuery, useQueryClient } from "react-query";
 import { useErrorHandler } from "react-error-boundary";
 import { InjectedRouter, Params } from "react-router/lib/Router";
+import { Location } from "history";
 import PATHS from "router/paths";
 
 import { AppContext } from "context/app";
-import { NotificationContext } from "context/notification";
 import { QueryContext } from "context/query";
 import useTeamIdParam from "hooks/useTeamIdParam";
 
@@ -23,7 +23,7 @@ import queryAPI from "services/entities/queries";
 import statusAPI from "services/entities/status";
 import {
   IGetQueryResponse,
-  ICreateQueryRequestBody,
+  ICreateQueryFormData,
   ISchedulableQuery,
 } from "interfaces/schedulable_query";
 import { IConfig } from "interfaces/config";
@@ -31,20 +31,18 @@ import { getErrorReason } from "interfaces/errors";
 
 import QuerySidePanel from "components/side_panels/QuerySidePanel";
 import MainContent from "components/MainContent";
+import SidePanelPage from "components/SidePanelPage";
 import SidePanelContent from "components/SidePanelContent";
 import CustomLink from "components/CustomLink";
-import BackLink from "components/BackLink";
+import BackButton from "components/BackButton";
 import InfoBanner from "components/InfoBanner";
+import { notify } from "components/ToastNotification";
 import EditQueryForm from "./components/EditQueryForm";
 
 interface IEditQueryPageProps {
   router: InjectedRouter;
   params: Params;
-  location: {
-    pathname: string;
-    query: { host_id: string; team_id?: string };
-    search: string;
-  };
+  location: Location<{ host_id: string; fleet_id?: string }>;
 }
 
 const baseClass = "edit-query-page";
@@ -71,6 +69,7 @@ const EditQueryPage = ({
   });
 
   const handlePageError = useErrorHandler();
+  const queryClient = useQueryClient();
   const {
     isGlobalAdmin,
     isGlobalMaintainer,
@@ -109,7 +108,6 @@ const EditQueryPage = ({
     setLastEditedQueryDiscardData,
   } = useContext(QueryContext);
   const { setConfig, availableTeams, setCurrentTeam } = useContext(AppContext);
-  const { renderFlash } = useContext(NotificationContext);
 
   const [isLiveQueryRunnable, setIsLiveQueryRunnable] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -173,11 +171,12 @@ const EditQueryPage = ({
     !isOnGlobalTeam &&
     !isStoredQueryLoading &&
     storedQuery?.team_id &&
-    !(storedQuery?.team_id?.toString() === location.query.team_id)
+    !(storedQuery?.team_id?.toString() === location.query.fleet_id)
   ) {
     router.push(
       getPathWithQueryParams(location.pathname, {
-        team_id: storedQuery?.team_id?.toString(),
+        fleet_id: storedQuery?.team_id?.toString(),
+        host_id: hostId,
       })
     );
   }
@@ -215,9 +214,9 @@ const EditQueryPage = ({
     ) {
       // Reroute to query report page still maintains query params for live query purposes
       router.push(
-        getPathWithQueryParams(PATHS.QUERY_DETAILS(queryId), {
+        getPathWithQueryParams(PATHS.REPORT_DETAILS(queryId), {
           host_id: location.query.host_id,
-          team_id: location.query.team_id,
+          fleet_id: location.query.fleet_id,
         })
       );
     }
@@ -252,7 +251,7 @@ const EditQueryPage = ({
     const storedQueryTitleCopy = storedQuery?.name
       ? `Editing ${storedQuery.name} | `
       : "";
-    document.title = `${storedQueryTitleCopy}Queries | ${DOCUMENT_TITLE_SUFFIX}`;
+    document.title = `${storedQueryTitleCopy}Reports | ${DOCUMENT_TITLE_SUFFIX}`;
     // }
   }, [location.pathname, storedQuery?.name]);
 
@@ -260,41 +259,41 @@ const EditQueryPage = ({
     setShowOpenSchemaActionText(!isSidebarOpen);
   }, [isSidebarOpen]);
 
-  const onSubmitNewQuery = debounce(
-    async (formData: ICreateQueryRequestBody) => {
-      setIsQuerySaving(true);
-      try {
-        const { query } = await queryAPI.create(formData);
-        router.push(
-          getPathWithQueryParams(PATHS.QUERY_DETAILS(query.id), {
-            team_id: query.team_id,
-          })
+  const onSubmitNewQuery = debounce(async (formData: ICreateQueryFormData) => {
+    setIsQuerySaving(true);
+    try {
+      const { query } = await queryAPI.create(formData);
+      queryClient.invalidateQueries({ queryKey: [{ scope: "queries" }] });
+      notify.success("Report created.");
+      router.push(
+        getPathWithQueryParams(PATHS.REPORT_DETAILS(query.id), {
+          fleet_id: query.team_id,
+          host_id: hostId,
+        })
+      );
+      setBackendValidators({});
+    } catch (createError) {
+      if (getErrorReason(createError).includes("already exists")) {
+        const teamErrorText =
+          teamNameForQuery && apiTeamIdForQuery !== 0
+            ? `the ${teamNameForQuery} fleet`
+            : "all fleets";
+        setBackendValidators({
+          name: `A report with that name already exists for ${teamErrorText}.`,
+        });
+      } else {
+        notify.error(
+          "Something went wrong creating your report. Please try again.",
+          { response: createError }
         );
-        renderFlash("success", "Query created!");
         setBackendValidators({});
-      } catch (createError: any) {
-        if (getErrorReason(createError).includes("already exists")) {
-          const teamErrorText =
-            teamNameForQuery && apiTeamIdForQuery !== 0
-              ? `the ${teamNameForQuery} team`
-              : "all teams";
-          setBackendValidators({
-            name: `A query with that name already exists for ${teamErrorText}.`,
-          });
-        } else {
-          renderFlash(
-            "error",
-            "Something went wrong creating your query. Please try again."
-          );
-          setBackendValidators({});
-        }
-      } finally {
-        setIsQuerySaving(false);
       }
+    } finally {
+      setIsQuerySaving(false);
     }
-  );
+  });
 
-  const onUpdateQuery = async (formData: ICreateQueryRequestBody) => {
+  const onUpdateQuery = async (formData: ICreateQueryFormData) => {
     if (!queryId) {
       return false;
     }
@@ -316,19 +315,29 @@ const EditQueryPage = ({
 
     try {
       await queryAPI.update(queryId, updatedQuery);
-      renderFlash("success", "Query updated!");
-      refetchStoredQuery(); // Required to compare recently saved query to a subsequent save to the query
-    } catch (updateError: any) {
+      queryClient.invalidateQueries({ queryKey: [{ scope: "queries" }] });
+      notify.success("Report updated.");
+      router.push(
+        getPathWithQueryParams(PATHS.REPORT_DETAILS(queryId), {
+          host_id: location.query.host_id,
+          fleet_id: location.query.fleet_id,
+        })
+      );
+    } catch (updateError) {
       console.error(updateError);
       const reason = getErrorReason(updateError);
       if (reason.includes("Duplicate")) {
-        renderFlash("error", "A query with this name already exists.");
+        notify.error("A report with this name already exists.", {
+          response: updateError,
+        });
       } else if (reason.includes(INVALID_PLATFORMS_REASON)) {
-        renderFlash("error", INVALID_PLATFORMS_FLASH_MESSAGE);
+        notify.error(INVALID_PLATFORMS_FLASH_MESSAGE, {
+          response: updateError,
+        });
       } else {
-        renderFlash(
-          "error",
-          "Something went wrong updating your query. Please try again."
+        notify.error(
+          "Something went wrong updating your report. Please try again.",
+          { response: updateError }
         );
       }
     }
@@ -358,12 +367,13 @@ const EditQueryPage = ({
 
     return (
       <InfoBanner color="yellow">
-        Fleet is unable to run a live query. Refresh the page or log in again.
+        Fleet is unable to run a live report. Refresh the page or log in again.
         If this keeps happening please{" "}
         <CustomLink
           url="https://github.com/fleetdm/fleet/issues/new/choose"
           text="file an issue"
           newTab
+          variant="banner-link"
         />
       </InfoBanner>
     );
@@ -371,15 +381,36 @@ const EditQueryPage = ({
 
   // Function instead of constant eliminates race condition
   // Returns to queries details page, manage queries page with filters, or default manage queries page
-  const backToQueriesPath = () =>
-    queryId
-      ? getPathWithQueryParams(PATHS.QUERY_DETAILS(queryId), {
-          team_id: currentTeamId,
-        })
-      : filteredQueriesPath ||
-        getPathWithQueryParams(PATHS.MANAGE_QUERIES, {
-          team_id: currentTeamId,
-        });
+  const backPath = () => {
+    if (queryId) {
+      return getPathWithQueryParams(PATHS.REPORT_DETAILS(queryId), {
+        fleet_id: currentTeamId,
+        host_id: hostId,
+      });
+    }
+
+    if (hostId) {
+      return getPathWithQueryParams(PATHS.HOST_DETAILS(hostId, currentTeamId));
+    }
+
+    if (filteredQueriesPath) return filteredQueriesPath;
+
+    return getPathWithQueryParams(PATHS.MANAGE_REPORTS, {
+      fleet_id: currentTeamId,
+    });
+  };
+
+  const backButtonText = () => {
+    if (queryId) {
+      return "Back to report";
+    }
+
+    if (hostId) {
+      return "Back to host details";
+    }
+
+    return "Back to reports";
+  };
 
   const showSidebar =
     isSidebarOpen &&
@@ -390,51 +421,51 @@ const EditQueryPage = ({
       isAnyTeamObserverPlus);
 
   return (
-    <>
-      <MainContent className={baseClass}>
-        <>
-          <div className={`${baseClass}__header-links`}>
-            <BackLink
-              text={queryId ? "Back to report" : "Back to queries"}
-              path={backToQueriesPath()}
+    <SidePanelPage>
+      <>
+        <MainContent className={baseClass}>
+          <>
+            <div className={`${baseClass}__header-links`}>
+              <BackButton text={backButtonText()} path={backPath()} />
+            </div>
+            <EditQueryForm
+              router={router}
+              location={location}
+              onSubmitNewQuery={onSubmitNewQuery}
+              onOsqueryTableSelect={onOsqueryTableSelect}
+              onUpdate={onUpdateQuery}
+              storedQuery={storedQuery}
+              queryIdForEdit={queryId}
+              apiTeamIdForQuery={apiTeamIdForQuery}
+              currentTeamId={currentTeamId}
+              currentTeamName={teamNameForQuery}
+              isStoredQueryLoading={isStoredQueryLoading}
+              showOpenSchemaActionText={showOpenSchemaActionText}
+              onOpenSchemaSidebar={onOpenSchemaSidebar}
+              renderLiveQueryWarning={renderLiveQueryWarning}
+              backendValidators={backendValidators}
+              isQuerySaving={isQuerySaving}
+              isQueryUpdating={isQueryUpdating}
+              hostId={hostId}
+              queryReportsDisabled={
+                appConfig?.server_settings.query_reports_disabled
+              }
+              showConfirmSaveChangesModal={showConfirmSaveChangesModal}
+              setShowConfirmSaveChangesModal={setShowConfirmSaveChangesModal}
             />
-          </div>
-          <EditQueryForm
-            router={router}
-            onSubmitNewQuery={onSubmitNewQuery}
-            onOsqueryTableSelect={onOsqueryTableSelect}
-            onUpdate={onUpdateQuery}
-            storedQuery={storedQuery}
-            queryIdForEdit={queryId}
-            apiTeamIdForQuery={apiTeamIdForQuery}
-            currentTeamId={currentTeamId}
-            teamNameForQuery={teamNameForQuery}
-            isStoredQueryLoading={isStoredQueryLoading}
-            showOpenSchemaActionText={showOpenSchemaActionText}
-            onOpenSchemaSidebar={onOpenSchemaSidebar}
-            renderLiveQueryWarning={renderLiveQueryWarning}
-            backendValidators={backendValidators}
-            isQuerySaving={isQuerySaving}
-            isQueryUpdating={isQueryUpdating}
-            hostId={hostId}
-            queryReportsDisabled={
-              appConfig?.server_settings.query_reports_disabled
-            }
-            showConfirmSaveChangesModal={showConfirmSaveChangesModal}
-            setShowConfirmSaveChangesModal={setShowConfirmSaveChangesModal}
-          />
-        </>
-      </MainContent>
-      {showSidebar && (
-        <SidePanelContent>
-          <QuerySidePanel
-            onOsqueryTableSelect={onOsqueryTableSelect}
-            selectedOsqueryTable={selectedOsqueryTable}
-            onClose={onCloseSchemaSidebar}
-          />
-        </SidePanelContent>
-      )}
-    </>
+          </>
+        </MainContent>
+        {showSidebar && (
+          <SidePanelContent>
+            <QuerySidePanel
+              onOsqueryTableSelect={onOsqueryTableSelect}
+              selectedOsqueryTable={selectedOsqueryTable}
+              onClose={onCloseSchemaSidebar}
+            />
+          </SidePanelContent>
+        )}
+      </>
+    </SidePanelPage>
   );
 };
 

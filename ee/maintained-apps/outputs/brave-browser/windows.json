@@ -1,14 +1,16 @@
 {
   "versions": [
     {
-      "version": "136.1.78.97",
+      "version": "152.1.94.121",
       "queries": {
-        "exists": "SELECT 1 FROM programs WHERE name = 'Brave' AND publisher = 'Brave Software Inc';"
+        "exists": "SELECT 1 FROM programs WHERE name = 'Brave' AND publisher = 'Brave Software Inc';",
+        "patched": "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM programs WHERE name = 'Brave' AND publisher = 'Brave Software Inc' AND version_compare(version, '152.1.94.121') < 0);",
+        "open": "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM processes WHERE LOWER(name) = 'brave.exe');"
       },
-      "installer_url": "https://github.com/brave/brave-browser/releases/download/v1.78.97/BraveBrowserStandaloneSilentSetup.exe",
+      "installer_url": "https://github.com/brave/brave-browser/releases/download/v1.94.121/BraveBrowserStandaloneSilentSetup.exe",
       "install_script_ref": "9a0c2b15",
       "uninstall_script_ref": "30c77f69",
-      "sha256": "7c955db850bb2ede2868baeb13d08e63514eb42784e2704b86d594df619e77d3",
+      "sha256": "c5a01876562758af69424d545852bd6699f44f50389d61a3d2ec8c835231e2e9",
       "default_categories": [
         "Browsers"
       ]

@@ -9,9 +9,11 @@ import { buildQueryStringFromParams } from "utilities/url";
 export const OS_VERSIONS_API_SUPPORTED_PLATFORMS = [
   "darwin",
   "windows",
+  "linux",
   "chrome",
   "ios",
   "ipados",
+  "android",
 ];
 
 export interface IGetOSVersionsQueryParams {
@@ -23,6 +25,8 @@ export interface IGetOSVersionsQueryParams {
   order_direction?: string;
   page?: number;
   per_page?: number;
+  max_vulnerabilities?: number;
+  query?: string; // filters the platform column
 }
 
 export interface IGetOSVersionsQueryKey extends IGetOSVersionsQueryParams {
@@ -41,6 +45,7 @@ export interface IOSVersionsResponse {
 interface IGetOsVersionOptions {
   os_version_id: number;
   teamId?: number;
+  max_vulnerabilities?: number;
 }
 
 export interface IGetOsVersionQueryKey extends IGetOsVersionOptions {
@@ -66,19 +71,23 @@ export const getOSVersions = ({
   order_direction,
   page,
   per_page,
+  max_vulnerabilities = 0,
+  query = "",
 }: IGetOSVersionsQueryParams = {}): Promise<IOSVersionsResponse> => {
   const { OS_VERSIONS } = endpoints;
   let path = OS_VERSIONS;
 
   const params: IGetOSVersionsRequestQueryParams = {
     platform,
-    team_id: teamId,
+    fleet_id: teamId,
     os_name,
     os_version,
     order_key,
     order_direction,
     page,
     per_page,
+    max_vulnerabilities,
+    query,
   };
 
   const queryString = buildQueryStringFromParams(params);
@@ -91,10 +100,14 @@ export const getOSVersions = ({
 const getOSVersion = ({
   os_version_id,
   teamId,
+  max_vulnerabilities,
 }: IGetOsVersionOptions): Promise<IOSVersionResponse> => {
   const endpoint = endpoints.OS_VERSION(os_version_id);
-  const queryString = buildQueryStringFromParams({ team_id: teamId });
-  const path = teamId !== undefined ? `${endpoint}?${queryString}` : endpoint;
+  const queryString = buildQueryStringFromParams({
+    fleet_id: teamId,
+    max_vulnerabilities,
+  });
+  const path = queryString ? `${endpoint}?${queryString}` : endpoint;
 
   return sendRequest("GET", path);
 };

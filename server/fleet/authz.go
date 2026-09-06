@@ -9,8 +9,22 @@ const (
 	ActionWrite = "write"
 	// ActionWriteHostLabel refers to writing labels on hosts.
 	ActionWriteHostLabel = "write_host_label"
+	// ActionCreate refers to creating an entity when permissions differ from standard writes (e.g. global labels)
+	ActionCreate = "create"
 	// ActionCancelHostActivity refers to canceling an upcoming activity on a host.
 	ActionCancelHostActivity = "cancel_host_activity"
+	// ActionTransferHost refers to transferring a host between fleets (teams).
+	// This action is permitted for technicians in addition to admin/maintainer/gitops,
+	// so transferring does not require the broader ActionWrite permission.
+	ActionTransferHost  = "transfer_host"
+	ActionClearPasscode = "clear_passcode"
+	// ActionResend refers to resending an entity on a single host (currently used for configuration profiles).
+	ActionResend = "resend"
+	// ActionReadSecrets refers to reading secrets/credentials of an entity (e.g. CA private keys, API tokens).
+	ActionReadSecrets = "read_secrets"
+	// ActionWriteMembers refers to adding/removing members of a team.
+	// This is more restrictive than ActionWrite to prevent non-admin roles from managing team membership.
+	ActionWriteMembers = "write_members"
 
 	//
 	// User specific actions

@@ -33,6 +33,25 @@ make: *** [fleet] Error 2
 
 If you get an `undefined: Asset` error, it is likely because you did not run `make generate` before `make build`. See [Building Fleet](https://fleetdm.com/docs/contributing/building-fleet) for additional documentation on compiling the `fleet` binary.
 
+### `Module build failed` or `Cannot find module` when running `make generate`
+
+```sh
+./frontend/index.jsx 39 bytes [built] [code generated] [1 error]
+
+ERROR in ./frontend/index.jsx
+Module build failed (from ./node_modules/babel-loader/lib/index.js):
+Error: [BABEL]: Cannot find module 'to-fast-properties'
+```
+
+When `make generate` fails with errors related to modules, it is often due to JS/TS dependencies having changed and can be fixed by running:
+
+```sh
+rm -rf node_modules
+make deps
+```
+
+and then running the failed `make generate` or `make generate-dev` again.
+
 ## Adding hosts for testing
 
 The `osquery` directory contains a docker-compose.yml and additional configuration files to start containerized osquery agents.
@@ -102,6 +121,6 @@ Hosts running Fleet Desktop will need access to these API endpoints:
 * `/api/latest/fleet/device/.+/desktop`
 * `/api/latest/fleet/device/.+/ping`
 
-> Full list [here](https://github.com/fleetdm/fleet/blob/c080a3b0e1eed2184b4b7bb77a6abd8c2c39b9f4/server/service/handler.go#L791-L839)
+For a full list of endpoints, open [Fleet's routes file](https://github.com/fleetdm/fleet/blob/main/server/service/handler.go), then look for endpoint declarations prefixed with `de.`, `demdm.`, `he.`, `oe.`, `oeAppleMDM.`, or `oeWindowsMDM.`.
 
 <meta name="description" value="Find commonly asked questions and answers about contributing to Fleet as part of our community.">

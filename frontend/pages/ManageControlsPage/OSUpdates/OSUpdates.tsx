@@ -3,19 +3,23 @@ import { InjectedRouter } from "react-router";
 import { useQuery } from "react-query";
 
 import { AppContext } from "context/app";
+import PATHS from "router/paths";
+import { getPathWithQueryParams } from "utilities/url";
 
 import { IConfig } from "interfaces/config";
 import { ITeamConfig } from "interfaces/team";
-import { ApplePlatform, isAndroid } from "interfaces/platform";
+import { ApplePlatform } from "interfaces/platform";
 
 import configAPI from "services/entities/config";
 import teamsAPI, { ILoadTeamResponse } from "services/entities/teams";
 
+import PageDescription from "components/PageDescription";
 import PremiumFeatureMessage from "components/PremiumFeatureMessage";
+import SectionHeader from "components/SectionHeader";
 import Spinner from "components/Spinner";
 
-import EndUserOSRequirementPreview from "./components/EndUserOSRequirementPreview";
-import TurnOnMdmMessage from "../../../components/TurnOnMdmMessage/TurnOnMdmMessage";
+import EmptyState from "components/EmptyState";
+import Button from "components/buttons/Button";
 import CurrentVersionSection from "./components/CurrentVersionSection";
 import TargetSection from "./components/TargetSection";
 import { parseOSUpdatesCurrentVersionsQueryParams } from "./components/CurrentVersionSection/CurrentVersionSection";
@@ -46,7 +50,13 @@ interface IOSUpdates {
 }
 
 const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
-  const { isPremiumTier, config, setConfig } = useContext(AppContext);
+  const {
+    isPremiumTier,
+    isGlobalAdmin,
+    isTeamAdmin,
+    config,
+    setConfig,
+  } = useContext(AppContext);
 
   const [
     selectedPlatformTab,
@@ -54,7 +64,6 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
   ] = useState<OSUpdatesTargetPlatform | null>(null);
 
   const {
-    isError: isErrorConfig,
     isFetching: isFetchingConfig,
     isLoading: isLoadingConfig,
     refetch: refetchAppConfig,
@@ -66,7 +75,6 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
 
   const {
     data: teamConfig,
-    isError: isErrorTeamConfig,
     isFetching: isFetchingTeamConfig,
     isLoading: isLoadingTeam,
     refetch: refetchTeamConfig,
@@ -89,17 +97,42 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
     );
   }
 
-  if (isLoadingConfig || isLoadingTeam) return <Spinner />;
+  if (isLoadingConfig || isLoadingTeam || isFetchingTeamConfig) {
+    return <Spinner />;
+  }
+
+  // Only global or team admins have access to the OS updates settings.
+  // This check needs to come after the team config is loaded so that we have the correct
+  // values for isGlobalAdmin and isTeamAdmin. These values are updated after
+  // the team config is loaded.
+  if (!isGlobalAdmin && !isTeamAdmin) {
+    router.replace(
+      getPathWithQueryParams(PATHS.CONTROLS_OS_SETTINGS, {
+        fleet_id: teamIdForApi,
+      })
+    );
+  }
 
   // FIXME: Handle error states for app config and team config (need specifications for this).
-
   // mdm is not enabled for mac or windows.
-
+  // TODO: Consistency with PageDescription component and empty state messaging for when mdm is not enabled.
   if (
     !config?.mdm.enabled_and_configured &&
     !config?.mdm.windows_enabled_and_configured
   ) {
-    return <TurnOnMdmMessage router={router} />;
+    return (
+      <div className={baseClass}>
+        <EmptyState
+          header="Additional configuration required"
+          info="Apple or Windows MDM must be turned on to change settings on your hosts."
+          primaryButton={
+            <Button onClick={() => router.push(PATHS.ADMIN_INTEGRATIONS_MDM)}>
+              Go to MDM settings
+            </Button>
+          }
+        />
+      </div>
+    );
   }
 
   // If the user has not selected a platform yet, we default to the platform that
@@ -109,11 +142,11 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
 
   return (
     <div className={baseClass}>
-      <p className={`${baseClass}__description`}>
-        Remotely encourage the installation of software updates on hosts
-        assigned to this team.
-      </p>
-      <div className={`${baseClass}__content`}>
+      <PageDescription
+        variant="tab-panel"
+        content="Remotely enforce software updates."
+      />
+      <>
         <div className={`${baseClass}__current-version-container`}>
           <CurrentVersionSection
             router={router}
@@ -122,6 +155,10 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
           />
         </div>
         <div className={`${baseClass}__target-container`}>
+          <SectionHeader
+            title="Target"
+            wrapperCustomClass={`${baseClass}__header`}
+          />
           <TargetSection
             key={teamIdForApi} // if the team changes, remount the target section
             appConfig={config}
@@ -134,12 +171,7 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
             refetchTeamConfig={refetchTeamConfig}
           />
         </div>
-        {!isAndroid(selectedPlatform) && (
-          <div className={`${baseClass}__nudge-preview`}>
-            <EndUserOSRequirementPreview platform={selectedPlatform} />
-          </div>
-        )}
-      </div>
+      </>
     </div>
   );
 };

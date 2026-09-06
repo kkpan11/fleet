@@ -7,7 +7,7 @@ MDM commands can be sent to macOS, iOS / iPadOS and Windows hosts managed in Fle
 3. Execute the MDM command by using the `fleetctl` command line interface (CLI) or by sending the payload in a Fleet API call.
 4. If needed, verify the MDM command result with an additional `fleetctl` command or API call.
 
-### Step 1: Create an MDM command payload
+## Step 1: Create an MDM command payload
 
 An MDM command payload can be created in mulitple ways.
 
@@ -23,7 +23,7 @@ The end result simply needs to be a standard, plain text file with the correct k
 
 ### Examples
 
-To restart a macOS host, we can use the "Restart a Device" MDM command documented by Apple [here](https://developer.apple.com/documentation/devicemanagement/restart_a_device#3384428). 
+To restart a macOS host, we can use the ["Restart a Device" MDM command](https://developer.apple.com/documentation/devicemanagement/restart_a_device).
 
 Below is the text to be used as the MDM command payload. Save it as a file and name it something like `apple-restart-device.xml`.
 
@@ -41,7 +41,7 @@ Below is the text to be used as the MDM command payload. Save it as a file and n
 </plist>
 ```
 
-To restart a Windows host, we can use the "Reboot" command documented by Microsoft [here](https://learn.microsoft.com/en-us/windows/client-management/mdm/reboot-csp).
+To restart a Windows host, we can use the ["Reboot" command](https://learn.microsoft.com/en-us/windows/client-management/mdm/reboot-csp).
 
 Below is the text to be used as the MDM command payload. Save it as a file and name it something like `windows-restart-device.xml`.
 
@@ -69,7 +69,7 @@ In Terminal, execute the following command:
 16F4301E-7A88-42AD-8523-A2F73F9D38FA
 ```
 
-> It's not necessary to add the `CommandUUID` to the MDM command payload, but having it available makes it easier and quicker to verify the MDM command result if a check is needed. 
+> When using `fleetctl mdm run-command`, the command UUID will be replaced by Fleet. If using the API endpoint [Run MDM command](https://fleetdm.com/docs/rest-api/rest-api#run-mdm-command), it will retain your custom UUID. It's not necessary to add the `CommandUUID` to the MDM command payload, but having it available makes it easier and quicker to verify the MDM command result if a check is needed.
 
 A `.plist` with the `CommandUUID` key / value added will look something like this:
 
@@ -91,7 +91,10 @@ A `.plist` with the `CommandUUID` key / value added will look something like thi
 </plist>
 ```
 
-### Step 2: Choose a target host
+> If you're trying to remove macOS configuration profiles via the `RemoveProfile` command, note that this endpoint (and `fleetctl run mdm command`) sends commands on the device channel only. User-scoped profiles installed via the user channel cannot be removed this way. In Fleet, in **host details > OS settings** profiles will have an icon indicator <img src="../website/assets/images/articles/user-scope-icon-16x16@2x.png" alt="user-scope-icon" style="display:inline; margin:0; height:16px; width:16px;"> when it is user-scoped.
+
+
+## Step 2: Choose a target host
 
 Run the `fleetctl get hosts --mdm` command to get a list of hosts that are enrolled in Fleet and have MDM enabled. This may not be practical in Fleet environments with a large number of hosts without using command line tools to parse the output, e.g.,
 
@@ -117,7 +120,7 @@ Or, something like `jq` for API output:
 
 > You will need a [Fleet API token](https://fleetdm.com/docs/rest-api/rest-api#retrieve-your-api-token) in your `fleetctl` configuration or for any interaction with the Fleet API to work.
 
-### Step 3: Execute the MDM command
+## Step 3: Execute the MDM command
 
 To deliver the MDM command payload with `fleetctl`, use something like the following that:
 
@@ -128,7 +131,11 @@ To deliver the MDM command payload with `fleetctl`, use something like the follo
 
 For targeting multiple hosts, the `--hosts` option can be populated with comma-separated values.
 
-To prepare the MDM command payload for execution in a Fleet API call, it must be base64-encoded. This is true for both Apple and Windows MDM command payloads. E.g., to encode the `.plist` in Terminal:
+To prepare the MDM command payload for execution in a Fleet API call, it must be base64-encoded. This is true for both Apple and Windows MDM command payloads.
+
+E.g., 
+
+to `base64` encode a `.plist` in Terminal:
 
 ```
 % echo '<?xml version="1.0" encoding="UTF-8"?>
@@ -149,7 +156,15 @@ To prepare the MDM command payload for execution in a Fleet API call, it must be
 PD94bWwgdmVyc2lvbj0iMS4wIiBlSomeMorebase64blahblahblah...
 ```
 
-Then, to deliver the MDM command payload via the Fleet API, use a command that conforms to the `curl` example below. (This can be achieved with any programmatic solution, e.g., python `requests` or `urllib.request`).
+to `base64` encode an `.xml` in PowerShell:
+
+```
+PS C:\WINDOWS\system32> cd C:\Users\username\Desktop\
+PS C:\Users\username\Desktop> [Convert]::ToBase64String((Get-Content -path "file.xml" -Encoding byte))
+cG9vcXblahblahblah...
+```
+
+To deliver the MDM command payload via the Fleet API, use a command that conforms to the `curl` example below. (This can be achieved with any programmatic solution, e.g., python `requests` or `urllib.request`).
 
 ```
 % fleet_key='yourfleetAPItoken'
@@ -166,7 +181,7 @@ For targeting multiple hosts, the `"host_uuids"` key / value is a json array tha
 
 `"host_uuids":["some-host-uuid-1","some-host-uuid-2","some-host-uuid-3"]`
 
-### Step 4: Verify the MDM command result
+## Step 4: Verify the MDM command result
 
 To verify the MDM command result with `fleetctl`, use something like the command below:
 
@@ -207,8 +222,8 @@ You can also get this list of MDM commands from the Fleet API with something lik
 ```
 
 <meta name="category" value="guides">
-<meta name="authorGitHubUsername" value="noahtalerman">
-<meta name="authorFullName" value="Noah Talerman">
+<meta name="authorGitHubUsername" value="nonpunctual">
+<meta name="authorFullName" value="Brock Walters">
 <meta name="publishedOn" value="2024-06-12">
 <meta name="articleTitle" value="MDM commands">
 <meta name="description" value="Learn how to run custom MDM commands on hosts using Fleet.">

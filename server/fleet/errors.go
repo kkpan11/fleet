@@ -1,32 +1,66 @@
 package fleet
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"reflect"
-	"regexp"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	platform_errors "github.com/fleetdm/fleet/v4/server/platform/errors"
+	platform_http "github.com/fleetdm/fleet/v4/server/platform/http"
 	"github.com/rs/zerolog"
 )
 
 var (
 	ErrNoContext               = errors.New("context key not set")
-	ErrPasswordResetRequired   = &passwordResetRequiredError{}
+	ErrPasswordResetRequired   = platform_http.ErrPasswordResetRequired
 	ErrMissingLicense          = &licenseError{}
 	ErrMDMNotConfigured        = &MDMNotConfiguredError{}
 	ErrWindowsMDMNotConfigured = &WindowsMDMNotConfiguredError{}
+	ErrAndroidMDMNotConfigured = &AndroidMDMNotConfiguredError{}
 	ErrNotConfigured           = &NotConfiguredError{}
 
-	MDMNotConfiguredMessage              = "MDM features aren't turned on in Fleet. For more information about setting up MDM, please visit https://fleetdm.com/docs/using-fleet"
-	WindowsMDMNotConfiguredMessage       = "Windows MDM isn't turned on. For more information about setting up MDM, please visit https://fleetdm.com/learn-more-about/windows-mdm"
-	AppleMDMNotConfiguredMessage         = "macOS MDM isn't turned on. Visit https://fleetdm.com/docs/using-fleet to learn how to turn on MDM."
-	AppleABMDefaultTeamDeprecatedMessage = "mdm.apple_bm_default_team has been deprecated. Please use the new mdm.apple_business_manager key documented here: https://fleetdm.com/learn-more-about/apple-business-manager-gitops"
-	CantTurnOffMDMForWindowsHostsMessage = "Can't turn off MDM for Windows hosts."
+	MDMNotConfiguredMessage                      = "MDM features aren't turned on in Fleet. For more information about setting up MDM, please visit https://fleetdm.com/docs/using-fleet"
+	WindowsMDMNotConfiguredMessage               = "Windows MDM isn't turned on. For more information about setting up MDM, please visit https://fleetdm.com/learn-more-about/windows-mdm"
+	AndroidMDMNotConfiguredMessage               = "Android MDM isn't turned on. For more information about setting up MDM, please visit https://fleetdm.com/learn-more-about/how-to-connect-android-enterprise"
+	AppleMDMNotConfiguredMessage                 = "macOS MDM isn't turned on. Visit https://fleetdm.com/docs/using-fleet to learn how to turn on MDM."
+	AppleABMDefaultTeamDeprecatedMessage         = "mdm.apple_bm_default_team has been deprecated. Please use the new mdm.apple_business key documented here: https://fleetdm.com/learn-more-about/apple-business-manager-gitops"
+	AppleOSVersionUnsupportedMessage             = "The minimum version isn't supported by Apple."
+	AppleOSVersionDeadlineInvalidMessage         = "The deadline isn't a valid date."
+	CantDeleteHostUnverifiedABMMessage           = "Couldn't delete host. Fleet couldn't reach Apple Business to check whether this host is still assigned. Please try again."
+	MyDeviceURLUnsupportedPlatformMessage        = "The My device page is only supported for macOS, Windows, Linux, and iOS/iPadOS hosts."
+	CantTurnOffMDMForWindowsHostsMessage         = "Can't turn off MDM for Windows hosts."
+	CantTurnOffMDMAlreadyTurnedOffMessage        = "Couldn't turn off MDM. This host already has MDM turned off."
+	CantTurnOffMDMForPersonalHostsMessage        = "Couldn't turn off MDM. This command isn't available for personal hosts."
+	CantWipePersonalHostsMessage                 = "Couldn't wipe. This command isn't available for personal hosts."
+	CantLockPersonalHostsMessage                 = "Couldn't lock. This command isn't available for personal hosts."
+	CantClearPasscodePersonalHostsMessage        = "Unlock token is not available for this device. Unable to issue ClearPasscode command."
+	CantClearPasscodeAccessRightsMessage         = "Clear passcode permissions are disabled for this host. Unable to issue ClearPasscode command."
+	CantLockManualIOSIpadOSHostsMessage          = "Couldn't lock. This command isn't available for manually enrolled iOS/iPadOS hosts."
+	CantDisableDiskEncryptionIfPINRequiredErrMsg = "Couldn't disable disk encryption, you need to disable the BitLocker PIN requirement first."
+	CantEnablePINRequiredIfDiskEncryptionEnabled = "Couldn't enable BitLocker PIN requirement, you must enable disk encryption first."
+	CantResendAppleDeclarationProfilesMessage    = "Can't resend declaration (DDM) profiles. Unlike configuration profiles (.mobileconfig), the host automatically checks in to get the latest DDM profiles."
+	CantAddSoftwareConflictMessage               = "Couldn't add software. %s already has an installer available for the %s fleet."
+	// Args: the two conflicting app names (order not significant).
+	CantAddConflictingFMAMessage = "Couldn't add software. Only one of %s or %s can be added to the same fleet."
+	// AddMaintainedAppTimeoutErrMsg is returned when Fleet's own 15-minute installer
+	// download timeout is exceeded (context.DeadlineExceeded).
+	AddMaintainedAppTimeoutErrMsg = "Couldn't add. Downloading the installer took longer than Fleet's 15-minute limit. This can happen with very large installers or a slow connection to the vendor's content delivery network (CDN). Try again, and make sure any proxy, gateway, or load balancer in front of Fleet allows the request to run at least that long."
+	// AddMaintainedAppCanceledErrMsg is returned when an upstream proxy, gateway, or
+	// load balancer cancels the request before the download finishes (context.Canceled).
+	AddMaintainedAppCanceledErrMsg               = "Couldn't add. The request was canceled before the installer finished downloading. This usually means a proxy, gateway, or load balancer in front of Fleet (for example, Envoy, or an AWS/GCP load balancer) closed the connection first. Increase its request and idle timeout above the time it takes to download large installers."
+	SoftwarePackageHashConflictMessage           = "%s package is already added (same SHA-256 hash)."
+	SoftwarePackageTitleMismatchMessage          = "Couldn't add. %s doesn't match the software title. To add it, go to Software and add it as new software."
+	SoftwareAlreadyHasVPPAppMessage              = "%s already has an Apple App Store (VPP) on the %s fleet."
+	SoftwareAlreadyHasFleetMaintainedAppMessage  = "%s already has a Fleet-maintained app on the %s fleet."
+	SoftwareAlreadyHasPackageMessage             = "%s already has a software package on the %s fleet."
+	SoftwarePackageLimitMessage                  = "%s already has %d packages. Before adding, delete one you no longer use."
+	SoftwareSelfServiceCategoriesConflictMessage = "Couldn't add software (%q). self_service and categories can be specified either in the fleet-level file or in the package YAML file."
+	SoftwareSetupExperienceFleetLevelOnlyMessage = "Couldn't add software (%q). setup_experience can be specified only in the fleet-level file."
+	SoftwareLabelsPackageLevelOnlyMessage        = "Couldn't add software (%q). Labels can be specified only in the package-level file when adding multiple packages of the same software."
+	SoftwareLabelsConflictMessage                = "Couldn't add software (%q). Labels can be specified either in the fleet-level file or in the package YAML file."
+	ConfigProfileLabelScopingPremiumCauseMsg     = "Scoping configuration profiles with labels"
+	DDMCustomActivationPremiumCauseMsg           = "Custom activations for declaration (DDM) profiles"
 )
 
 // ErrWithStatusCode is an interface for errors that should set a specific HTTP
@@ -36,47 +70,24 @@ type ErrWithStatusCode interface {
 	StatusCode() int
 }
 
-// ErrWithInternal is an interface for errors that include extra "internal"
-// information that should be logged in server logs but not sent to clients.
-type ErrWithInternal interface {
-	error
-	// Internal returns the error string that must only be logged internally,
-	// not returned to the client.
-	Internal() string
-}
+// ErrWithInternal is an alias for platform_http.ErrWithInternal.
+type ErrWithInternal = platform_http.ErrWithInternal
 
-// ErrWithLogFields is an interface for errors that include additional logging
-// fields that should be logged in server logs but not sent to clients.
-type ErrWithLogFields interface {
-	error
-	// LogFields returns the additional log fields to add, which should come in
-	// key, value pairs (as used in go-kit log).
-	LogFields() []interface{}
-}
+// ErrWithLogFields is an alias for platform_http.ErrWithLogFields.
+type ErrWithLogFields = platform_http.ErrWithLogFields
 
-// ErrWithRetryAfter is an interface for errors that should set a specific HTTP
-// Header Retry-After value (see
-// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Retry-After)
-type ErrWithRetryAfter interface {
-	error
-	// RetryAfter returns the number of seconds to wait before retry.
-	RetryAfter() int
-}
+// ErrWithRetryAfter is an alias for platform_http.ErrWithRetryAfter.
+type ErrWithRetryAfter = platform_http.ErrWithRetryAfter
 
-// ErrWithIsClientError is an interface for errors that explicitly specify
-// whether they are client errors or not. By default, errors are treated as
-// server errors.
-type ErrWithIsClientError interface {
-	error
-	IsClientError() bool
-}
+// ErrWithIsClientError is an alias for platform_errors.ErrWithIsClientError.
+type ErrWithIsClientError = platform_errors.ErrWithIsClientError
 
 type invalidArgWithStatusError struct {
-	InvalidArgumentError
+	*InvalidArgumentError
 	code int
 }
 
-func (e invalidArgWithStatusError) Status() int {
+func (e *invalidArgWithStatusError) Status() int {
 	if e.code == 0 {
 		// 422 is the default code for invalid args
 		return http.StatusUnprocessableEntity
@@ -84,30 +95,11 @@ func (e invalidArgWithStatusError) Status() int {
 	return e.code
 }
 
-// ErrorUUIDer is the interface for errors that contain a UUID.
-type ErrorUUIDer interface {
-	// UUID returns the error's UUID.
-	UUID() string
-}
+// ErrorUUIDer is an alias for platform_http.ErrorUUIDer.
+type ErrorUUIDer = platform_http.ErrorUUIDer
 
-// ErrorWithUUID can be embedded to error types to implement ErrorUUIDer.
-type ErrorWithUUID struct {
-	uuid string
-}
-
-var _ ErrorUUIDer = (*ErrorWithUUID)(nil)
-
-// UUID implements the ErrorUUIDer interface.
-func (e *ErrorWithUUID) UUID() string {
-	if e.uuid == "" {
-		uuid, err := uuid.NewRandom()
-		if err != nil {
-			panic(err)
-		}
-		e.uuid = uuid.String()
-	}
-	return e.uuid
-}
+// ErrorWithUUID is an alias for platform_http.ErrorWithUUID.
+type ErrorWithUUID = platform_http.ErrorWithUUID
 
 // InvalidArgumentError is the error returned when invalid data is presented to
 // a service method. It is a client error.
@@ -131,7 +123,7 @@ func NewInvalidArgumentError(name, reason string) *InvalidArgumentError {
 	return &invalid
 }
 
-func (e InvalidArgumentError) IsClientError() bool {
+func (e *InvalidArgumentError) IsClientError() bool {
 	return true
 }
 
@@ -142,14 +134,18 @@ func (e *InvalidArgumentError) Append(name, reason string) {
 	})
 }
 
+func (e *InvalidArgumentError) AppendInvalidArgument(invalidArg InvalidArgument) {
+	e.Errors = append(e.Errors, invalidArg)
+}
+
 func (e *InvalidArgumentError) Appendf(name, reasonFmt string, args ...interface{}) {
 	e.Append(name, fmt.Sprintf(reasonFmt, args...))
 }
 
 // WithStatus returns an error that combines the InvalidArgumentError
 // with a custom status code.
-func (e InvalidArgumentError) WithStatus(code int) error {
-	return invalidArgWithStatusError{e, code}
+func (e *InvalidArgumentError) WithStatus(code int) error {
+	return &invalidArgWithStatusError{e, code}
 }
 
 func (e *InvalidArgumentError) HasErrors() bool {
@@ -157,7 +153,7 @@ func (e *InvalidArgumentError) HasErrors() bool {
 }
 
 // Error implements the error interface.
-func (e InvalidArgumentError) Error() string {
+func (e *InvalidArgumentError) Error() string {
 	switch len(e.Errors) {
 	case 0:
 		return "validation failed"
@@ -169,7 +165,7 @@ func (e InvalidArgumentError) Error() string {
 	}
 }
 
-func (e InvalidArgumentError) Invalid() []map[string]string {
+func (e *InvalidArgumentError) Invalid() []map[string]string {
 	var invalid []map[string]string
 	for _, i := range e.Errors {
 		invalid = append(invalid, map[string]string{"name": i.name, "reason": i.reason})
@@ -177,102 +173,32 @@ func (e InvalidArgumentError) Invalid() []map[string]string {
 	return invalid
 }
 
-// BadRequestError is an error type that generates a 400 status code.
-type BadRequestError struct {
-	Message     string
-	InternalErr error
+// BadRequestError is an alias for platform_http.BadRequestError.
+type BadRequestError = platform_http.BadRequestError
 
-	ErrorWithUUID
-}
+// AuthFailedError is an alias for platform_http.AuthFailedError.
+type AuthFailedError = platform_http.AuthFailedError
 
-// Error returns the error message.
-func (e *BadRequestError) Error() string {
-	return e.Message
-}
+// NewAuthFailedError is an alias for platform_http.NewAuthFailedError.
+var NewAuthFailedError = platform_http.NewAuthFailedError
 
-// This implements the interface required by the server/service package logic
-// to determine the status code to return to the client.
-func (e *BadRequestError) BadRequestError() []map[string]string {
-	return nil
-}
+// AuthRequiredError is an alias for platform_http.AuthRequiredError.
+type AuthRequiredError = platform_http.AuthRequiredError
 
-func (e BadRequestError) Internal() string {
-	if e.InternalErr == nil {
-		return ""
-	}
-	return e.InternalErr.Error()
-}
+// NewAuthRequiredError is an alias for platform_http.NewAuthRequiredError.
+var NewAuthRequiredError = platform_http.NewAuthRequiredError
 
-type AuthFailedError struct {
-	// internal is the reason that should only be logged internally
-	internal string
+// DeviceSSORequiredError is an alias for platform_http.DeviceSSORequiredError.
+type DeviceSSORequiredError = platform_http.DeviceSSORequiredError
 
-	ErrorWithUUID
-}
+// NewDeviceSSORequiredError is an alias for platform_http.NewDeviceSSORequiredError.
+var NewDeviceSSORequiredError = platform_http.NewDeviceSSORequiredError
 
-func NewAuthFailedError(internal string) *AuthFailedError {
-	return &AuthFailedError{internal: internal}
-}
+// AuthHeaderRequiredError is an alias for platform_http.AuthHeaderRequiredError.
+type AuthHeaderRequiredError = platform_http.AuthHeaderRequiredError
 
-func (e AuthFailedError) Error() string {
-	return "Authentication failed"
-}
-
-func (e AuthFailedError) Internal() string {
-	return e.internal
-}
-
-func (e AuthFailedError) StatusCode() int {
-	return http.StatusUnauthorized
-}
-
-type AuthRequiredError struct {
-	// internal is the reason that should only be logged internally
-	internal string
-
-	ErrorWithUUID
-}
-
-func NewAuthRequiredError(internal string) *AuthRequiredError {
-	return &AuthRequiredError{internal: internal}
-}
-
-func (e AuthRequiredError) Error() string {
-	return "Authentication required"
-}
-
-func (e AuthRequiredError) Internal() string {
-	return e.internal
-}
-
-func (e AuthRequiredError) StatusCode() int {
-	return http.StatusUnauthorized
-}
-
-type AuthHeaderRequiredError struct {
-	// internal is the reason that should only be logged internally
-	internal string
-
-	ErrorWithUUID
-}
-
-func NewAuthHeaderRequiredError(internal string) *AuthHeaderRequiredError {
-	return &AuthHeaderRequiredError{
-		internal: internal,
-	}
-}
-
-func (e AuthHeaderRequiredError) Error() string {
-	return "Authorization header required"
-}
-
-func (e AuthHeaderRequiredError) Internal() string {
-	return e.internal
-}
-
-func (e AuthHeaderRequiredError) StatusCode() int {
-	return http.StatusUnauthorized
-}
+// NewAuthHeaderRequiredError is an alias for platform_http.NewAuthHeaderRequiredError.
+var NewAuthHeaderRequiredError = platform_http.NewAuthHeaderRequiredError
 
 // PermissionError, set when user is authenticated, but not allowed to perform action
 type PermissionError struct {
@@ -285,13 +211,18 @@ func NewPermissionError(message string) *PermissionError {
 	return &PermissionError{message: message}
 }
 
-func (e PermissionError) Error() string {
+func (e *PermissionError) Error() string {
 	return e.message
 }
 
-func (e PermissionError) PermissionError() []map[string]string {
+func (e *PermissionError) PermissionError() []map[string]string {
 	var forbidden []map[string]string
 	return forbidden
+}
+
+// IsClientError implements ErrWithIsClientError.
+func (e *PermissionError) IsClientError() bool {
+	return true
 }
 
 // OTAForbiddenError is a special kind of forbidden error that intentionally
@@ -309,44 +240,55 @@ type OTAForbiddenError struct {
 	InternalErr error
 }
 
-func (e OTAForbiddenError) Error() string {
+func (e *OTAForbiddenError) Error() string {
 	return "Couldn't install the profile. Invalid enroll secret. Please contact your IT admin."
 }
 
-func (e OTAForbiddenError) StatusCode() int {
+func (e *OTAForbiddenError) StatusCode() int {
 	return http.StatusForbidden
 }
 
-func (e OTAForbiddenError) Internal() string {
+func (e *OTAForbiddenError) Internal() string {
 	if e.InternalErr == nil {
 		return ""
 	}
 	return e.InternalErr.Error()
 }
 
+// IsClientError implements ErrWithIsClientError.
+func (e *OTAForbiddenError) IsClientError() bool {
+	return true
+}
+
 // licenseError is returned when the application is not properly licensed.
 type licenseError struct {
 	ErrorWithUUID
+	cause *string
 }
 
-func (e licenseError) Error() string {
+func NewLicenseErrorWithCause(cause string) *licenseError {
+	return &licenseError{cause: &cause}
+}
+
+func (e *licenseError) Is(target error) bool {
+	_, ok := target.(*licenseError)
+	return ok
+}
+
+func (e *licenseError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("%s requires Fleet Premium license", *e.cause)
+	}
 	return "Requires Fleet Premium license"
 }
 
-func (e licenseError) StatusCode() int {
+func (e *licenseError) StatusCode() int {
 	return http.StatusPaymentRequired
 }
 
-type passwordResetRequiredError struct {
-	ErrorWithUUID
-}
-
-func (e passwordResetRequiredError) Error() string {
-	return "password reset required"
-}
-
-func (e passwordResetRequiredError) StatusCode() int {
-	return http.StatusUnauthorized
+// IsClientError implements ErrWithIsClientError.
+func (e *licenseError) IsClientError() bool {
+	return true
 }
 
 // MDMNotConfiguredError is used when an MDM endpoint or resource is accessed
@@ -363,6 +305,11 @@ func (e *MDMNotConfiguredError) Error() string {
 	return MDMNotConfiguredMessage
 }
 
+// IsClientError implements ErrWithIsClientError.
+func (e *MDMNotConfiguredError) IsClientError() bool {
+	return true
+}
+
 // WindowsMDMNotConfiguredError is used when an MDM endpoint or resource is accessed
 // without having Windows MDM correctly configured.
 type WindowsMDMNotConfiguredError struct{}
@@ -375,6 +322,30 @@ func (e *WindowsMDMNotConfiguredError) StatusCode() int {
 
 func (e *WindowsMDMNotConfiguredError) Error() string {
 	return WindowsMDMNotConfiguredMessage
+}
+
+// IsClientError implements ErrWithIsClientError.
+func (e *WindowsMDMNotConfiguredError) IsClientError() bool {
+	return true
+}
+
+// AndroidMDMNotConfiguredError is used when an MDM endpoint or resource is accessed
+// without having Android MDM correctly configured.
+type AndroidMDMNotConfiguredError struct{}
+
+// Status implements the kithttp.StatusCoder interface so we can customize the
+// HTTP status code of the response returning this error.
+func (e *AndroidMDMNotConfiguredError) StatusCode() int {
+	return http.StatusBadRequest
+}
+
+func (e *AndroidMDMNotConfiguredError) Error() string {
+	return AndroidMDMNotConfiguredMessage
+}
+
+// IsClientError implements ErrWithIsClientError.
+func (e *AndroidMDMNotConfiguredError) IsClientError() bool {
+	return true
 }
 
 // NotConfiguredError is a generic "not configured" error that can be used
@@ -429,15 +400,9 @@ func (e *GatewayError) Error() string {
 	return msg
 }
 
-// Error is a user facing error (API user). It's meant to be used for errors that are
-// related to fleet logic specifically. Other errors, such as mysql errors, shouldn't
-// be translated to this.
-type Error struct {
-	Code    int    `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-
-	ErrorWithUUID
-}
+// Error is an alias for platform_http.Error.
+// It's meant to be used for errors that are related to fleet logic specifically.
+type Error = platform_http.Error
 
 const (
 	// ErrNoRoleNeeded is the error number for valid role needed
@@ -467,101 +432,26 @@ func NewErrorf(code int, format string, args ...interface{}) error {
 	}
 }
 
-func (ge *Error) Error() string {
-	return ge.Message
-}
+// UserMessageError is an alias for platform_http.UserMessageError.
+type UserMessageError = platform_http.UserMessageError
 
-// UserMessageError is an error that adds the UserMessage interface
-// implementation.
-type UserMessageError struct {
-	error
-	statusCode int
-
-	ErrorWithUUID
-}
-
-// NewUserMessageError creates a UserMessageError that will translate the
-// error message of err to a user-friendly form. If statusCode is > 0, it
-// will be used as the HTTP status code for the error, otherwise it defaults
-// to http.StatusUnprocessableEntity (422).
-func NewUserMessageError(err error, statusCode int) *UserMessageError {
-	if err == nil {
-		return nil
-	}
-	return &UserMessageError{
-		error:      err,
-		statusCode: statusCode,
-	}
-}
-
-var rxJSONUnknownField = regexp.MustCompile(`^json: unknown field "(.+)"$`)
+// NewUserMessageError is an alias for platform_http.NewUserMessageError.
+var NewUserMessageError = platform_http.NewUserMessageError
 
 // IsJSONUnknownFieldError returns true if err is a JSON unknown field error.
 // There is no exported type or value for this error, so we have to match the
 // error message.
 func IsJSONUnknownFieldError(err error) bool {
-	return rxJSONUnknownField.MatchString(err.Error())
+	return platform_http.IsJSONUnknownFieldError(err)
 }
 
+// GetJSONUnknownField returns the unknown field name from a JSON unknown field error.
 func GetJSONUnknownField(err error) *string {
-	errCause := Cause(err)
-	if IsJSONUnknownFieldError(errCause) {
-		substr := rxJSONUnknownField.FindStringSubmatch(errCause.Error())
-		return &substr[1]
-	}
-	return nil
-}
-
-// UserMessage implements the user-friendly translation of the error if its
-// root cause is one of the supported types, otherwise it returns the error
-// message.
-func (e UserMessageError) UserMessage() string {
-	cause := Cause(e.error)
-	switch cause := cause.(type) {
-	case *json.UnmarshalTypeError:
-		var sb strings.Builder
-		curType := cause.Type
-		for curType.Kind() == reflect.Slice || curType.Kind() == reflect.Array {
-			sb.WriteString("array of ")
-			curType = curType.Elem()
-		}
-		sb.WriteString(curType.Name())
-		if curType != cause.Type {
-			// it was an array
-			sb.WriteString("s")
-		}
-
-		return fmt.Sprintf("invalid value type at '%s': expected %s but got %s", cause.Field, sb.String(), cause.Value)
-
-	default:
-		// there's no specific error type for the strict json mode
-		// (DisallowUnknownFields), so resort to message-matching.
-		if matches := rxJSONUnknownField.FindStringSubmatch(cause.Error()); matches != nil {
-			return fmt.Sprintf("unsupported key provided: %q", matches[1])
-		}
-		return e.Error()
-	}
-}
-
-// StatusCode implements the kithttp.StatusCoder interface to return the status
-// code to use in HTTP API responses.
-func (e UserMessageError) StatusCode() int {
-	if e.statusCode > 0 {
-		return e.statusCode
-	}
-	return http.StatusUnprocessableEntity
+	return platform_http.GetJSONUnknownField(err)
 }
 
 // Cause returns the root error in err's chain.
-func Cause(err error) error {
-	for {
-		uerr := errors.Unwrap(err)
-		if uerr == nil {
-			return err
-		}
-		err = uerr
-	}
-}
+var Cause = platform_errors.Cause
 
 // FleetdError is an error that can be reported by any of the fleetd
 // components.
@@ -608,6 +498,7 @@ func (fe FleetdError) ToMap() map[string]any {
 // with a failed request's response.
 type OrbitError struct {
 	Message string
+	code    int
 }
 
 // Error implements the error interface for the OrbitError.
@@ -615,7 +506,29 @@ func (e OrbitError) Error() string {
 	return e.Message
 }
 
-// Message that may surfaced by the server or the fleetctl client.
+// StatusCode implements the ErrWithStatusCode interface for the OrbitError.
+func (e OrbitError) StatusCode() int {
+	if e.code == 0 {
+		return http.StatusInternalServerError
+	}
+	return e.code
+}
+
+// IsClientError implements ErrWithIsClientError.
+// Returns true for 4xx status codes, false for 5xx.
+func (e OrbitError) IsClientError() bool {
+	code := e.StatusCode()
+	return code >= 400 && code < 500
+}
+
+func NewOrbitIDPAuthRequiredError() *OrbitError {
+	return &OrbitError{
+		Message: "END_USER_AUTH_REQUIRED",
+		code:    http.StatusUnauthorized,
+	}
+}
+
+// Messages that may be surfaced by the server or the fleetctl client.
 const (
 	// Hosts, general
 	HostNotFoundErrMsg           = "Host doesn't exist. Make sure you provide a valid hostname, UUID, or serial number. Learn more about host identifiers: https://fleetdm.com/learn-more-about/host-identifiers"
@@ -623,7 +536,7 @@ const (
 	TargetedHostsDontExistErrMsg = "One or more targeted hosts don't exist. Make sure you provide a valid hostname, UUID, or serial number. Learn more about host identifiers: https://fleetdm.com/learn-more-about/host-identifiers"
 
 	// Scripts
-	RunScriptInvalidTypeErrMsg             = "File type not supported. Only .sh (Bash) and .ps1 (PowerShell) file types are allowed."
+	RunScriptInvalidTypeErrMsg             = "File type not supported. Only .sh (Shell), .py (Python), and .ps1 (PowerShell) file types are allowed."
 	RunScriptHostOfflineErrMsg             = "Script can't run on offline host."
 	RunScriptForbiddenErrMsg               = "You don't have the right permissions in Fleet to run the script."
 	RunScriptAlreadyRunningErrMsg          = "A script is already running on this host. Please wait about 5 minutes to let it finish."
@@ -632,9 +545,13 @@ const (
 	RunScriptDisabledErrMsg                = "Scripts are disabled for this host. To run scripts, deploy the fleetd agent with scripts enabled."
 	RunScriptsOrbitDisabledErrMsg          = "Couldn't run script. To run a script, deploy the fleetd agent with --enable-scripts."
 	RunScriptAsyncScriptEnqueuedMsg        = "Script is running or will run when the host comes online."
-	RunScripSavedMaxLenErrMsg              = "Script is too large. It's limited to 500,000 characters (approximately 10,000 lines)."
+	RunScriptSavedMaxLenErrMsg             = "Script is too large. It's limited to 500,000 characters (approximately 10,000 lines)."
 	RunScripUnsavedMaxLenErrMsg            = "Script is too large. It's limited to 10,000 characters (approximately 125 lines)."
 	RunScriptGatewayTimeoutErrMsg          = "Gateway timeout. Fleet didn't hear back from the host and doesn't know if the script ran. Please make sure your load balancer timeout isn't shorter than the Fleet server timeout."
+	RunScriptFleetVarsFailedErrMsg         = "Fleet couldn't resolve variables in this script. See the script output for details."
+
+	// Software
+	InstallSoftwarePersonalAppleDeviceErrMsg = "Couldn't install. Currently, software install isn't supported on personal (BYOD) iOS and iPadOS hosts."
 
 	// End user authentication
 	EndUserAuthDEPWebURLConfiguredErrMsg = `End user authentication can't be configured when the configured automatic enrollment (DEP) profile specifies a configuration_web_url.` // #nosec G101
@@ -650,13 +567,21 @@ const (
 
 	// NDES/SCEP validation
 	MultipleSCEPPayloadsErrMsg          = "Add only one SCEP payload."
-	SCEPVariablesNotInSCEPPayloadErrMsg = "Variables prefixed with \"$FLEET_VAR_SCEP_\", \"$FLEET_VAR_CUSTOM_SCEP_\" and \"$FLEET_VAR_NDES_SCEP\" must only be in the SCEP payload."
+	SCEPVariablesNotInSCEPPayloadErrMsg = "Variables prefixed with \"$FLEET_VAR_SCEP_\", \"$FLEET_VAR_CUSTOM_SCEP_\", \"$FLEET_VAR_NDES_SCEP\" and \"$FLEET_VAR_SMALLSTEP_\" must only be in the SCEP payload."
+
+	// Invalid list options combinations
+	FilterTitlesByPlatformNeedsTeamIdErrMsg = "The 'platform' and 'team_id' parameters must be used together to filter the software available for install."
 )
 
 // Error message variables
 var (
-	NDESSCEPVariablesMissingErrMsg         = fmt.Sprintf("SCEP profile for NDES certificate authority requires: $FLEET_VAR_%s, $FLEET_VAR_%s, and $FLEET_VAR_%s variables.", FleetVarNDESSCEPChallenge, FleetVarNDESSCEPProxyURL, FleetVarSCEPRenewalID)
-	SCEPRenewalIDWithoutURLChallengeErrMsg = "Variable \"$FLEET_VAR_" + FleetVarSCEPRenewalID + "\" can't be used if variables for SCEP URL and Challenge are not specified."
+	NDESSCEPVariablesMissingErrMsg         = fmt.Sprintf("SCEP profile for NDES certificate authority requires: $FLEET_VAR_%s, $FLEET_VAR_%s, and $FLEET_VAR_%s variables.", FleetVarNDESSCEPChallenge, FleetVarNDESSCEPProxyURL, FleetVarCertificateRenewalID)
+	SCEPRenewalIDWithoutURLChallengeErrMsg = "Variable \"$FLEET_VAR_" + string(FleetVarCertificateRenewalID) + "\" can't be used if variables for SCEP URL and Challenge are not specified."
+)
+
+const (
+	// DeleteCAReferencedByTemplatesErrMsg is the error substring used when a CA cannot be deleted because certificate templates still reference it.
+	DeleteCAReferencedByTemplatesErrMsg = "Certificate templates still reference it"
 )
 
 // ConflictError is used to indicate a conflict, such as a UUID conflict in the DB.
@@ -674,7 +599,45 @@ func (e ConflictError) StatusCode() int {
 	return http.StatusConflict
 }
 
-// Errorer interface is implemented by response structs to encode business logic errors
-type Errorer interface {
-	Error() error
+// IsConflict implements the conflict interface for middleware compatibility
+func (e ConflictError) IsConflict() bool {
+	return true
 }
+
+// IsClientError implements ErrWithIsClientError.
+func (e ConflictError) IsClientError() bool {
+	return true
+}
+
+// Errorer is an alias for platform_http.Errorer.
+type Errorer = platform_http.Errorer
+
+type VPPIconAvailable struct {
+	IconURL string
+}
+
+func (e *VPPIconAvailable) Error() string {
+	return fmt.Sprintf("VPP icon available at: %s", e.IconURL)
+}
+
+// ABOnlyEnrollmentForbiddenError is returned by device-facing enrollment
+// endpoints when only Apple Business enrollment is allowed.
+type ABOnlyEnrollmentForbiddenError struct {
+	ErrorWithUUID
+	InternalErr error
+}
+
+func (e *ABOnlyEnrollmentForbiddenError) Error() string {
+	return "Manual enrollment is not available. Only devices assigned through Apple Business can enroll. Please contact your IT administrator."
+}
+
+func (e *ABOnlyEnrollmentForbiddenError) StatusCode() int { return http.StatusForbidden }
+
+func (e *ABOnlyEnrollmentForbiddenError) Internal() string {
+	if e.InternalErr != nil {
+		return e.InternalErr.Error()
+	}
+	return ""
+}
+
+const AdminOnlyEnrollmentForbiddenErrMsg = "Manual enrollment is not available because only Apple Business enrollment is allowed for this organization."

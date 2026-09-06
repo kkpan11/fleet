@@ -1,18 +1,19 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 
-import { SingleValue } from "react-select-5";
-import DropdownWrapper from "components/forms/fields/DropdownWrapper";
-import { CustomOptionType } from "components/forms/fields/DropdownWrapper/DropdownWrapper";
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
 import Slider from "components/forms/fields/Slider";
 import Checkbox from "components/forms/fields/Checkbox";
-import TooltipWrapper from "components/TooltipWrapper";
-import {
-  findOptionBySeverityRange,
-  ISoftwareVulnFiltersParams,
-  SEVERITY_DROPDOWN_OPTIONS,
-} from "pages/SoftwarePage/SoftwareTitles/SoftwareTable/helpers";
+import SeverityFilter, {
+  ISeverityFieldErrors,
+  ISeverityFilterValue,
+  severityFilters,
+  severityForRange,
+  SeverityScoreField,
+  SeverityValue,
+  validateSeverityScores,
+} from "components/SeverityFilter";
+import { ISoftwareVulnFiltersParams } from "pages/SoftwarePage/SoftwareInventory/SoftwareInventoryTable/helpers";
 
 const baseClass = "software-filters-modal";
 
@@ -23,6 +24,11 @@ interface ISoftwareFiltersModalProps {
   isPremiumTier: boolean;
 }
 
+type IFormData = {
+  minScore: string;
+  maxScore: string;
+};
+
 const SoftwareFiltersModal = ({
   onExit,
   onSubmit,
@@ -32,95 +38,120 @@ const SoftwareFiltersModal = ({
   const [vulnSoftwareFilterEnabled, setVulnSoftwareFilterEnabled] = useState(
     vulnFilters.vulnerable || false
   );
-  const [severity, setSeverity] = useState(
-    findOptionBySeverityRange(
-      vulnFilters.minCvssScore,
-      vulnFilters.maxCvssScore
-    )
+  const [severity, setSeverity] = useState<SeverityValue>(
+    severityForRange(vulnFilters.minCvssScore, vulnFilters.maxCvssScore)
   );
+  // Unified form state:
+  const [formData, setFormData] = useState<IFormData>({
+    minScore: vulnFilters.minCvssScore?.toString() ?? "",
+    maxScore: vulnFilters.maxCvssScore?.toString() ?? "",
+  });
   const [hasKnownExploit, setHasKnownExploit] = useState(vulnFilters.exploit);
+  const [formErrors, setFormErrors] = useState<ISeverityFieldErrors>({});
+  const dirtyFields = useRef(new Set<SeverityScoreField>());
 
-  const onChangeSeverity = (
-    selectedSeverity: SingleValue<CustomOptionType>
-  ) => {
-    const selectedOption = SEVERITY_DROPDOWN_OPTIONS.find(
-      (option) => option.value === selectedSeverity?.value
-    );
-    if (selectedOption) {
-      setSeverity(selectedOption);
+  const onChangeSeverity = ({
+    severity: nextSeverity,
+    minScore,
+    maxScore,
+  }: ISeverityFilterValue) => {
+    if (nextSeverity === severity) {
+      if (minScore !== formData.minScore) dirtyFields.current.add("minScore");
+      if (maxScore !== formData.maxScore) dirtyFields.current.add("maxScore");
+    } else {
+      setFormErrors({});
     }
+    setSeverity(nextSeverity);
+    setFormData({ minScore, maxScore });
   };
 
-  const onApplyFilters = () => {
+  // Blur validates that one field and nothing else.
+  const onScoreBlur = (field: SeverityScoreField) => {
+    if (!dirtyFields.current.has(field)) {
+      return;
+    }
+    const { [field]: fieldError } = validateSeverityScores(formData);
+    setFormErrors((prev) => ({ ...prev, [field]: fieldError }));
+  };
+
+  // Focus clears immediately so the label returns while the user edits.
+  const onScoreFocus = (field: SeverityScoreField) => {
+    setFormErrors((prev) =>
+      prev[field] ? { ...prev, [field]: undefined } : prev
+    );
+  };
+
+  const onToggleVulnSoftware = () => {
+    const next = !vulnSoftwareFilterEnabled;
+    if (!next) {
+      setFormErrors({});
+    }
+    setVulnSoftwareFilterEnabled(next);
+  };
+
+  const handleSubmit = (evt: React.FormEvent<HTMLFormElement>) => {
+    evt.preventDefault();
+    if (vulnSoftwareFilterEnabled) {
+      const errors = validateSeverityScores(formData);
+      if (Object.keys(errors).length > 0) {
+        setFormErrors(errors);
+        return;
+      }
+    }
+    // A 0-10 range clears the severity filter rather than submitting bounds
+    // that narrow nothing — severityFilters comes back empty for it.
+    const { min, max } = severityFilters(formData);
+
     onSubmit({
       vulnerable: vulnSoftwareFilterEnabled,
       exploit: hasKnownExploit || undefined,
-      minCvssScore: severity?.minSeverity || undefined,
-      maxCvssScore: severity?.maxSeverity || undefined,
+      minCvssScore: min,
+      maxCvssScore: max,
     });
-  };
-
-  const renderSeverityLabel = () => {
-    return (
-      <TooltipWrapper
-        tipContent={
-          <>
-            The worst case impact across different environments
-            <br />
-            (CVSS version 3.x base score).
-          </>
-        }
-        clickable={false}
-      >
-        Severity
-      </TooltipWrapper>
-    );
   };
 
   const renderModalContent = () => {
     return (
-      <>
+      <form onSubmit={handleSubmit}>
         <Slider
           value={vulnSoftwareFilterEnabled}
-          onChange={() =>
-            setVulnSoftwareFilterEnabled(!vulnSoftwareFilterEnabled)
-          }
+          onChange={onToggleVulnSoftware}
           inactiveText="Vulnerable software"
           activeText="Vulnerable software"
         />
         {isPremiumTier && (
-          <DropdownWrapper
-            name="severity-filter"
-            label={renderSeverityLabel()}
-            options={SEVERITY_DROPDOWN_OPTIONS}
-            value={severity}
-            onChange={onChangeSeverity}
-            placeholder="Any severity"
-            className={`${baseClass}__select-severity`}
-            isDisabled={!vulnSoftwareFilterEnabled}
-          />
-        )}
-        {isPremiumTier && (
-          <Checkbox
-            onChange={({ value }: { value: boolean }) =>
-              setHasKnownExploit(value)
-            }
-            name="hasKnownExploit"
-            value={hasKnownExploit}
-            parseTarget
-            helpText="Software has vulnerabilities that have been actively exploited in the wild."
-            disabled={!vulnSoftwareFilterEnabled}
-          >
-            Has known exploit
-          </Checkbox>
+          <>
+            <SeverityFilter
+              severity={severity}
+              minScore={formData.minScore}
+              maxScore={formData.maxScore}
+              onChange={onChangeSeverity}
+              disabled={!vulnSoftwareFilterEnabled}
+              errors={formErrors}
+              onScoreBlur={onScoreBlur}
+              onScoreFocus={onScoreFocus}
+            />
+            <Checkbox
+              onChange={({ value }: { value: boolean }) =>
+                setHasKnownExploit(value)
+              }
+              name="hasKnownExploit"
+              value={hasKnownExploit}
+              parseTarget
+              helpText="Software has vulnerabilities that have been actively exploited in the wild."
+              disabled={!vulnSoftwareFilterEnabled}
+            >
+              Has known exploit
+            </Checkbox>
+          </>
         )}
         <div className="modal-cta-wrap">
-          <Button onClick={onApplyFilters}>Apply</Button>
-          <Button variant="inverse" onClick={onExit}>
+          <Button type="submit">Apply</Button>
+          <Button variant="secondary" onClick={onExit}>
             Cancel
           </Button>
         </div>
-      </>
+      </form>
     );
   };
 

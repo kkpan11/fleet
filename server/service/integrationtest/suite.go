@@ -2,21 +2,24 @@ package integrationtest
 
 import (
 	"context"
+	"log/slog"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/fleetdm/fleet/v4/server/config"
 	"github.com/fleetdm/fleet/v4/server/datastore/mysql"
+	"github.com/fleetdm/fleet/v4/server/datastore/mysql/mysqltest"
 	"github.com/fleetdm/fleet/v4/server/datastore/redis/redistest"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	"github.com/fleetdm/fleet/v4/server/platform/mysql/testing_utils"
 	"github.com/fleetdm/fleet/v4/server/service"
+	"github.com/fleetdm/fleet/v4/server/service/svctest"
 	"github.com/fleetdm/fleet/v4/server/test"
-	"github.com/go-kit/log"
 	"github.com/stretchr/testify/require"
 )
 
 type BaseSuite struct {
-	Logger   log.Logger
+	Logger   *slog.Logger
 	FleetCfg config.FleetConfig
 	Server   *httptest.Server
 	DS       *mysql.Datastore
@@ -37,7 +40,7 @@ func (s *BaseSuite) GetTestAdminToken(t *testing.T) string {
 }
 
 func (s *BaseSuite) GetTestToken(t *testing.T, email string, password string) string {
-	return service.GetToken(t, email, password, s.Server.URL)
+	return svctest.GetToken(t, email, password, s.Server.URL)
 }
 
 func SetUpServerURL(t *testing.T, ds *mysql.Datastore, server *httptest.Server) {
@@ -48,10 +51,14 @@ func SetUpServerURL(t *testing.T, ds *mysql.Datastore, server *httptest.Server) 
 	require.NoError(t, err)
 }
 
-func SetUpMySQLAndRedisAndService(t *testing.T, uniqueTestName string, opts ...*service.TestServerOpts) (*mysql.Datastore, fleet.RedisPool,
+func SetUpMySQLAndService(t *testing.T, uniqueTestName string, opts ...*service.TestServerOpts) (
+	*mysql.Datastore,
 	config.FleetConfig,
-	fleet.Service, context.Context) {
-	ds := mysql.CreateMySQLDS(t)
+	fleet.Service, context.Context,
+) {
+	ds := mysqltest.CreateMySQLDSWithOptions(t, &testing_utils.DatastoreTestOptions{
+		UniqueTestName: uniqueTestName,
+	})
 	test.AddAllHostsLabel(t, ds)
 
 	// Set up the required fields on AppConfig
@@ -62,10 +69,17 @@ func SetUpMySQLAndRedisAndService(t *testing.T, uniqueTestName string, opts ...*
 	err = ds.SaveAppConfig(testContext(), appConf)
 	require.NoError(t, err)
 
-	redisPool := redistest.SetupRedis(t, uniqueTestName, false, false, false)
-
 	fleetCfg := config.TestConfig()
-	fleetSvc, ctx := service.NewTestService(t, ds, fleetCfg, opts...)
+	fleetSvc, ctx := svctest.NewTestService(t, ds, fleetCfg, opts...)
+	return ds, fleetCfg, fleetSvc, ctx
+}
+
+func SetUpMySQLAndRedisAndService(t *testing.T, uniqueTestName string, opts ...*service.TestServerOpts) (*mysql.Datastore, fleet.RedisPool,
+	config.FleetConfig,
+	fleet.Service, context.Context,
+) {
+	redisPool := redistest.SetupRedis(t, uniqueTestName, false, false, false)
+	ds, fleetCfg, fleetSvc, ctx := SetUpMySQLAndService(t, uniqueTestName, opts...)
 	return ds, redisPool, fleetCfg, fleetSvc, ctx
 }
 

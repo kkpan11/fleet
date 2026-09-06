@@ -1,13 +1,13 @@
-import React, { useContext, useState } from "react";
+import React, { useState } from "react";
 
 import scriptAPI from "services/entities/scripts";
-import { NotificationContext } from "context/notification";
+import { notify } from "components/ToastNotification";
 
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
 import { AxiosResponse } from "axios";
 import { IApiError } from "../../../../../interfaces/errors";
-import { getErrorMessage } from "../ScriptUploader/helpers";
+import { getErrorMessage } from "../ScriptUploadModal/helpers";
 
 const baseClass = "delete-script-modal";
 
@@ -15,7 +15,7 @@ interface IDeleteScriptModalProps {
   scriptName: string;
   scriptId: number;
   onCancel: () => void;
-  onDone: () => void;
+  afterDelete: () => void;
   isHidden?: boolean;
 }
 
@@ -23,29 +23,28 @@ const DeleteScriptModal = ({
   scriptName,
   scriptId,
   onCancel,
-  onDone,
+  afterDelete,
   isHidden = false,
 }: IDeleteScriptModalProps) => {
-  const { renderFlash } = useContext(NotificationContext);
   const [isDeleting, setIsDeleting] = useState(false);
 
   const onClickDelete = async (id: number) => {
     setIsDeleting(true);
     try {
       await scriptAPI.deleteScript(id);
-      renderFlash("success", "Successfully deleted!");
+      notify.success("Successfully deleted.");
     } catch (e) {
       const error = e as AxiosResponse<IApiError>;
       const apiErrMessage = getErrorMessage(error);
-      renderFlash(
-        "error",
+      notify.error(
         apiErrMessage.includes("Policy automation")
           ? apiErrMessage
-          : "Couldn’t delete. Please try again."
+          : "Couldn’t delete. Please try again.",
+        { response: e }
       );
     }
     setIsDeleting(false);
-    onDone();
+    afterDelete();
   };
 
   return (
@@ -59,11 +58,14 @@ const DeleteScriptModal = ({
     >
       <>
         <p>
-          The script{" "}
-          <span className={`${baseClass}__script-name`}>{scriptName}</span> will
-          run on pending hosts. After the script runs, its output and exit code
-          will appear in the activity feed.
+          This action will cancel any pending script execution for{" "}
+          <span className={`${baseClass}__script-name`}>{scriptName}</span>
         </p>
+        <p>
+          If the script is currently running on a host it will still complete,
+          but results won&apos;t appear in Fleet.
+        </p>
+        <p>You cannot undo this action.</p>
         <div className="modal-cta-wrap">
           <Button
             type="button"
@@ -74,7 +76,7 @@ const DeleteScriptModal = ({
           >
             Delete
           </Button>
-          <Button onClick={onCancel} variant="inverse-alert">
+          <Button onClick={onCancel} variant="secondary">
             Cancel
           </Button>
         </div>

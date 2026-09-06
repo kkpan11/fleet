@@ -11,8 +11,22 @@ import (
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	common_mysql "github.com/fleetdm/fleet/v4/server/platform/mysql"
 	"github.com/jmoiron/sqlx"
 )
+
+var vulnerabilitiesAllowedOrderKeys = common_mysql.OrderKeyAllowlist{
+	"cve":                    "vhc.cve",
+	"cvss_score":             "cvss_score",
+	"epss_probability":       "epss_probability",
+	"cisa_known_exploit":     "cisa_known_exploit",
+	"cve_published":          "cm.published",
+	"created_at":             "created_at",
+	"host_count":             "vhc.host_count",
+	"hosts_count":            "vhc.host_count",
+	"host_count_updated_at":  "vhc.updated_at",
+	"hosts_count_updated_at": "vhc.updated_at",
+}
 
 func (ds *Datastore) Vulnerability(ctx context.Context, cve string, teamID *uint, includeCVEScores bool) (*fleet.VulnerabilityWithMetadata, error) {
 	var vuln fleet.VulnerabilityWithMetadata
@@ -20,7 +34,7 @@ func (ds *Datastore) Vulnerability(ctx context.Context, cve string, teamID *uint
 	eeSelectStmt := `
 		SELECT DISTINCT
 			cm.cve,
-			COALESCE(LEAST(osv.created_at, sc.created_at), NOW()) AS created_at,
+			LEAST(COALESCE(osv.created_at, NOW()), COALESCE(sc.created_at, NOW())) AS created_at,
 			COALESCE(osv.source, sc.source, 0) AS source,
 			cm.cvss_score,
 			cm.epss_probability,
@@ -34,9 +48,9 @@ func (ds *Datastore) Vulnerability(ctx context.Context, cve string, teamID *uint
 			SELECT cve
 			FROM software_cve
 			WHERE cve = ?
-			
+
 			UNION
-			
+
 			SELECT cve
 			FROM operating_system_vulnerabilities
 			WHERE cve = ?
@@ -49,7 +63,7 @@ func (ds *Datastore) Vulnerability(ctx context.Context, cve string, teamID *uint
 	freeSelectStmt := `
 		SELECT DISTINCT
 			union_cve.cve,
-			COALESCE(LEAST(osv.created_at, sc.created_at), NOW()) AS created_at,
+			LEAST(COALESCE(osv.created_at, NOW()), COALESCE(sc.created_at, NOW())) AS created_at,
 			COALESCE(osv.source, sc.source, 0) AS source,
 			COALESCE(vhc.host_count, 0) as hosts_count,
 			COALESCE(vhc.updated_at, NOW()) as hosts_count_updated_at
@@ -57,9 +71,9 @@ func (ds *Datastore) Vulnerability(ctx context.Context, cve string, teamID *uint
 			SELECT cve, created_at, source
 			FROM operating_system_vulnerabilities
 			WHERE cve = ?
-			
+
 			UNION
-			
+
 			SELECT cve, created_at, source
 			FROM software_cve
 			WHERE cve = ?
@@ -184,7 +198,7 @@ func (ds *Datastore) SoftwareByCVE(ctx context.Context, cve string, teamID *uint
 			s.name,
 			s.version,
 			s.source,
-			s.browser,
+			s.extension_for,
 			COALESCE(scpe.cpe, '') as generated_cpe,
 			COALESCE(shc.hosts_count, 0) as hosts_count,
 			COALESCE(sc.resolved_in_version, '') as resolved_in_version
@@ -217,83 +231,51 @@ func (ds *Datastore) SoftwareByCVE(ctx context.Context, cve string, teamID *uint
 	return
 }
 
+// vulnerabilitiesCMOrderKeys are the columns sourced from cve_meta that the API
+// allows clients to sort by. When the OrderKey is one of these, the inner query
+// must LEFT JOIN cve_meta so the ORDER BY in the paginated subquery can
+// reference the column.
+var vulnerabilitiesCMOrderKeys = map[string]struct{}{
+	"cvss_score":         {},
+	"epss_probability":   {},
+	"cisa_known_exploit": {},
+	"cve_published":      {},
+}
+
+// vulnerabilitiesOuterOrderKeys maps user-facing order keys to column
+// expressions valid in the OUTER query of buildListVulnerabilitiesSQL, where
+// the paginated inner query is aliased as `p`. The inner query uses
+// vulnerabilitiesAllowedOrderKeys (vhc.*), but the `vhc` alias is out of scope
+// in the outer SELECT, so the restated outer ORDER BY needs these outer-scope
+// references instead. Every sortable column is projected by the inner query
+// (cve_meta columns are included whenever they're the order key, see
+// needCMInInner), so all references go through `p` regardless of IsEE — the
+// outer `cm` join only exists for EE and only supplies `description`.
+var vulnerabilitiesOuterOrderKeys = common_mysql.OrderKeyAllowlist{
+	"cve":                    "p.cve",
+	"cvss_score":             "p.cvss_score",
+	"epss_probability":       "p.epss_probability",
+	"cisa_known_exploit":     "p.cisa_known_exploit",
+	"cve_published":          "p.cve_published",
+	"host_count":             "p.hosts_count",
+	"hosts_count":            "p.hosts_count",
+	"host_count_updated_at":  "p.hosts_count_updated_at",
+	"hosts_count_updated_at": "p.hosts_count_updated_at",
+}
+
 func (ds *Datastore) ListVulnerabilities(ctx context.Context, opt fleet.VulnListOptions) ([]fleet.VulnerabilityWithMetadata, *fleet.PaginationMetadata, error) {
-	// Define base select statements for EE and Free versions
-	eeSelectStmt := `
-		SELECT
-			combined.cve as cve,
-			MIN(combined.created_at) as created_at,
-			MIN(combined.source) as source,
-			cm.cvss_score,
-			cm.epss_probability,
-			cm.cisa_known_exploit,
-			cm.published as cve_published,
-			cm.description,
-			vhc.host_count as hosts_count,
-			vhc.updated_at as hosts_count_updated_at
-		FROM (
-			SELECT cve, created_at, source FROM software_cve
-			UNION
-			SELECT cve, created_at, source FROM operating_system_vulnerabilities
-		) AS combined
-		INNER JOIN vulnerability_host_counts vhc ON vhc.cve = combined.cve
-		LEFT JOIN cve_meta cm ON cm.cve = combined.cve
-		WHERE vhc.host_count > 0
-		`
-	freeSelectStmt := `
-		SELECT
-			combined.cve as cve,
-			MIN(combined.created_at) as created_at,
-			MIN(combined.source) as source,
-			vhc.host_count as hosts_count,
-			vhc.updated_at as hosts_count_updated_at
-		FROM (
-			SELECT cve, created_at, source FROM software_cve
-			UNION
-			SELECT cve, created_at, source FROM operating_system_vulnerabilities
-		) AS combined
-		INNER JOIN vulnerability_host_counts vhc ON vhc.cve = combined.cve
-		WHERE vhc.host_count > 0
-		`
-
-	// Choose the appropriate select statement based on EE or Free
-	var selectStmt string
-	if opt.IsEE {
-		selectStmt = eeSelectStmt
-	} else {
-		selectStmt = freeSelectStmt
-	}
-
-	// Prepare arguments for the query
-	var args []interface{}
-	if opt.TeamID == nil {
-		selectStmt += " AND vhc.global_stats = 1"
-	} else {
-		selectStmt += " AND vhc.global_stats = 0 AND vhc.team_id = ?"
-		args = append(args, *opt.TeamID)
-	}
-
-	if opt.KnownExploit {
-		selectStmt += " AND cm.cisa_known_exploit = 1"
-	}
-
-	if match := opt.ListOptions.MatchQuery; match != "" {
-		selectStmt, args = searchLike(selectStmt, args, match, "vhc.cve")
-	}
-
-	// Append group by statement
-	selectStmt += " GROUP BY cve, host_count, updated_at"
-
 	opt.ListOptions.IncludeMetadata = !(opt.ListOptions.UsesCursorPagination())
-	selectStmt, args = appendListOptionsWithCursorToSQL(selectStmt, args, &opt.ListOptions)
 
-	// Execute the query
+	selectStmt, args, err := buildListVulnerabilitiesSQL(&opt)
+	if err != nil {
+		return nil, nil, ctxerr.Wrap(ctx, err, "list vulnerabilities")
+	}
+
 	var vulns []fleet.VulnerabilityWithMetadata
 	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &vulns, selectStmt, args...); err != nil {
 		return nil, nil, ctxerr.Wrap(ctx, err, "list vulnerabilities")
 	}
 
-	// Prepare metadata
 	var metaData *fleet.PaginationMetadata
 	if opt.ListOptions.IncludeMetadata {
 		metaData = &fleet.PaginationMetadata{HasPreviousResults: opt.ListOptions.Page > 0}
@@ -306,31 +288,254 @@ func (ds *Datastore) ListVulnerabilities(ctx context.Context, opt fleet.VulnList
 	return vulns, metaData, nil
 }
 
-func (ds *Datastore) CountVulnerabilities(ctx context.Context, opt fleet.VulnListOptions) (uint, error) {
-	selectStmt := `
-		SELECT
-			COUNT(*)
-		FROM (
-			SELECT cve, created_at, source FROM software_cve
-			UNION
-			SELECT cve, created_at, source FROM operating_system_vulnerabilities
-		) AS combined
-		INNER JOIN vulnerability_host_counts vhc ON vhc.cve = combined.cve
-		LEFT JOIN cve_meta cm ON cm.cve = combined.cve
-		WHERE vhc.host_count > 0
-	`
-	var args []interface{}
-	if opt.TeamID == nil {
-		selectStmt += " AND global_stats = 1"
-	} else {
-		selectStmt += " AND global_stats = 0 AND vhc.team_id = ?"
-		args = append(args, opt.TeamID)
+// buildListVulnerabilitiesSQL constructs the SQL for ListVulnerabilities.
+//
+// The query is split into two stages so the expensive correlated scalar
+// subqueries that compute `created_at` (MIN across software_cve and
+// operating_system_vulnerabilities) and `source` only run on the paginated
+// page, not on every matching row in vulnerability_host_counts.
+//
+// Inner query: filter, sort, and paginate vulnerability_host_counts (with
+// an optional LEFT JOIN to cve_meta when filtering or sorting by a cve_meta
+// column). The new idx_vhc_scope_cve makes the scope filter
+// (global_stats, team_id, host_count > 0) an index range scan instead of
+// the full-table scan previously observed.
+//
+// Outer query: enrich the paginated page with the cve_meta metadata
+// columns (EE only) and the heavy created_at / source scalar subqueries.
+//
+// Special case: when OrderKey == "created_at" the value to sort by is the
+// scalar subquery output itself, so the inner query has to include it.
+// That falls back to the legacy single-statement form (preserved verbatim
+// below) — performance is unchanged for that specific sort, but every
+// other sort key benefits from the two-stage refactor.
+func buildListVulnerabilitiesSQL(opt *fleet.VulnListOptions) (string, []any, error) {
+	if opt.ListOptions.OrderKey == "created_at" {
+		return buildListVulnerabilitiesLegacySQL(opt)
 	}
 
+	_, cmOrderKey := vulnerabilitiesCMOrderKeys[opt.ListOptions.OrderKey]
+	needCMInInner := cmOrderKey || opt.KnownExploit
+
+	var inner strings.Builder
+	inner.WriteString(`
+		SELECT
+			vhc.cve,
+			vhc.host_count AS hosts_count,
+			vhc.updated_at AS hosts_count_updated_at`)
+	if cmOrderKey {
+		inner.WriteString(`,
+			cm.cvss_score,
+			cm.epss_probability,
+			cm.cisa_known_exploit,
+			cm.published AS cve_published`)
+	}
+	inner.WriteString(`
+		FROM vulnerability_host_counts vhc`)
+	if needCMInInner {
+		inner.WriteString(`
+		LEFT JOIN cve_meta cm ON cm.cve = vhc.cve`)
+	}
+	inner.WriteString(`
+		WHERE vhc.host_count > 0
+		AND (
+			EXISTS (SELECT 1 FROM software_cve WHERE cve = vhc.cve)
+			OR EXISTS (SELECT 1 FROM operating_system_vulnerabilities WHERE cve = vhc.cve)
+		)`)
+
+	var args []any
+	if opt.TeamID == nil {
+		inner.WriteString(" AND vhc.global_stats = 1")
+	} else {
+		inner.WriteString(" AND vhc.global_stats = 0 AND vhc.team_id = ?")
+		args = append(args, *opt.TeamID)
+	}
+	if opt.KnownExploit {
+		inner.WriteString(" AND cm.cisa_known_exploit = 1")
+	}
+
+	innerSQL := inner.String()
+	if match := opt.ListOptions.MatchQuery; match != "" {
+		innerSQL, args = searchLike(innerSQL, args, match, "vhc.cve")
+	}
+
+	// Add cve as a deterministic tie-breaker so pagination is stable across
+	// pages — vhc.cve is unique within a (global_stats, team_id) scope, so it
+	// fully orders any rows that tie on the primary sort column. See
+	// query_results.go for prior art using TestSecondaryOrderKey for this.
+	if opt.ListOptions.OrderKey != "" && opt.ListOptions.OrderKey != "cve" {
+		opt.ListOptions.TestSecondaryOrderKey = "cve"
+		opt.ListOptions.TestSecondaryOrderDirection = fleet.OrderAscending
+	}
+
+	innerSQL, args, err := appendListOptionsWithCursorToSQLSecure(innerSQL, args, &opt.ListOptions, vulnerabilitiesAllowedOrderKeys)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var outer strings.Builder
+	outer.WriteString(`
+		SELECT
+			p.cve,
+			(SELECT MIN(created_at) FROM (
+				SELECT created_at FROM software_cve WHERE cve = p.cve
+				UNION ALL
+				SELECT created_at FROM operating_system_vulnerabilities WHERE cve = p.cve
+			) AS combined_dates) AS created_at,
+			COALESCE(
+				(SELECT source FROM software_cve WHERE cve = p.cve LIMIT 1),
+				(SELECT source FROM operating_system_vulnerabilities WHERE cve = p.cve LIMIT 1)
+			) AS source,`)
+	if opt.IsEE {
+		outer.WriteString(`
+			cm.cvss_score,
+			cm.epss_probability,
+			cm.cisa_known_exploit,
+			cm.published AS cve_published,
+			cm.description,`)
+	}
+	outer.WriteString(`
+			p.hosts_count,
+			p.hosts_count_updated_at
+		FROM (`)
+	outer.WriteString(innerSQL)
+	outer.WriteString(`) AS p`)
+	if opt.IsEE {
+		outer.WriteString(`
+		LEFT JOIN cve_meta cm ON cm.cve = p.cve`)
+	}
+
+	// The optimizer may not preserve the inner ORDER BY when wrapped in an
+	// outer SELECT, so restate the sort. The inner has already limited rows
+	// to the page, so this re-sort is bounded to perPage rows. Tie-break on
+	// p.cve so within-page order matches the inner's secondary sort. Use the
+	// outer-scope allowlist: the inner is aliased `p` and cve_meta is re-joined
+	// as `cm`, so the inner's `vhc.*` references are out of scope here.
+	if orderCol, ok := vulnerabilitiesOuterOrderKeys[opt.ListOptions.OrderKey]; ok && orderCol != "" {
+		direction := "ASC"
+		if opt.ListOptions.OrderDirection == fleet.OrderDescending {
+			direction = "DESC"
+		}
+		outer.WriteString(fmt.Sprintf(" ORDER BY %s %s", orderCol, direction))
+		if orderCol != "p.cve" {
+			outer.WriteString(", p.cve ASC")
+		}
+	}
+
+	return outer.String(), args, nil
+}
+
+// buildListVulnerabilitiesLegacySQL preserves the original single-statement
+// query used when OrderKey == "created_at" (the only sort key that has to
+// reference the cross-table scalar subquery result).
+func buildListVulnerabilitiesLegacySQL(opt *fleet.VulnListOptions) (string, []any, error) {
+	eeSelectStmt := `
+		SELECT
+			vhc.cve as cve,
+			(SELECT MIN(created_at) FROM (
+				SELECT created_at FROM software_cve WHERE cve = vhc.cve
+				UNION ALL
+				SELECT created_at FROM operating_system_vulnerabilities WHERE cve = vhc.cve
+			) AS combined_dates) as created_at,
+			COALESCE(
+				(SELECT source FROM software_cve WHERE cve = vhc.cve LIMIT 1),
+				(SELECT source FROM operating_system_vulnerabilities WHERE cve = vhc.cve LIMIT 1)
+			) as source,
+			cm.cvss_score,
+			cm.epss_probability,
+			cm.cisa_known_exploit,
+			cm.published as cve_published,
+			cm.description,
+			vhc.host_count as hosts_count,
+			vhc.updated_at as hosts_count_updated_at
+		FROM vulnerability_host_counts vhc
+		LEFT JOIN cve_meta cm ON cm.cve = vhc.cve
+		WHERE vhc.host_count > 0
+		AND (
+			EXISTS (SELECT 1 FROM software_cve WHERE cve = vhc.cve)
+			OR EXISTS (SELECT 1 FROM operating_system_vulnerabilities WHERE cve = vhc.cve)
+		)
+		`
+	freeSelectStmt := `
+		SELECT
+			vhc.cve as cve,
+			(SELECT MIN(created_at) FROM (
+				SELECT created_at FROM software_cve WHERE cve = vhc.cve
+				UNION ALL
+				SELECT created_at FROM operating_system_vulnerabilities WHERE cve = vhc.cve
+			) AS combined_dates) as created_at,
+			COALESCE(
+				(SELECT source FROM software_cve WHERE cve = vhc.cve LIMIT 1),
+				(SELECT source FROM operating_system_vulnerabilities WHERE cve = vhc.cve LIMIT 1)
+			) as source,
+			vhc.host_count as hosts_count,
+			vhc.updated_at as hosts_count_updated_at
+		FROM vulnerability_host_counts vhc
+		WHERE vhc.host_count > 0
+		AND (
+			EXISTS (SELECT 1 FROM software_cve WHERE cve = vhc.cve)
+			OR EXISTS (SELECT 1 FROM operating_system_vulnerabilities WHERE cve = vhc.cve)
+		)
+		`
+
+	selectStmt := eeSelectStmt
+	if !opt.IsEE {
+		selectStmt = freeSelectStmt
+	}
+
+	var args []any
+	if opt.TeamID == nil {
+		selectStmt += " AND vhc.global_stats = 1"
+	} else {
+		selectStmt += " AND vhc.global_stats = 0 AND vhc.team_id = ?"
+		args = append(args, *opt.TeamID)
+	}
 	if opt.KnownExploit {
 		selectStmt += " AND cm.cisa_known_exploit = 1"
 	}
+	if match := opt.ListOptions.MatchQuery; match != "" {
+		selectStmt, args = searchLike(selectStmt, args, match, "vhc.cve")
+	}
 
+	// Tie-break on cve so pagination is stable across pages when the primary
+	// sort column has ties.
+	if opt.ListOptions.OrderKey != "" && opt.ListOptions.OrderKey != "cve" {
+		opt.ListOptions.TestSecondaryOrderKey = "cve"
+		opt.ListOptions.TestSecondaryOrderDirection = fleet.OrderAscending
+	}
+
+	return appendListOptionsWithCursorToSQLSecure(selectStmt, args, &opt.ListOptions, vulnerabilitiesAllowedOrderKeys)
+}
+
+func (ds *Datastore) CountVulnerabilities(ctx context.Context, opt fleet.VulnListOptions) (uint, error) {
+	// vhc.cve is already unique within a (global_stats, team_id) scope due to
+	// the existing UNIQUE KEY (cve, team_id, global_stats), so COUNT(*) gives
+	// the same result as COUNT(DISTINCT vhc.cve) but lets the optimizer pick
+	// idx_vhc_scope_cve without a dedup step.
+	selectStmt := `
+		SELECT COUNT(*)
+		FROM vulnerability_host_counts vhc
+		`
+	if opt.KnownExploit {
+		selectStmt += `LEFT JOIN cve_meta cm ON cm.cve = vhc.cve
+		`
+	}
+	selectStmt += `WHERE vhc.host_count > 0
+		AND (
+			EXISTS (SELECT 1 FROM software_cve WHERE cve = vhc.cve)
+			OR EXISTS (SELECT 1 FROM operating_system_vulnerabilities WHERE cve = vhc.cve)
+		)
+	`
+	var args []any
+	if opt.TeamID == nil {
+		selectStmt += " AND vhc.global_stats = 1"
+	} else {
+		selectStmt += " AND vhc.global_stats = 0 AND vhc.team_id = ?"
+		args = append(args, *opt.TeamID)
+	}
+	if opt.KnownExploit {
+		selectStmt += " AND cm.cisa_known_exploit = 1"
+	}
 	if match := opt.ListOptions.MatchQuery; match != "" {
 		selectStmt, args = searchLike(selectStmt, args, match, "vhc.cve")
 	}
@@ -523,20 +728,9 @@ func getVulnHostCountQuery(scope CountScope) string {
 }
 
 func (ds *Datastore) UpdateVulnerabilityHostCounts(ctx context.Context, maxRoutines int) error {
-	// set all counts to 0 to later identify rows to delete
-	_, err := ds.writer(ctx).ExecContext(ctx, "UPDATE vulnerability_host_counts SET host_count = 0")
-	if err != nil {
-		return ctxerr.Wrap(ctx, err, "initializing vulnerability host counts")
-	}
-
 	globalHostCounts, err := ds.batchFetchVulnerabilityCounts(ctx, GlobalCount, maxRoutines)
 	if err != nil {
 		return ctxerr.Wrap(ctx, err, "fetching global vulnerability host counts")
-	}
-
-	err = ds.batchInsertHostCounts(ctx, globalHostCounts)
-	if err != nil {
-		return ctxerr.Wrap(ctx, err, "inserting global vulnerability host counts")
 	}
 
 	teamHostCounts, err := ds.batchFetchVulnerabilityCounts(ctx, TeamCount, maxRoutines)
@@ -544,27 +738,18 @@ func (ds *Datastore) UpdateVulnerabilityHostCounts(ctx context.Context, maxRouti
 		return ctxerr.Wrap(ctx, err, "fetching team vulnerability host counts")
 	}
 
-	err = ds.batchInsertHostCounts(ctx, teamHostCounts)
-	if err != nil {
-		return ctxerr.Wrap(ctx, err, "inserting team vulnerability host counts")
-	}
-
 	noTeamHostCounts, err := ds.batchFetchVulnerabilityCounts(ctx, NoTeamCount, maxRoutines)
 	if err != nil {
 		return ctxerr.Wrap(ctx, err, "fetching no team vulnerability host counts")
 	}
 
-	err = ds.batchInsertHostCounts(ctx, noTeamHostCounts)
-	if err != nil {
-		return ctxerr.Wrap(ctx, err, "inserting team vulnerability host counts")
+	counts := vulnerabilityCounts{
+		Global: globalHostCounts,
+		Team:   teamHostCounts,
+		NoTeam: noTeamHostCounts,
 	}
 
-	err = ds.cleanupVulnerabilityHostCounts(ctx)
-	if err != nil {
-		return ctxerr.Wrap(ctx, err, "cleaning up vulnerability host counts")
-	}
-
-	return nil
+	return ds.atomicTableSwapVulnerabilityCounts(ctx, counts)
 }
 
 type hostCount struct {
@@ -574,46 +759,114 @@ type hostCount struct {
 	GlobalStats bool   `db:"global_stats"`
 }
 
-func (ds *Datastore) cleanupVulnerabilityHostCounts(ctx context.Context) error {
-	_, err := ds.writer(ctx).ExecContext(ctx, "DELETE FROM vulnerability_host_counts WHERE host_count = 0")
-	if err != nil {
-		return fmt.Errorf("deleting zero host count entries: %w", err)
-	}
-
-	return nil
+type vulnerabilityCounts struct {
+	Global []hostCount
+	Team   []hostCount
+	NoTeam []hostCount
 }
 
-func (ds *Datastore) batchInsertHostCounts(ctx context.Context, counts []hostCount) error {
+const (
+	vulnerabilityHostCountsSwapTable       = "vulnerability_host_counts_swap"
+	vulnerabilityHostCountsSwapTableSchema = `CREATE TABLE IF NOT EXISTS ` + vulnerabilityHostCountsSwapTable + ` LIKE vulnerability_host_counts`
+)
+
+// atomicTableSwapVulnerabilityCounts implements atomic table swap pattern
+// 1. Populate swap table with new data
+// 2. Atomically rename tables to swap them
+// 3. Clean up old table
+func (ds *Datastore) atomicTableSwapVulnerabilityCounts(ctx context.Context, counts vulnerabilityCounts) error {
+	err := ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+		// Create/recreate the swap table fresh
+		_, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS "+vulnerabilityHostCountsSwapTable)
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "dropping existing swap table")
+		}
+
+		_, err = tx.ExecContext(ctx, vulnerabilityHostCountsSwapTableSchema)
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "creating swap table")
+		}
+
+		// Insert each group of counts separately
+		if len(counts.Global) > 0 {
+			err = ds.insertHostCountsIntoTable(ctx, tx, counts.Global, vulnerabilityHostCountsSwapTable)
+			if err != nil {
+				return ctxerr.Wrap(ctx, err, "populating swap table with global counts")
+			}
+		}
+
+		if len(counts.Team) > 0 {
+			err = ds.insertHostCountsIntoTable(ctx, tx, counts.Team, vulnerabilityHostCountsSwapTable)
+			if err != nil {
+				return ctxerr.Wrap(ctx, err, "populating swap table with team counts")
+			}
+		}
+
+		if len(counts.NoTeam) > 0 {
+			err = ds.insertHostCountsIntoTable(ctx, tx, counts.NoTeam, vulnerabilityHostCountsSwapTable)
+			if err != nil {
+				return ctxerr.Wrap(ctx, err, "populating swap table with no-team counts")
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Atomic table swap using RENAME TABLE
+	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+		_, err := tx.ExecContext(ctx, "DROP TABLE IF EXISTS vulnerability_host_counts_old")
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "dropping stale old table")
+		}
+
+		_, err = tx.ExecContext(ctx, fmt.Sprintf(`
+			RENAME TABLE
+				vulnerability_host_counts TO vulnerability_host_counts_old,
+				%s TO vulnerability_host_counts
+		`, vulnerabilityHostCountsSwapTable))
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "atomic table swap")
+		}
+
+		// Clean up old table (drop it)
+		_, err = tx.ExecContext(ctx, "DROP TABLE vulnerability_host_counts_old")
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "dropping old table")
+		}
+
+		return nil
+	})
+}
+
+// insertHostCountsIntoTable inserts counts into specified table
+func (ds *Datastore) insertHostCountsIntoTable(ctx context.Context, tx sqlx.ExtContext, counts []hostCount, tableName string) error {
 	if len(counts) == 0 {
 		return nil
 	}
 
-	insertStmt := "INSERT INTO vulnerability_host_counts (team_id, cve, host_count, global_stats) VALUES "
-	var insertArgs []interface{}
+	insertStmt := fmt.Sprintf("INSERT INTO %s (team_id, cve, host_count, global_stats) VALUES ", tableName)
 
-	chunkSize := 100
+	// Use smaller chunks to avoid parameter limits
+	chunkSize := 500
 	for i := 0; i < len(counts); i += chunkSize {
-		end := i + chunkSize
-		if end > len(counts) {
-			end = len(counts)
-		}
+		end := min(i+chunkSize, len(counts))
 
-		valueStrings := make([]string, 0, chunkSize)
+		valueStrings := make([]string, 0, end-i)
+		chunkArgs := make([]interface{}, 0, (end-i)*4)
+
 		for _, count := range counts[i:end] {
 			valueStrings = append(valueStrings, "(?, ?, ?, ?)")
-			insertArgs = append(insertArgs, count.TeamID, count.CVE, count.HostCount, count.GlobalStats)
+			chunkArgs = append(chunkArgs, count.TeamID, count.CVE, count.HostCount, count.GlobalStats)
 		}
 
-		insertStmt += strings.Join(valueStrings, ", ")
-		insertStmt += " ON DUPLICATE KEY UPDATE host_count = VALUES(host_count);"
-
-		_, err := ds.writer(ctx).ExecContext(ctx, insertStmt, insertArgs...)
+		fullStmt := insertStmt + strings.Join(valueStrings, ", ")
+		_, err := tx.ExecContext(ctx, fullStmt, chunkArgs...)
 		if err != nil {
-			return fmt.Errorf("inserting host counts: %w", err)
+			return fmt.Errorf("inserting host counts chunk %d-%d into %s: %w", i, end-1, tableName, err)
 		}
-
-		insertStmt = "INSERT INTO vulnerability_host_counts (team_id, cve, host_count, global_stats) VALUES "
-		insertArgs = nil
 	}
 
 	return nil

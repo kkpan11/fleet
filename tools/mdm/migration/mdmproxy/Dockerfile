@@ -1,12 +1,15 @@
-FROM golang:1.24.2-alpine3.21@sha256:7772cb5322baa875edd74705556d08f0eeca7b9c4b5367754ce3f2f00041ccee
+FROM golang:1.27.1-alpine3.23@sha256:c8500dc1e6c8d8db60a2c6986bc591517c3be360ca448b9df43449dec430cc34
 ARG TAG
 RUN apk update && apk add --no-cache git
-RUN git clone -b $TAG --depth=1 --no-tags --progress --no-recurse-submodules https://github.com/fleetdm/fleet.git && cd /go/fleet/tools/mdm/migration/mdmproxy && go build .
+RUN git clone --branch "${TAG}" --depth=1 --progress --no-recurse-submodules https://github.com/fleetdm/fleet.git /go/fleet \
+    && cd /go/fleet/tools/mdm/migration/mdmproxy \
+    && go build -o /go/fleet/tools/mdm/migration/mdmproxy/mdmproxy .
 
-FROM alpine:3.21.3@sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c
+FROM alpine:3.23.4@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 LABEL maintainer="Fleet Developers"
 
-RUN apk update && apk add --no-cache tini
+RUN apk --no-cache upgrade openssl libcrypto3 libssl3 \
+    && apk add --no-cache tini
 COPY --from=0 /go/fleet/tools/mdm/migration/mdmproxy/mdmproxy /usr/bin/mdmproxy
 ADD --chmod=0755 ./entrypoint.sh /usr/bin/entrypoint.sh
 

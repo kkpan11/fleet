@@ -7,16 +7,26 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	common_mysql "github.com/fleetdm/fleet/v4/server/platform/mysql"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/jmoiron/sqlx"
 )
 
 var teamSearchColumns = []string{"name"}
+
+var teamsAllowedOrderKeys = common_mysql.OrderKeyAllowlist{
+	"id":         "t.id",
+	"name":       "t.name",
+	"created_at": "t.created_at",
+	"user_count": "user_count",
+	"host_count": "host_count",
+}
 
 const teamColumns = `id, created_at, name, filename, description, config`
 
@@ -27,7 +37,7 @@ func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team
 		query := `
     INSERT INTO teams (
       name,
-	  filename,
+      filename,
       description,
       config
     ) VALUES (?, ?, ?, ?)
@@ -46,8 +56,12 @@ func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team
 
 		id, _ := result.LastInsertId()
 		team.ID = uint(id) //nolint:gosec // dismiss G115
+		team.CreatedAt = time.Now().UTC().Truncate(time.Second)
 
-		return saveTeamSecretsDB(ctx, tx, team)
+		if err := saveTeamSecretsDB(ctx, tx, team); err != nil {
+			return err
+		}
+		return batchNewSoftwareCategoriesDB(ctx, tx, team.ID, fleet.DefaultSelfServiceCategoryNames)
 	})
 	if err != nil {
 		return nil, err
@@ -55,15 +69,85 @@ func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team
 	return team, nil
 }
 
-func (ds *Datastore) Team(ctx context.Context, tid uint) (*fleet.Team, error) {
+func (ds *Datastore) TeamWithExtras(ctx context.Context, tid uint) (*fleet.Team, error) {
 	return teamDB(ctx, ds.reader(ctx), tid, true)
 }
 
-func (ds *Datastore) TeamWithoutExtras(ctx context.Context, tid uint) (*fleet.Team, error) {
-	return teamDB(ctx, ds.reader(ctx), tid, false)
+func (ds *Datastore) TeamLite(ctx context.Context, tid uint) (*fleet.TeamLite, error) {
+	team, err := teamDB(ctx, ds.reader(ctx), tid, false)
+	if team == nil {
+		return nil, err
+	}
+
+	return team.ToTeamLite(), err // re-marshaling this way to avoid more code duplication
+}
+
+// TeamLitesByIDs returns the TeamLite of every existing team among ids in one
+// query; IDs of deleted teams are simply absent from the result. ID 0
+// ("Unassigned") is supported: like teamDB, its entry is synthesized from the
+// default team config, since no teams row exists for it.
+func (ds *Datastore) TeamLitesByIDs(ctx context.Context, ids []uint) ([]*fleet.TeamLite, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	namedIDs := make([]uint, 0, len(ids))
+	includeNoTeam := false
+	for _, id := range ids {
+		if id == 0 {
+			includeNoTeam = true
+			continue
+		}
+		namedIDs = append(namedIDs, id)
+	}
+
+	lites := make([]*fleet.TeamLite, 0, len(ids))
+	if includeNoTeam {
+		config, err := defaultTeamConfigDB(ctx, ds.reader(ctx))
+		if err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "default team config")
+		}
+		noTeam := &fleet.Team{
+			ID:     0,
+			Name:   fleet.ReservedNameNoTeam,
+			Config: *config,
+		}
+		lites = append(lites, noTeam.ToTeamLite())
+	}
+
+	if len(namedIDs) > 0 {
+		stmt, args, err := sqlx.In(`SELECT `+teamColumns+` FROM teams WHERE id IN (?)`, namedIDs)
+		if err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "build team lites by ids query")
+		}
+		var teams []*fleet.Team
+		if err := sqlx.SelectContext(ctx, ds.reader(ctx), &teams, stmt, args...); err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "select team lites by ids")
+		}
+		for _, team := range teams {
+			lites = append(lites, team.ToTeamLite())
+		}
+	}
+
+	return lites, nil
 }
 
 func teamDB(ctx context.Context, q sqlx.QueryerContext, tid uint, withExtras bool) (*fleet.Team, error) {
+	if tid == 0 {
+		if withExtras {
+			return nil, ctxerr.Errorf(ctx, "withExtras argument not supported for team ID 0")
+		}
+		config, err := defaultTeamConfigDB(ctx, q)
+		if err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "default team config")
+		}
+		return &fleet.Team{
+			ID:     0,
+			Name:   fleet.ReservedNameNoTeam,
+			Config: *config,
+		}, nil
+	}
+
 	stmt := `
 		SELECT ` + teamColumns + ` FROM teams
 			WHERE id = ?
@@ -72,7 +156,7 @@ func teamDB(ctx context.Context, q sqlx.QueryerContext, tid uint, withExtras boo
 
 	if err := sqlx.GetContext(ctx, q, team, stmt, tid); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, ctxerr.Wrap(ctx, notFound("Team").WithID(tid))
+			return nil, ctxerr.Wrap(ctx, notFound("Fleet").WithID(tid))
 		}
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
@@ -104,7 +188,42 @@ func saveTeamSecretsDB(ctx context.Context, q sqlx.ExtContext, team *fleet.Team)
 	return applyEnrollSecretsDB(ctx, q, &team.ID, team.Secrets)
 }
 
+// teamRefs are the tables referenced by teams.
+// These tables are cleared when the team is deleted.
+// Analogous to hostRefs.
+var teamRefs = []string{
+	"mdm_apple_configuration_profiles",
+	"mdm_windows_configuration_profiles",
+	"mdm_apple_declarations",
+	"mdm_android_configuration_profiles",
+	"certificate_templates",
+	"software_title_icons",
+	"software_title_display_names",
+	"software_title_team_pins",
+	"vpp_app_configurations",
+	"software_categories",
+}
+
+// teamLabelsRefs are the tables that could be referenced by team labels that
+// have ON DELETE RESTRICT so they have to be deleted before the team labels are deleted.
+// These tables are cleared when the team is deleted.
+// Analogous to hostRefs.
+var teamLabelsRefs = []string{
+	"in_house_app_labels",
+	"software_installer_labels",
+	"vpp_app_team_labels",
+	// `mdm_configuration_profile_labels` and `mdm_declaration_labels` are defined with `ON DELETE SET NULL`, so not necessary.
+	// `policy_labels` and `query_labels` are defined with `ON DELETE CASCADE`, so not necessary.
+}
+
 func (ds *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
+	// Prepare the fleet's Windows profiles for deletion (retain their content so the profile-manager cron can build <Delete> commands
+	// later). This must run first because the main transaction deletes the config profile rows (which contain the SyncML bytes needed
+	// to generate <Delete> commands).
+	if err := ds.prepareWindowsProfilesForTeamDeletion(ctx, tid); err != nil {
+		return ctxerr.Wrapf(ctx, err, "preparing windows profiles for deletion for fleet %d", tid)
+	}
+
 	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		// Delete team policies first, because policies can have associated installers and scripts
 		// which may be deleted on cascade before deleting the policies (which are also deleted on cascade).
@@ -113,33 +232,133 @@ func (ds *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
 			return ctxerr.Wrapf(ctx, err, "deleting policies for team %d", tid)
 		}
 
+		// Delete related records from teamRefs tables before deleting the team itself
+		// to avoid foreign key constraint violations
+		for _, table := range teamRefs {
+			_, err = tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM %s WHERE team_id = ?`, table), tid)
+			if err != nil {
+				return ctxerr.Wrapf(ctx, err, "deleting %s for team %d", table, tid)
+			}
+		}
+
+		// Get labels that belong to this team.
+		getTeamLabelIDsStmt := `SELECT id FROM labels WHERE team_id = ?`
+		teamLabelIDs := []uint{}
+		if err := sqlx.SelectContext(ctx, tx, &teamLabelIDs, getTeamLabelIDsStmt, tid); err != nil {
+			return ctxerr.Wrapf(ctx, err, "load labels for team %d", tid)
+		}
+
+		if len(teamLabelIDs) > 0 {
+			// Delete related records from teamLabelRefs tables before deleting labels on this team
+			// to avoid foreign key constraint violations.
+			for _, table := range teamLabelsRefs {
+				query, args, err := sqlx.In(fmt.Sprintf(`DELETE FROM %s WHERE label_id IN (?)`, table), teamLabelIDs)
+				if err != nil {
+					return ctxerr.Wrap(ctx, err, "build sqlx.In statement for labels")
+				}
+				if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+					return ctxerr.Wrapf(ctx, err, "delete %s label associated tables", table)
+				}
+			}
+
+			if err := deleteLabelsInTx(ctx, tx, teamLabelIDs); err != nil {
+				return ctxerr.Wrap(ctx, err, "delete labels")
+			}
+		}
+
+		// Reconcile host-name enforcement for this team's hosts. Deleting the team
+		// reassigns them to "No team" via ON DELETE SET NULL (hosts are not
+		// deleted) and never routes through AddHostsToTeam, so the transfer
+		// reconcile can't act on them. Since "No team" can now carry its own host
+		// name template, these hosts must be enforced under it after the
+		// reassignment. This is done set-based (scoped by the team_id the hosts
+		// still carry) rather than by materializing host IDs, so deleting a large
+		// team can't overflow the statement's placeholder limit.
+		//
+		// First drop the team's existing rows...
+		if _, err = tx.ExecContext(ctx, `
+			DELETE hmadn
+			FROM host_mdm_apple_device_names hmadn
+			JOIN hosts h ON h.uuid = hmadn.host_uuid
+			WHERE h.team_id = ?`, tid); err != nil {
+			return ctxerr.Wrapf(ctx, err, "deleting host device name enforcement for team %d", tid)
+		}
+		// ...then, when "No team" enforces a template, queue the team's eligible
+		// hosts under it. The hosts still carry team_id = tid here; the rows are
+		// host-keyed so they survive the reassignment below, and the cron resolves
+		// the No-team template per host on its next run.
+		var noTeamTemplate string
+		if err = sqlx.GetContext(ctx, tx, &noTeamTemplate, `SELECT `+deviceNameNoTeamTemplateExpr); err != nil {
+			return ctxerr.Wrapf(ctx, err, "resolving no-team name template for team %d deletion", tid)
+		}
+		if noTeamTemplate != "" {
+			if _, err = tx.ExecContext(ctx, `
+				INSERT INTO host_mdm_apple_device_names (host_uuid, status)
+				SELECT h.uuid, NULL`+deviceNameEligibleHostsJoins+`
+				WHERE `+deviceNameEligibleHostsWhere+`
+					AND h.team_id = ?`, tid); err != nil {
+				return ctxerr.Wrapf(ctx, err, "queuing host device name enforcement under no team for team %d deletion", tid)
+			}
+		}
+
 		_, err = tx.ExecContext(ctx, `DELETE FROM teams WHERE id = ?`, tid)
 		if err != nil {
 			return ctxerr.Wrapf(ctx, err, "delete team %d", tid)
 		}
 
-		_, err = tx.ExecContext(ctx, `DELETE FROM pack_targets WHERE type=? AND target_id=?`, fleet.TargetTeam, tid)
+		_, err = tx.ExecContext(ctx, `DELETE FROM pack_targets WHERE type = ? AND target_id = ?`, fleet.TargetTeam, tid)
 		if err != nil {
 			return ctxerr.Wrapf(ctx, err, "deleting pack_targets for team %d", tid)
 		}
 
-		_, err = tx.ExecContext(ctx, `DELETE FROM mdm_apple_configuration_profiles WHERE team_id=?`, tid)
-		if err != nil {
-			return ctxerr.Wrapf(ctx, err, "deleting mdm_apple_configuration_profiles for team %d", tid)
-		}
-
-		_, err = tx.ExecContext(ctx, `DELETE FROM mdm_windows_configuration_profiles WHERE team_id=?`, tid)
-		if err != nil {
-			return ctxerr.Wrapf(ctx, err, "deleting mdm_windows_configuration_profiles for team %d", tid)
-		}
-
-		_, err = tx.ExecContext(ctx, `DELETE FROM mdm_apple_declarations WHERE team_id=?`, tid)
-		if err != nil {
-			return ctxerr.Wrapf(ctx, err, "deleting mdm_apple_declarations for team %d", tid)
-		}
-
 		return nil
 	})
+}
+
+func (ds *Datastore) HostIDsByTeamID(ctx context.Context, teamID uint) ([]uint, error) {
+	var ids []uint
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &ids, `SELECT id FROM hosts WHERE team_id = ?`, teamID); err != nil {
+		return nil, ctxerr.Wrap(ctx, err, "select host IDs by team")
+	}
+	return ids, nil
+}
+
+// prepareWindowsProfilesForTeamDeletion retains the content of the team's Windows config profiles (so the profile-manager cron can
+// build their <Delete> commands after the DeleteTeam cascade removes the definitions) and cleans up never-sent / terminal
+// host-profile rows. Runs in its own transaction to keep load out of the main DeleteTeam transaction.
+func (ds *Datastore) prepareWindowsProfilesForTeamDeletion(ctx context.Context, tid uint) error {
+	var affectedHostUUIDs []string
+	err := ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+		var profileUUIDs []string
+		if err := sqlx.SelectContext(ctx, tx, &profileUUIDs,
+			`SELECT profile_uuid FROM mdm_windows_configuration_profiles WHERE team_id = ?`, tid); err != nil {
+			return ctxerr.Wrapf(ctx, err, "loading windows profiles for team %d", tid)
+		}
+		if len(profileUUIDs) == 0 {
+			return nil
+		}
+
+		// Copy from the live table before the DeleteTeam cascade removes the definitions; the definitions still exist here.
+		if err := ds.retainWindowsProfilePriorContentDB(ctx, tx, profileUUIDs); err != nil {
+			return ctxerr.Wrapf(ctx, err, "retaining windows profiles for team %d", tid)
+		}
+		if err := snapshotWindowsProfileNamesForDeletionDB(ctx, tx, profileUUIDs); err != nil {
+			return ctxerr.Wrapf(ctx, err, "snapshotting windows profile names for team %d", tid)
+		}
+
+		hosts, err := ds.cancelWindowsHostInstallsForDeletedMDMProfiles(ctx, tx, profileUUIDs)
+		if err != nil {
+			return err
+		}
+		affectedHostUUIDs = hosts
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// Post-commit async rollup refresh; scales with the team's host count, healed by the hourly reconcile on crash.
+	ds.dispatchWindowsProfilesStatusRollupRefresh(ctx, affectedHostUUIDs)
+	return nil
 }
 
 func (ds *Datastore) TeamByName(ctx context.Context, name string) (*fleet.Team, error) {
@@ -153,7 +372,7 @@ func (ds *Datastore) TeamByName(ctx context.Context, name string) (*fleet.Team, 
 
 	if err := sqlx.GetContext(ctx, ds.reader(ctx), team, stmt, nameUnicode); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, ctxerr.Wrap(ctx, notFound("Team").WithName(nameUnicode))
+			return nil, ctxerr.Wrap(ctx, notFound("Fleet").WithName(nameUnicode))
 		}
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
@@ -178,6 +397,21 @@ func (ds *Datastore) loadExtrasForTeam(ctx context.Context, team *fleet.Team) (*
 	return team, nil
 }
 
+func (ds *Datastore) TeamConflictsWithName(ctx context.Context, name string, excludeID uint) (*fleet.Team, error) {
+	// Normalize to match the NFC normalization applied on write (see NewTeam).
+	nameUnicode := norm.NFC.String(name)
+	stmt := `SELECT id, name FROM teams WHERE name = ? AND id != ? LIMIT 1`
+	team := &fleet.Team{}
+	switch err := sqlx.GetContext(ctx, ds.reader(ctx), team, stmt, nameUnicode, excludeID); {
+	case err == nil:
+		return team, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil
+	default:
+		return nil, ctxerr.Wrap(ctx, err, "check team name conflict")
+	}
+}
+
 func (ds *Datastore) TeamByFilename(ctx context.Context, filename string) (*fleet.Team, error) {
 	stmt := `
 		SELECT ` + teamColumns + ` FROM teams
@@ -187,7 +421,7 @@ func (ds *Datastore) TeamByFilename(ctx context.Context, filename string) (*flee
 
 	if err := sqlx.GetContext(ctx, ds.reader(ctx), team, stmt, filename); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ctxerr.Wrap(ctx, notFound("Team").WithMessage("filename not found"))
+			return nil, ctxerr.Wrap(ctx, notFound("Fleet").WithMessage("filename not found"))
 		}
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
@@ -307,7 +541,10 @@ func (ds *Datastore) ListTeams(ctx context.Context, filter fleet.TeamFilter, opt
 	// We must normalize the name for full Unicode support (Unicode equivalence).
 	matchQuery := norm.NFC.String(opt.MatchQuery)
 	query, params := searchLike(query, nil, matchQuery, teamSearchColumns...)
-	query, params = appendListOptionsWithCursorToSQL(query, params, &opt)
+	query, params, err := appendListOptionsWithCursorToSQLSecure(query, params, &opt, teamsAllowedOrderKeys)
+	if err != nil {
+		return nil, ctxerr.Wrap(ctx, err, "list teams")
+	}
 	teams := []*fleet.Team{}
 	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &teams, query, params...); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "list teams")
@@ -394,9 +631,9 @@ func amountTeamsDB(ctx context.Context, db sqlx.QueryerContext) (int, error) {
 
 // TeamAgentOptions loads the agents options of a team.
 func (ds *Datastore) TeamAgentOptions(ctx context.Context, tid uint) (*json.RawMessage, error) {
-	sql := `SELECT config->'$.agent_options' FROM teams WHERE id = ?`
+	stmt := fmt.Sprintf(`SELECT config->'$.agent_options' FROM teams WHERE id = %d`, tid) // safe because uint
 	var agentOptions *json.RawMessage
-	if err := sqlx.GetContext(ctx, ds.reader(ctx), &agentOptions, sql, tid); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader(ctx), &agentOptions, stmt); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 	return agentOptions, nil
@@ -408,9 +645,9 @@ func (ds *Datastore) TeamFeatures(ctx context.Context, tid uint) (*fleet.Feature
 }
 
 func teamFeaturesDB(ctx context.Context, q sqlx.QueryerContext, tid uint) (*fleet.Features, error) {
-	sql := `SELECT config->'$.features' as features FROM teams WHERE id = ?`
+	stmt := fmt.Sprintf(`SELECT config->'$.features' as features FROM teams WHERE id = %d`, tid) // safe due to uint
 	var raw *json.RawMessage
-	if err := sqlx.GetContext(ctx, q, &raw, sql, tid); err != nil {
+	if err := sqlx.GetContext(ctx, q, &raw, stmt); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "get team config features")
 	}
 
@@ -488,4 +725,72 @@ func (ds *Datastore) DeleteIntegrationsFromTeams(ctx context.Context, deletedInt
 		}
 	}
 	return rows.Err()
+}
+
+func (ds *Datastore) TeamIDsWithSetupExperienceIdPEnabled(ctx context.Context) ([]uint, error) {
+	const stmt = `
+		SELECT
+			id
+		FROM
+			teams
+		WHERE
+			config IS NOT NULL AND
+			config->'$.mdm.macos_setup.enable_end_user_authentication' = TRUE
+
+		UNION
+
+		SELECT
+			0
+		FROM
+			app_config_json
+		WHERE
+			json_value->'$.mdm.macos_setup.enable_end_user_authentication' = TRUE
+`
+	var teamIDs []uint
+	if err := sqlx.SelectContext(ctx, ds.reader(ctx), &teamIDs, stmt); err != nil {
+		return nil, ctxerr.Wrap(ctx, err, "select team IDs with setup experience IdP enabled")
+	}
+	return teamIDs, nil
+}
+
+// DefaultTeamConfig returns the configuration for "No Team" hosts.
+func (ds *Datastore) DefaultTeamConfig(ctx context.Context) (*fleet.TeamConfig, error) {
+	return defaultTeamConfigDB(ctx, ds.reader(ctx))
+}
+
+func defaultTeamConfigDB(ctx context.Context, q sqlx.QueryerContext) (*fleet.TeamConfig, error) {
+	config := &fleet.TeamConfig{}
+	var bytes []byte
+	err := sqlx.GetContext(ctx, q, &bytes,
+		`SELECT json_value FROM default_team_config_json LIMIT 1`)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Return empty config if no record exists (shouldn't happen after migration)
+			return &fleet.TeamConfig{}, nil
+		}
+		return nil, ctxerr.Wrap(ctx, err, "selecting default team config")
+	}
+
+	err = json.Unmarshal(bytes, config)
+	if err != nil {
+		return nil, ctxerr.Wrap(ctx, err, "unmarshaling default team config")
+	}
+	return config, nil
+}
+
+// SaveDefaultTeamConfig saves the configuration for "No Team" hosts.
+func (ds *Datastore) SaveDefaultTeamConfig(ctx context.Context, config *fleet.TeamConfig) error {
+	// Create a copy to avoid saving unsupported fields such as scripts and software
+	configCopy := config.Copy()
+	configBytes, err := json.Marshal(&configCopy)
+	if err != nil {
+		return ctxerr.Wrap(ctx, err, "marshaling config")
+	}
+
+	_, err = ds.writer(ctx).ExecContext(ctx,
+		`INSERT INTO default_team_config_json(id, json_value) VALUES(1, ?)
+		 ON DUPLICATE KEY UPDATE json_value = VALUES(json_value)`,
+		configBytes,
+	)
+	return ctxerr.Wrap(ctx, err, "save default team config")
 }

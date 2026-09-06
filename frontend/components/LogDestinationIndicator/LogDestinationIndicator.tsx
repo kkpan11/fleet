@@ -7,6 +7,7 @@ import { LogDestination } from "interfaces/config";
 interface ILogDestinationIndicatorProps {
   logDestination: LogDestination;
   webhookDestination?: string;
+  filesystemDestination?: string;
   excludeTooltip?: boolean;
 }
 
@@ -20,6 +21,7 @@ const generateClassTag = (rawValue: string): string => {
 const LogDestinationIndicator = ({
   logDestination,
   webhookDestination,
+  filesystemDestination,
   excludeTooltip = false,
 }: ILogDestinationIndicatorProps) => {
   const classTag = generateClassTag(logDestination);
@@ -40,8 +42,12 @@ const LogDestinationIndicator = ({
         return "AWS Lambda";
       case "pubsub":
         return "Google Cloud Pub/Sub";
-      case "kafta":
+      case "kafka":
         return "Apache Kafka";
+      case "nats":
+        return "NATS";
+      case "splunk":
+        return "Splunk";
       case "stdout":
         return "Standard output (stdout)";
       case "webhook":
@@ -58,56 +64,68 @@ const LogDestinationIndicator = ({
       case "filesystem":
         return (
           <>
-            Each time a query runs, the data is sent to <br />
-            /var/log/osquery/osqueryd.snapshots.log <br />
-            in each host&apos;s filesystem.
+            Each time a report runs, the data is sent to <br />
+            {filesystemDestination} <br />
+            on the server&apos;s filesystem.
           </>
         );
       case "firehose":
         return (
           <>
-            Each time a query runs, the data is sent to <br />
+            Each time a report runs, the data is sent to <br />
             Amazon Kinesis Data Firehose.
           </>
         );
       case "kinesis":
         return (
           <>
-            Each time a query runs, the data is sent to <br />
+            Each time a report runs, the data is sent to <br />
             Amazon Kinesis Data Streams.
           </>
         );
       case "lambda":
         return (
           <>
-            Each time a query runs, the data <br />
+            Each time a report runs, the data <br />
             is sent to AWS Lambda.
           </>
         );
       case "pubsub":
         return (
           <>
-            Each time a query runs, the data is <br /> sent to Google Cloud Pub
+            Each time a report runs, the data is <br /> sent to Google Cloud Pub
             / Sub.
           </>
         );
-      case "kafta":
+      case "kafka":
         return (
           <>
-            Each time a query runs, the data <br /> is sent to Apache Kafka.
+            Each time a report runs, the data <br /> is sent to Apache Kafka.
+          </>
+        );
+      case "nats":
+        return (
+          <>
+            Each time a report runs, the data <br /> is sent to NATS.
+          </>
+        );
+      case "splunk":
+        return (
+          <>
+            Each time a report runs, the data <br /> is sent to Splunk.
           </>
         );
       case "stdout":
         return (
           <>
-            Each time a query runs, the data is sent to <br />
+            Each time a report runs, the data is sent to <br />
             standard output(stdout) on the Fleet server.
           </>
         );
       case "webhook":
         return (
           <>
-            Each time a query runs, the data is sent via webhook to:{" "}
+            Each time a report runs, the data is sent via webhook to:{" "}
             {webhookDestination}.
           </>
         );

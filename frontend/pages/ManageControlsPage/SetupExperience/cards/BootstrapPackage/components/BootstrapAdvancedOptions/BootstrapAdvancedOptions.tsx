@@ -1,7 +1,7 @@
-import React, { useContext, useState } from "react";
+import React, { useState } from "react";
 
 import mdmAPI from "services/entities/mdm";
-import { NotificationContext } from "context/notification";
+import { notify } from "components/ToastNotification";
 
 import Button from "components/buttons/Button";
 import RevealButton from "components/buttons/RevealButton";
@@ -24,20 +24,24 @@ const BootstrapAdvancedOptions = ({
   selectManualAgentInstall,
   onChange,
 }: IBootstrapAdvancedOptionsProps) => {
-  const { renderFlash } = useContext(NotificationContext);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const onSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setIsSaving(true);
     try {
       await mdmAPI.updateSetupExperienceSettings({
-        team_id: currentTeamId,
-        manual_agent_install: selectManualAgentInstall,
+        fleet_id: currentTeamId,
+        macos_manual_agent_install: selectManualAgentInstall,
       });
-      renderFlash("success", "Successfully updated.");
-    } catch {
-      renderFlash("error", "Something went wrong. Please try again.");
+      notify.success("Successfully updated.");
+    } catch (err) {
+      notify.error("Something went wrong. Please try again.", {
+        response: err,
+      });
     }
+    setIsSaving(false);
   };
 
   const tooltip = (
@@ -54,8 +58,8 @@ const BootstrapAdvancedOptions = ({
       <RevealButton
         className={`${baseClass}__accordion-title`}
         isShowing={showAdvancedOptions}
-        showText="Show advanced options"
-        hideText="Hide advanced options"
+        showText="Advanced options"
+        hideText="Advanced options"
         caretPosition="after"
         onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
       />
@@ -76,12 +80,19 @@ const BootstrapAdvancedOptions = ({
                     Install Fleet&apos;s agent (fleetd) manually
                   </TooltipWrapper>
                 </Checkbox>
-                <Button
-                  disabled={gitopsDisable || disableInstallManually}
-                  type="submit"
-                >
-                  Save
-                </Button>
+                {/* The wrapper div is needed to keep the button from stretching full width
+                 * of the flex container */}
+                <div>
+                  <Button
+                    disabled={
+                      gitopsDisable || disableInstallManually || isSaving
+                    }
+                    type="submit"
+                    isLoading={isSaving}
+                  >
+                    Save
+                  </Button>
+                </div>
               </div>
             )}
           />

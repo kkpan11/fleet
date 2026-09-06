@@ -6,19 +6,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
+	activity_api "github.com/fleetdm/fleet/v4/server/activity/api"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mock"
 	"github.com/fleetdm/fleet/v4/server/policies"
-	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/fleetdm/fleet/v4/server/service"
-	kitlog "github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,13 +37,14 @@ func TestTriggerFailingPoliciesWebhookBasic(t *testing.T) {
 					Name:        "policy1",
 					Query:       "select 42",
 					Description: "policy1 description",
-					AuthorID:    ptr.Uint(1),
+					AuthorID:    new(uint(1)),
 					AuthorName:  "Alice",
 					AuthorEmail: "alice@example.com",
 					TeamID:      nil,
-					Resolution:  ptr.String("policy1 resolution"),
+					Resolution:  new("policy1 resolution"),
 					Platform:    "darwin",
 					Critical:    true,
+					Type:        "dynamic",
 				},
 			}, nil
 		}
@@ -93,13 +94,13 @@ func TestTriggerFailingPoliciesWebhookBasic(t *testing.T) {
 	require.NoError(t, err)
 
 	mockClock := time.Now()
-	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, kitlog.NewNopLogger(), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
+	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, slog.New(slog.DiscardHandler), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
 		serverURL, err := url.Parse(ac.ServerSettings.ServerURL)
 		if err != nil {
 			return err
 		}
 		return SendFailingPoliciesBatchedPOSTs(
-			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, mockClock, kitlog.NewNopLogger())
+			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, mockClock, slog.New(slog.DiscardHandler), &mock.MockActivityService{})
 	})
 	require.NoError(t, err)
 	timestamp, err := mockClock.MarshalJSON()
@@ -117,6 +118,7 @@ func TestTriggerFailingPoliciesWebhookBasic(t *testing.T) {
         "author_name": "Alice",
         "author_email": "alice@example.com",
         "team_id": null,
+		"fleet_id": null,
         "resolution": "policy1 resolution",
         "platform": "darwin",
         "created_at": "0001-01-01T00:00:00Z",
@@ -125,7 +127,11 @@ func TestTriggerFailingPoliciesWebhookBasic(t *testing.T) {
         "failing_host_count": 2,
         "host_count_updated_at": null,
 		"critical": true,
-		"calendar_events_enabled": false
+		"calendar_events_enabled": false,
+		"conditional_access_enabled": false,
+		"continuous_automations_enabled": false,
+		"patch_when_closed": false,
+		"type": "dynamic"
     },
     "hosts": [
         {
@@ -149,13 +155,13 @@ func TestTriggerFailingPoliciesWebhookBasic(t *testing.T) {
 
 	requestBody = ""
 
-	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, kitlog.NewNopLogger(), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
+	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, slog.New(slog.DiscardHandler), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
 		serverURL, err := url.Parse(ac.ServerSettings.ServerURL)
 		if err != nil {
 			return err
 		}
 		return SendFailingPoliciesBatchedPOSTs(
-			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, mockClock, kitlog.NewNopLogger())
+			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, mockClock, slog.New(slog.DiscardHandler), &mock.MockActivityService{})
 	})
 	require.NoError(t, err)
 	assert.Empty(t, requestBody)
@@ -188,13 +194,14 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
 				Name:                  "policy1",
 				Query:                 "select 1",
 				Description:           "policy1 description",
-				AuthorID:              ptr.Uint(1),
+				AuthorID:              new(uint(1)),
 				AuthorName:            "Alice",
 				AuthorEmail:           "alice@example.com",
 				TeamID:                &teamID,
-				Resolution:            ptr.String("policy1 resolution"),
+				Resolution:            new("policy1 resolution"),
 				Platform:              "darwin",
 				CalendarEventsEnabled: true,
+				Type:                  "dynamic",
 			},
 		},
 		2: {
@@ -203,12 +210,13 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
 				Name:        "policy2",
 				Query:       "select 2",
 				Description: "policy2 description",
-				AuthorID:    ptr.Uint(1),
+				AuthorID:    new(uint(1)),
 				AuthorName:  "Alice",
 				AuthorEmail: "alice@example.com",
 				TeamID:      &teamID,
-				Resolution:  ptr.String("policy2 resolution"),
+				Resolution:  new("policy2 resolution"),
 				Platform:    "darwin",
+				Type:        "dynamic",
 			},
 		},
 		3: {
@@ -217,12 +225,13 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
 				Name:        "policy3",
 				Query:       "select 3",
 				Description: "policy3 description",
-				AuthorID:    ptr.Uint(1),
+				AuthorID:    new(uint(1)),
 				AuthorName:  "Alice",
 				AuthorEmail: "alice@example.com",
 				TeamID:      nil, // global policy
-				Resolution:  ptr.String("policy3 resolution"),
+				Resolution:  new("policy3 resolution"),
 				Platform:    "darwin",
+				Type:        "dynamic",
 			},
 		},
 	}
@@ -234,11 +243,11 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
 		}
 		return policy, nil
 	}
-	ds.TeamFunc = func(ctx context.Context, tid uint) (*fleet.Team, error) {
+	ds.TeamLiteFunc = func(ctx context.Context, tid uint) (*fleet.TeamLite, error) {
 		if tid == teamID {
-			return &fleet.Team{
+			return &fleet.TeamLite{
 				ID: teamID,
-				Config: fleet.TeamConfig{
+				Config: fleet.TeamConfigLite{
 					WebhookSettings: fleet.TeamWebhookSettings{
 						FailingPoliciesWebhook: fleet.FailingPoliciesWebhookSettings{
 							Enable:         true,
@@ -277,13 +286,13 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now()
-	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, kitlog.NewNopLogger(), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
+	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, slog.New(slog.DiscardHandler), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
 		serverURL, err := url.Parse(ac.ServerSettings.ServerURL)
 		if err != nil {
 			return err
 		}
 		return SendFailingPoliciesBatchedPOSTs(
-			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, now, kitlog.NewNopLogger())
+			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, now, slog.New(slog.DiscardHandler), &mock.MockActivityService{})
 	})
 	require.NoError(t, err)
 
@@ -304,6 +313,7 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
         "author_name": "Alice",
         "author_email": "alice@example.com",
         "team_id": 1,
+		"fleet_id": 1,
         "resolution": "policy1 resolution",
         "platform": "darwin",
         "created_at": "0001-01-01T00:00:00Z",
@@ -312,7 +322,11 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
         "failing_host_count": 1,
         "host_count_updated_at": null,
 		"critical": false,
-		"calendar_events_enabled": true
+		"calendar_events_enabled": true,
+		"conditional_access_enabled": false,
+		"continuous_automations_enabled": false,
+		"patch_when_closed": false,
+		"type": "dynamic"
     },
     "hosts": [
         {
@@ -330,16 +344,172 @@ func TestTriggerFailingPoliciesWebhookTeam(t *testing.T) {
 
 	webhookBody = ""
 
-	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, kitlog.NewNopLogger(), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
+	err = policies.TriggerFailingPoliciesAutomation(context.Background(), ds, slog.New(slog.DiscardHandler), failingPolicySet, func(pol *fleet.Policy, cfg policies.FailingPolicyAutomationConfig) error {
 		serverURL, err := url.Parse(ac.ServerSettings.ServerURL)
 		if err != nil {
 			return err
 		}
 		return SendFailingPoliciesBatchedPOSTs(
-			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, now, kitlog.NewNopLogger())
+			context.Background(), pol, failingPolicySet, cfg.HostBatchSize, serverURL, cfg.WebhookURL, now, slog.New(slog.DiscardHandler), &mock.MockActivityService{})
 	})
 	require.NoError(t, err)
 	assert.Empty(t, webhookBody)
+}
+
+func TestSendFailingPoliciesWebhookRecordsFailureActivity(t *testing.T) {
+	p := &fleet.Policy{
+		PolicyData: fleet.PolicyData{
+			ID:   7,
+			Name: "policy7",
+		},
+	}
+
+	makeHosts := func(c int) []fleet.PolicySetHost {
+		hosts := make([]fleet.PolicySetHost, c)
+		for i := range hosts {
+			hosts[i] = fleet.PolicySetHost{ID: uint(i + 1), Hostname: fmt.Sprintf("h-%d", i+1)} //nolint:gosec
+		}
+		return hosts
+	}
+
+	serverURL, err := url.Parse("https://fleet.example.com")
+	require.NoError(t, err)
+	now := time.Now()
+
+	t.Run("records one activity per failed batch with status and body", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("boom"))
+		}))
+		t.Cleanup(ts.Close)
+		webhookURL, err := url.Parse(ts.URL)
+		require.NoError(t, err)
+
+		failingPolicySet := service.NewMemFailingPolicySet()
+		for _, host := range makeHosts(2) {
+			require.NoError(t, failingPolicySet.AddHost(p.ID, host))
+		}
+
+		var recorded []fleet.ActivityDetails
+		newActivitySvc := &mock.MockActivityService{NewActivityFunc: func(_ context.Context, user *activity_api.User, activity fleet.ActivityDetails) error {
+			require.Nil(t, user)
+			recorded = append(recorded, activity)
+			return nil
+		}}
+
+		err = SendFailingPoliciesBatchedPOSTs(
+			t.Context(), p, failingPolicySet, 0, serverURL, webhookURL, now,
+			slog.New(slog.DiscardHandler), newActivitySvc,
+		)
+		require.Error(t, err)
+
+		require.Len(t, recorded, 1)
+		act, ok := recorded[0].(fleet.ActivityTypeFailedAutomationWebhook)
+		require.True(t, ok)
+		assert.Equal(t, p.ID, act.PolicyID)
+		assert.Equal(t, []uint{1, 2}, act.HostIDList)
+		assert.Equal(t, http.StatusInternalServerError, act.StatusCode)
+		assert.Equal(t, "boom", act.ErrorResponse)
+
+		// hosts are not removed from the set on failure (kept for retry)
+		setHosts, err := failingPolicySet.ListHosts(p.ID)
+		require.NoError(t, err)
+		assert.Len(t, setHosts, 2)
+	})
+
+	t.Run("records no failure activity on success", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+		webhookURL, err := url.Parse(ts.URL)
+		require.NoError(t, err)
+
+		failingPolicySet := service.NewMemFailingPolicySet()
+		for _, host := range makeHosts(2) {
+			require.NoError(t, failingPolicySet.AddHost(p.ID, host))
+		}
+
+		var recorded []fleet.ActivityDetails
+		newActivitySvc := &mock.MockActivityService{NewActivityFunc: func(_ context.Context, _ *activity_api.User, activity fleet.ActivityDetails) error {
+			recorded = append(recorded, activity)
+			return nil
+		}}
+
+		err = SendFailingPoliciesBatchedPOSTs(
+			t.Context(), p, failingPolicySet, 0, serverURL, webhookURL, now,
+			slog.New(slog.DiscardHandler), newActivitySvc,
+		)
+		require.NoError(t, err)
+		// no failure activity recorded on success (the sent activity is
+		// exercised by TestSendFailingPoliciesWebhookRecordsQueuedActivity)
+		for _, act := range recorded {
+			_, isFailure := act.(fleet.ActivityTypeFailedAutomationWebhook)
+			assert.False(t, isFailure)
+		}
+	})
+}
+
+func TestSendFailingPoliciesWebhookRecordsQueuedActivity(t *testing.T) {
+	p := &fleet.Policy{
+		PolicyData: fleet.PolicyData{
+			ID:   7,
+			Name: "policy7",
+		},
+	}
+
+	makeHosts := func(c int) []fleet.PolicySetHost {
+		hosts := make([]fleet.PolicySetHost, c)
+		for i := range hosts {
+			hosts[i] = fleet.PolicySetHost{ID: uint(i + 1), Hostname: fmt.Sprintf("h-%d", i+1)} //nolint:gosec
+		}
+		return hosts
+	}
+
+	serverURL, err := url.Parse("https://fleet.example.com")
+	require.NoError(t, err)
+	now := time.Now()
+
+	t.Run("records one sent activity per successful batch", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+		webhookURL, err := url.Parse(ts.URL)
+		require.NoError(t, err)
+
+		failingPolicySet := service.NewMemFailingPolicySet()
+		for _, host := range makeHosts(3) {
+			require.NoError(t, failingPolicySet.AddHost(p.ID, host))
+		}
+
+		var recorded []fleet.ActivityTypeRanAutomationWebhook
+		newActivitySvc := &mock.MockActivityService{NewActivityFunc: func(_ context.Context, user *activity_api.User, activity fleet.ActivityDetails) error {
+			require.Nil(t, user)
+			act, ok := activity.(fleet.ActivityTypeRanAutomationWebhook)
+			require.True(t, ok)
+			recorded = append(recorded, act)
+			return nil
+		}}
+
+		// batch size of 2 over 3 hosts => 2 batches => 2 sent activities
+		err = SendFailingPoliciesBatchedPOSTs(
+			t.Context(), p, failingPolicySet, 2, serverURL, webhookURL, now,
+			slog.New(slog.DiscardHandler), newActivitySvc,
+		)
+		require.NoError(t, err)
+
+		require.Len(t, recorded, 2)
+		assert.Equal(t, p.ID, recorded[0].PolicyID)
+		assert.Equal(t, []uint{1, 2}, recorded[0].HostIDList)
+		assert.Equal(t, p.ID, recorded[1].PolicyID)
+		assert.Equal(t, []uint{3}, recorded[1].HostIDList)
+
+		// hosts are removed from the set after a successful send
+		setHosts, err := failingPolicySet.ListHosts(p.ID)
+		require.NoError(t, err)
+		assert.Empty(t, setHosts)
+	})
 }
 
 func TestSendBatchedPOSTs(t *testing.T) {
@@ -369,11 +539,11 @@ func TestSendBatchedPOSTs(t *testing.T) {
 			Name:        "policy1",
 			Query:       "select 42",
 			Description: "policy1 description",
-			AuthorID:    ptr.Uint(1),
+			AuthorID:    new(uint(1)),
 			AuthorName:  "Alice",
 			AuthorEmail: "alice@example.com",
 			TeamID:      nil,
-			Resolution:  ptr.String("policy1 resolution"),
+			Resolution:  new("policy1 resolution"),
 			Platform:    "darwin",
 		},
 	}
@@ -463,7 +633,8 @@ func TestSendBatchedPOSTs(t *testing.T) {
 				serverURL,
 				webhookURL,
 				now,
-				kitlog.NewNopLogger(),
+				slog.New(slog.DiscardHandler),
+				&mock.MockActivityService{},
 			)
 			require.NoError(t, err)
 			require.Len(t, allHosts, tc.hostCount)

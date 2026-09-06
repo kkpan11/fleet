@@ -1,10 +1,18 @@
-.PHONY: build clean clean-assets e2e-reset-db e2e-serve e2e-setup changelog db-reset db-backup db-restore check-go-cloner update-go-cloner help
+.PHONY: build clean clean-assets e2e-reset-db e2e-serve e2e-setup changelog db-reset db-backup db-restore check-go-cloner update-go-cloner check-no-testing-in-prod dibble tidy-tool-modules help
 
 export GO111MODULE=on
 
 PATH := $(shell npm bin):$(PATH)
-VERSION = $(shell git describe --tags --always --dirty)
 BRANCH = $(shell git rev-parse --abbrev-ref HEAD)
+
+# If VERSION is not explicitly set, derive it from the branch name
+ifndef VERSION
+	VERSION := $(shell tools/version-from-branch.sh "$(BRANCH)" 2>/dev/null)
+	# Fall back to git describe when the branch name doesn't match any pattern
+	ifeq ($(VERSION),)
+		VERSION := $(shell git describe --tags --always --dirty)
+	endif
+endif
 REVISION = $(shell git rev-parse HEAD)
 REVSHORT = $(shell git rev-parse --short HEAD)
 USER = $(shell whoami)
@@ -40,6 +48,17 @@ else
 	NOW	= $(shell powershell Get-Date -format "yyy-MM-dd")
 endif
 
+# Cap lint concurrency at half the logical CPUs (rounded up) so the incremental
+# linters (modernize, nilaway) don't saturate the machine. Override with LINT_CONCURRENCY=N.
+ifndef LINT_CONCURRENCY
+	ifeq ($(OS), Windows_NT)
+		LINT_NPROC := $(NUMBER_OF_PROCESSORS)
+	else
+		LINT_NPROC := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)
+	endif
+	LINT_CONCURRENCY := $(shell echo $$(( ($(LINT_NPROC) + 1) / 2 )))
+endif
+
 ifndef CIRCLE_PR_NUMBER
 	DOCKER_IMAGE_TAG = ${REVSHORT}
 else
@@ -50,14 +69,18 @@ ifdef CIRCLE_TAG
 	DOCKER_IMAGE_TAG = ${CIRCLE_TAG}
 endif
 
-LDFLAGS_VERSION = "\
+# -s and -w reduce binary size by stripping debug symbols.
+LDFLAGS_VERSION_RAW = \
+	-s -w \
 	-X github.com/fleetdm/fleet/v4/server/version.appName=${APP_NAME} \
 	-X github.com/fleetdm/fleet/v4/server/version.version=${VERSION} \
 	-X github.com/fleetdm/fleet/v4/server/version.branch=${BRANCH} \
 	-X github.com/fleetdm/fleet/v4/server/version.revision=${REVISION} \
 	-X github.com/fleetdm/fleet/v4/server/version.buildDate=${NOW} \
 	-X github.com/fleetdm/fleet/v4/server/version.buildUser=${USER} \
-	-X github.com/fleetdm/fleet/v4/server/version.goVersion=${GOVERSION}"
+	-X github.com/fleetdm/fleet/v4/server/version.goVersion=${GOVERSION}
+LDFLAGS_VERSION = "${LDFLAGS_VERSION_RAW}"
+LDFLAGS_VERSION_STATIC = "${LDFLAGS_VERSION_RAW} -extldflags '-static'"
 
 # Macro to allow targets to filter out their own arguments from the arguments
 # passed to the final command.
@@ -122,6 +145,24 @@ fdm:
 		sudo ln -sf "$$(pwd)/build/fdm" /usr/local/bin/fdm; \
 	fi
 
+.help-short--dibble:
+	@echo "Builds the dibble test-data seeder (binary lands at tools/dibble/dibble)"
+dibble:
+	cd tools/dibble && go build -o dibble ./cmd/dibble
+
+.help-short--tidy-tool-modules:
+	@echo "Re-tidy tool modules that pin the parent fleet module (run after bumping the root go.mod)"
+# Tool modules under tools/ that pin the parent via `replace github.com/fleetdm/fleet/v4 => ../..`
+# mirror the root module's transitive dependency graph, so a root go.mod/go.sum bump leaves their
+# go.mod/go.sum out of sync. This discovers those modules and re-tidies each one.
+tidy-tool-modules:
+	@mods=$$(grep -rlF --include=go.mod 'replace github.com/fleetdm/fleet/v4 =>' tools); \
+	for mod in $$mods; do \
+		dir=$$(dirname $$mod); \
+		echo "==> go mod tidy in $$dir"; \
+		(cd $$dir && go mod tidy) || exit 1; \
+	done
+
 .help-short--serve:
 	@echo "Start the fleet server"
 .help-short--up:
@@ -170,6 +211,7 @@ else
 serve:
 	@if [[ "$(NO_BUILD)" != "true" ]]; then make fleet; fi
 	$(call filter_args)
+	@mkdir -p ~/.fleet
 # If FORWARDED_ARGS is not empty, run the command with the forwarded arguments.
 # Unless NO_SAVE is set to true, save the command to the last invocation file.
 # IF FORWARDED_ARGS is empty, attempt to repeat the last invocation.
@@ -190,6 +232,9 @@ endif
 fleet: .prefix .pre-build .pre-fleet
 	CGO_ENABLED=1 go build -race=${GO_BUILD_RACE_ENABLED_VAR} -tags full,fts5,netgo -o build/${OUTPUT} -ldflags ${LDFLAGS_VERSION} ./cmd/fleet
 
+fleet-static: .prefix .pre-build .pre-fleet
+	CGO_ENABLED=1 go build -tags full,fts5,netgo -trimpath -o build/${OUTPUT} -ldflags ${LDFLAGS_VERSION_STATIC} ./cmd/fleet
+
 fleet-dev: GO_BUILD_RACE_ENABLED_VAR=true
 fleet-dev: fleet
 
@@ -206,11 +251,35 @@ fleetctl-dev: fleetctl
 	@echo "Run the JavaScript linters"
 lint-js:
 	yarn lint
+	yarn lint:icons
 
 .help-short--lint-go:
 	@echo "Run the Go linters"
-lint-go:
-	golangci-lint run --exclude-dirs ./node_modules --timeout 15m
+lint-go: check-no-testing-in-prod check-nilaway-func-size
+	golangci-lint run --allow-serial-runners --timeout 15m
+ifndef SKIP_INCREMENTAL
+	$(MAKE) lint-go-incremental
+endif
+
+.help-short--check-no-testing-in-prod:
+	@echo "Fail if any Fleet-owned package reachable from cmd/fleet, cmd/fleetctl, or orbit/cmd/orbit imports \"testing\". See https://github.com/fleetdm/fleet/issues/45220."
+check-no-testing-in-prod:
+	go run ./tools/check-no-testing-in-prod
+
+.help-short--check-nilaway-func-size:
+	@echo "Fail if any function has too many CFG blocks for nilaway to analyze."
+# Deliberately not part of the incremental lint: nilaway reports this failure at a synthetic $GOROOT
+# position that --new-from-rev always filters out, so the gate has to run over the whole repo.
+check-nilaway-func-size:
+	go run ./tools/check-nilaway-func-size ./...
+
+.help-short--lint-go-incremental:
+	@echo "Run the incremental Go linters"
+lint-go-incremental: custom-gcl
+	GOMAXPROCS=$(LINT_CONCURRENCY) ./custom-gcl run --allow-serial-runners --concurrency=$(LINT_CONCURRENCY) -c .golangci-incremental.yml --new-from-merge-base=origin/main --timeout 15m ./...
+
+custom-gcl:
+	golangci-lint custom
 
 .help-short--lint:
 	@echo "Run linters"
@@ -232,7 +301,7 @@ endif
 .help-short--test-schema:
 	@echo "Update schema.sql from current migrations"
 test-schema:
-	go run ./tools/dbutils ./server/datastore/mysql/schema.sql ./server/mdm/android/mysql/schema.sql
+	go run ./tools/dbutils ./server/datastore/mysql/schema.sql
 dump-test-schema: test-schema
 
 # This is the base command to run Go tests.
@@ -242,14 +311,20 @@ dump-test-schema: test-schema
 # GO_TEST_EXTRA_FLAGS: Used to specify other arguments to `go test`.
 # GO_TEST_MAKE_FLAGS: Internal var used by other targets to add arguments to `go test`.
 PKG_TO_TEST := ""
+COVER_PKG ?= github.com/fleetdm/fleet/v4/...
 go_test_pkg_to_test := $(addprefix ./,$(PKG_TO_TEST)) # set paths for packages to test
 dlv_test_pkg_to_test := $(addprefix github.com/fleetdm/fleet/v4/,$(PKG_TO_TEST)) # set URIs for packages to debug
 .run-go-tests:
 ifeq ($(PKG_TO_TEST), "")
 		@echo "Please specify one or more packages to test. See '$(TOOL_CMD) help run-go-tests' for more info.";
 else
+ifdef USE_GOTESTSUM
+		@echo Running Go tests with gotestsum:
+		gotestsum --format=$(GOTESTSUM_FORMAT) --jsonfile=/tmp/test-output.json -- -tags full,fts5,netgo -run=${TESTS_TO_RUN} ${GO_TEST_MAKE_FLAGS} ${GO_TEST_EXTRA_FLAGS} -parallel 8 -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(COVER_PKG) $(go_test_pkg_to_test)
+else
 		@echo Running Go tests with command:
-		go test -tags full,fts5,netgo -run=${TESTS_TO_RUN} ${GO_TEST_MAKE_FLAGS} ${GO_TEST_EXTRA_FLAGS} -parallel 8 -coverprofile=coverage.txt -covermode=atomic -coverpkg=github.com/fleetdm/fleet/v4/... $(go_test_pkg_to_test)
+		go test -tags full,fts5,netgo -run=${TESTS_TO_RUN} ${GO_TEST_MAKE_FLAGS} ${GO_TEST_EXTRA_FLAGS} -parallel 8 -coverprofile=coverage.txt -covermode=atomic -coverpkg=$(COVER_PKG) $(go_test_pkg_to_test)
+endif
 endif
 
 # This is the base command to debug Go tests.
@@ -275,7 +350,7 @@ endif
 	@echo "GO_TEST_EXTRA_FLAGS=\"--flag1 --flag2...\""
 	@echo "Arguments to send to \"go test\"."
 run-go-tests:
-	@MYSQL_TEST=1 REDIS_TEST=1 MINIO_STORAGE_TEST=1 SAML_IDP_TEST=1 NETWORK_TEST=1 make .run-go-tests GO_TEST_MAKE_FLAGS="-v"
+	@MYSQL_TEST=1 REDIS_TEST=1 S3_STORAGE_TEST=1 SAML_IDP_TEST=1 NETWORK_TEST=1 make .run-go-tests GO_TEST_MAKE_FLAGS="-v"
 
 .help-short--debug-go-tests:
 	@echo "Debug Go tests in specific packages (with Delve)"
@@ -289,12 +364,14 @@ run-go-tests:
 	@echo "GO_TEST_EXTRA_FLAGS=\"--flag1 --flag2...\""
 	@echo "Arguments to send to \"go test\"."
 debug-go-tests:
-	@MYSQL_TEST=1 REDIS_TEST=1 MINIO_STORAGE_TEST=1 SAML_IDP_TEST=1 NETWORK_TEST=1 make .debug-go-tests
+	@MYSQL_TEST=1 REDIS_TEST=1 S3_STORAGE_TEST=1 SAML_IDP_TEST=1 NETWORK_TEST=1 make .debug-go-tests
 
 # Set up packages for CI testing.
-DEFAULT_PKGS_TO_TEST := ./cmd/... ./ee/... ./orbit/pkg/... ./orbit/cmd/orbit ./pkg/... ./server/... ./tools/...
+DEFAULT_PKGS_TO_TEST := ./cmd/... ./ee/... ./orbit/pkg/... ./orbit/cmd/orbit ./pkg/... ./server/... ./tools/... ./client/...
 # fast tests are quick and do not require out-of-process dependencies (such as MySQL, etc.)
 FAST_PKGS_TO_TEST := \
+	./client \
+	./ee/pkg/hostidentity/types \
 	./ee/tools/mdm \
 	./orbit/pkg/cryptoinfo \
 	./orbit/pkg/dataflatten \
@@ -306,10 +383,11 @@ FAST_PKGS_TO_TEST := \
 	./server/mdm/scep/x509util \
 	./server/policies
 FLEETCTL_PKGS_TO_TEST := ./cmd/fleetctl/...
-MYSQL_PKGS_TO_TEST := ./server/datastore/mysql/... ./server/mdm/android/mysql
+MYSQL_PKGS_TO_TEST := ./server/datastore/mysql/...
 SCRIPTS_PKGS_TO_TEST := ./orbit/pkg/scripts
 SERVICE_PKGS_TO_TEST := ./server/service
 VULN_PKGS_TO_TEST := ./server/vulnerabilities/...
+ACTIVITY_PKGS_TO_TEST := ./server/activity/...
 ifeq ($(CI_TEST_PKG), main)
     # This is the bucket of all the tests that are not in a specific group. We take a diff between DEFAULT_PKG_TO_TEST and all the specific *_PKGS_TO_TEST.
 	CI_PKG_TO_TEST=$(shell /bin/bash -c "comm -23 <(go list ${DEFAULT_PKGS_TO_TEST} | sort) <({ \
@@ -318,7 +396,8 @@ ifeq ($(CI_TEST_PKG), main)
 	go list $(MYSQL_PKGS_TO_TEST) && \
 	go list $(SCRIPTS_PKGS_TO_TEST) && \
 	go list $(SERVICE_PKGS_TO_TEST) && \
-	go list $(VULN_PKGS_TO_TEST) \
+	go list $(VULN_PKGS_TO_TEST) && \
+	go list $(ACTIVITY_PKGS_TO_TEST) \
 	;} | sort) | sed -e 's|github.com/fleetdm/fleet/v4/||g'")
 else ifeq ($(CI_TEST_PKG), fast)
 	CI_PKG_TO_TEST=$(FAST_PKGS_TO_TEST)
@@ -332,6 +411,8 @@ else ifeq ($(CI_TEST_PKG), service)
 	CI_PKG_TO_TEST=$(SERVICE_PKGS_TO_TEST)
 else ifeq ($(CI_TEST_PKG), vuln)
 	CI_PKG_TO_TEST=$(VULN_PKGS_TO_TEST)
+else ifeq ($(CI_TEST_PKG), activity)
+	CI_PKG_TO_TEST=$(ACTIVITY_PKGS_TO_TEST)
 else
 	CI_PKG_TO_TEST=$(DEFAULT_PKGS_TO_TEST)
 endif
@@ -351,6 +432,7 @@ endif
 	@echo "  mysql"
 	@echo "  fleetctl"
 	@echo "  vuln"
+	@echo "  activity"
 	@echo "  main        (all tests not included in other bundles)"
 test-go:
 	make .run-go-tests PKG_TO_TEST="$(CI_PKG_TO_TEST)"
@@ -371,13 +453,21 @@ test: lint test-go test-js
 	@echo "Generate and bundle required Go code and Javascript code"
 generate: clean-assets generate-js generate-go
 
-generate-ci:
+generate-ci: generate-osquery-sql-parser
 	NODE_OPTIONS=--openssl-legacy-provider NODE_ENV=development yarn run webpack
 	make generate-go
 
+# The generated parser is gitignored; it is regenerated here and by the yarn
+# pre-hooks of every script that consumes it (test, lint, storybook). This
+# target is also the way to (re)create the file manually, e.g. to debug it.
+.help-short--generate-osquery-sql-parser:
+	@echo "Generate the osquery SQL parser from its grammar (frontend/utilities/osquery_sql_parser)"
+generate-osquery-sql-parser:
+	yarn generate:osquery-sql-parser
+
 .help-short--generate-js:
 	@echo "Generate and bundle required js code"
-generate-js: clean-assets .prefix
+generate-js: clean-assets .prefix generate-osquery-sql-parser
 	NODE_ENV=production yarn run webpack --progress
 
 .help-short--generate-go:
@@ -392,7 +482,7 @@ generate-go: .prefix
 # run webpack in watch mode to continuously re-generate the bundle
 .help-short--generate-dev:
 	@echo "Generate and bundle required Javascript code in a watch loop"
-generate-dev: .prefix
+generate-dev: .prefix generate-osquery-sql-parser
 	NODE_ENV=development yarn run webpack --progress
 	go run github.com/kevinburke/go-bindata/go-bindata -debug -pkg=bindata -tags full \
 		-o=server/bindata/generated.go \
@@ -411,7 +501,7 @@ doc: .prefix
 	go generate github.com/fleetdm/fleet/v4/server/fleet
 	go generate github.com/fleetdm/fleet/v4/server/service/osquery_utils
 
-generate-doc: doc vex-report
+generate-doc: doc
 
 .help-short--deps:
 	@echo "Install dependent programs and libraries"
@@ -449,9 +539,6 @@ clean-assets:
 
 fleetctl-docker: xp-fleetctl
 	docker build -t fleetdm/fleetctl --platform=linux/amd64 -f tools/fleetctl-docker/Dockerfile .
-
-bomutils-docker:
-	cd tools/bomutils-docker && docker build -t fleetdm/bomutils --platform=linux/amd64 -f Dockerfile .
 
 wix-docker:
 	cd tools/wix-docker && docker build -t fleetdm/wix --platform=linux/amd64 -f Dockerfile .
@@ -519,7 +606,7 @@ binary-arch: .pre-binary-arch .pre-binary-bundle .pre-fleet
 # Drop, create, and migrate the e2e test database
 e2e-reset-db:
 	docker compose exec -T mysql_test bash -c 'echo "drop database if exists e2e; create database e2e;" | MYSQL_PWD=toor mysql -uroot'
-	./build/fleet prepare db --mysql_address=localhost:3307  --mysql_username=root --mysql_password=toor --mysql_database=e2e
+	./build/fleet prepare db --mysql_address=localhost:$${FLEET_MYSQL_TEST_PORT:-3307}  --mysql_username=root --mysql_password=toor --mysql_database=e2e
 
 e2e-setup:
 	./build/fleetctl config set --context e2e --address https://localhost:8642 --tls-skip-verify true
@@ -539,10 +626,10 @@ e2e-setup-with-software:
 	./tools/backup_db/restore_e2e_software_test.sh
 
 e2e-serve-free: e2e-reset-db
-	./build/fleet serve --mysql_address=localhost:3307 --mysql_username=root --mysql_password=toor --mysql_database=e2e --server_address=0.0.0.0:8642
+	./build/fleet serve --mysql_address=localhost:$${FLEET_MYSQL_TEST_PORT:-3307} --mysql_username=root --mysql_password=toor --mysql_database=e2e --server_address=0.0.0.0:8642
 
 e2e-serve-premium: e2e-reset-db
-	./build/fleet serve  --dev_license --mysql_address=localhost:3307 --mysql_username=root --mysql_password=toor --mysql_database=e2e --server_address=0.0.0.0:8642
+	./build/fleet serve  --dev_license --mysql_address=localhost:$${FLEET_MYSQL_TEST_PORT:-3307} --mysql_username=root --mysql_password=toor --mysql_database=e2e --server_address=0.0.0.0:8642
 
 # Associate a host with a Fleet Desktop token.
 #
@@ -558,7 +645,7 @@ changelog:
 
 changelog-orbit:
 	$(eval TODAY_DATE := $(shell date "+%b %d, %Y"))
-	@echo -e "## Orbit $(version) ($(TODAY_DATE))\n" > new-CHANGELOG.md
+	@echo -e "## $(version) ($(TODAY_DATE))\n" > new-CHANGELOG.md
 	sh -c "find orbit/changes -type file | grep -v .keep | xargs -I {} sh -c 'grep \"\S\" {} | sed -E "s/^-/*/"; echo' >> new-CHANGELOG.md"
 	sh -c "cat new-CHANGELOG.md orbit/CHANGELOG.md > tmp-CHANGELOG.md && rm new-CHANGELOG.md && mv tmp-CHANGELOG.md orbit/CHANGELOG.md"
 	sh -c "git rm orbit/changes/*"
@@ -569,6 +656,14 @@ changelog-chrome:
 	sh -c "find ee/fleetd-chrome/changes -type file | grep -v .keep | xargs -I {} sh -c 'grep \"\S\" {}; echo' >> new-CHANGELOG.md"
 	sh -c "cat new-CHANGELOG.md ee/fleetd-chrome/CHANGELOG.md > tmp-CHANGELOG.md && rm new-CHANGELOG.md && mv tmp-CHANGELOG.md ee/fleetd-chrome/CHANGELOG.md"
 	sh -c "git rm ee/fleetd-chrome/changes/*"
+
+changelog-android:
+	$(eval TODAY_DATE := $(shell date "+%b %d, %Y"))
+	@echo -e "## Android agent $(version) ($(TODAY_DATE))\n" > new-CHANGELOG.md
+	sh -c "find android/changes -type f ! -name .keep -exec awk 'NF' {} + | sed -E 's/^-/*/' >> new-CHANGELOG.md"
+	@echo "" >> new-CHANGELOG.md
+	sh -c "cat new-CHANGELOG.md android/CHANGELOG.md > tmp-CHANGELOG.md && rm new-CHANGELOG.md && mv tmp-CHANGELOG.md android/CHANGELOG.md"
+	sh -c "find android/changes -type f ! -name .keep -exec git rm {} +"
 
 # Updates the documentation for the currently released versions of fleetd components in old Fleet's TUF (tuf.fleetctl.com).
 fleetd-old-tuf:
@@ -635,12 +730,81 @@ restore: $(SNAPSHOT_BINARY)
 # Generate osqueryd.app.tar.gz bundle from osquery.io.
 #
 # Usage:
+# To generate an osquery bundle for a released version of osquery:
 # make osqueryd-app-tar-gz version=5.1.0 out-path=.
+#
+# To generate an osquery bundle for a unreleased change in osquery in a pull request
+# (e.g. https://github.com/osquery/osquery/pull/8815):
+# make osqueryd-app-tar-gz pr=8815 out-path=.
+#
+# To generate an osquery bundle from a locally built osqueryd executable:
+# make osqueryd-app-tar-gz osqueryd_path=/path/to/osqueryd out-path=.
 osqueryd-app-tar-gz:
 ifneq ($(shell uname), Darwin)
 	@echo "Makefile target osqueryd-app-tar-gz is only supported on macOS"
 	@exit 1
 endif
+ifdef osqueryd_path
+	$(eval TMP_DIR := $(shell mktemp -d))
+	@if [ ! -f "$(osqueryd_path)" ]; then \
+		echo "Error: osqueryd executable not found at $(osqueryd_path)"; \
+		rm -rf $(TMP_DIR); \
+		exit 1; \
+	fi
+	mkdir -p $(TMP_DIR)/osquery.app/Contents/MacOS
+	mkdir -p $(TMP_DIR)/osquery.app/Contents/Resources
+	cp "$(osqueryd_path)" $(TMP_DIR)/osquery.app/Contents/MacOS/osqueryd
+	chmod +x $(TMP_DIR)/osquery.app/Contents/MacOS/osqueryd
+	@OSQUERY_VERSION=$$("$(osqueryd_path)" --version | awk '{print $$NF}') && \
+		printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n\t<key>CFBundleIdentifier</key>\n\t<string>io.osquery.agent</string>\n\t<key>CFBundleName</key>\n\t<string>osquery</string>\n\t<key>CFBundleExecutable</key>\n\t<string>osqueryd</string>\n\t<key>CFBundleVersion</key>\n\t<string>%s</string>\n\t<key>CFBundleShortVersionString</key>\n\t<string>%s</string>\n\t<key>CFBundleInfoDictionaryVersion</key>\n\t<string>6.0</string>\n\t<key>CFBundlePackageType</key>\n\t<string>APPL</string>\n\t<key>CFBundleSignature</key>\n\t<string>????</string>\n\t<key>LSMinimumSystemVersion</key>\n\t<string>10.14</string>\n</dict>\n</plist>\n' "$$OSQUERY_VERSION" "$$OSQUERY_VERSION" > $(TMP_DIR)/osquery.app/Contents/Info.plist
+	$(TMP_DIR)/osquery.app/Contents/MacOS/osqueryd --version
+	tar czf $(out-path)/osqueryd.app.tar.gz -C $(TMP_DIR) osquery.app
+	rm -rf $(TMP_DIR)
+else ifdef pr
+	$(eval TMP_DIR := $(shell mktemp -d))
+	@echo "Fetching macos_unsigned_tgz_universal artifact from osquery/osquery PR $(pr)..."
+	@PR_SHA=$$(gh pr view -R osquery/osquery $(pr) --json headRefOid -q .headRefOid) && \
+		echo "PR head SHA: $$PR_SHA" && \
+		RUN_IDS=$$(gh api "repos/osquery/osquery/actions/runs?head_sha=$$PR_SHA" \
+			-q '[.workflow_runs[] | .id] | .[]') && \
+		if [ -z "$$RUN_IDS" ]; then \
+			echo "Error: no workflow runs found for PR $(pr)"; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi && \
+		DOWNLOADED=false && \
+		for run_id in $$RUN_IDS; do \
+			if gh run download -R osquery/osquery $$run_id -n macos_unsigned_tgz_universal -D $(TMP_DIR)/artifact 2>/dev/null; then \
+				DOWNLOADED=true; \
+				echo "Downloaded artifact from run $$run_id"; \
+				break; \
+			fi; \
+		done && \
+		if [ "$$DOWNLOADED" != "true" ]; then \
+			echo "Error: macos_unsigned_tgz_universal artifact not found in any successful run for PR $(pr)"; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi
+	@INNER_TGZ=$$(find $(TMP_DIR)/artifact -name '*.tar.gz' -o -name '*.tgz' | head -1) && \
+		if [ -z "$$INNER_TGZ" ]; then \
+			echo "Error: no tarball found inside downloaded artifact"; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi && \
+		mkdir -p $(TMP_DIR)/extracted && \
+		tar xf "$$INNER_TGZ" -C $(TMP_DIR)/extracted
+	@OSQUERY_APP=$$(find $(TMP_DIR)/extracted -type d -name 'osquery.app' | head -1) && \
+		if [ -z "$$OSQUERY_APP" ]; then \
+			echo "Error: osquery.app not found in extracted artifact. Contents:"; \
+			find $(TMP_DIR)/extracted -type f; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi && \
+		OSQUERY_APP_DIR=$$(dirname "$$OSQUERY_APP") && \
+		"$$OSQUERY_APP/Contents/MacOS/osqueryd" --version && \
+		tar czf $(out-path)/osqueryd.app.tar.gz -C "$$OSQUERY_APP_DIR" osquery.app
+	rm -rf $(TMP_DIR)
+else
 	$(eval TMP_DIR := $(shell mktemp -d))
 	curl -L https://github.com/osquery/osquery/releases/download/$(version)/osquery-$(version).pkg --output $(TMP_DIR)/osquery-$(version).pkg
 	pkgutil --expand $(TMP_DIR)/osquery-$(version).pkg $(TMP_DIR)/osquery_pkg_expanded
@@ -650,6 +814,74 @@ endif
 	$(TMP_DIR)/osquery_pkg_payload_expanded/opt/osquery/lib/osquery.app/Contents/MacOS/osqueryd --version
 	tar czf $(out-path)/osqueryd.app.tar.gz -C $(TMP_DIR)/osquery_pkg_payload_expanded/opt/osquery/lib osquery.app
 	rm -r $(TMP_DIR)
+endif
+
+# Download the osqueryd Linux executable from a pull request in osquery/osquery
+# and extract it into out-path.
+#
+# Usage:
+# make osqueryd-linux pr=8844 arch=amd64 out-path=.
+# make osqueryd-linux pr=8844 arch=arm64 out-path=.
+osqueryd-linux:
+ifndef pr
+	@echo "Error: pr argument is required (e.g. make osqueryd-linux pr=8844 arch=amd64 out-path=.)"
+	@exit 1
+endif
+ifndef out-path
+	@echo "Error: out-path argument is required (e.g. make osqueryd-linux pr=8844 arch=amd64 out-path=.)"
+	@exit 1
+endif
+ifeq ($(arch),amd64)
+	$(eval ARTIFACT_NAME := linux_unsigned_release_tgz)
+else ifeq ($(arch),arm64)
+	$(eval ARTIFACT_NAME := linux_unsigned_release_tgz_aarch64)
+else
+	@echo "Error: arch must be 'amd64' or 'arm64' (got '$(arch)')"
+	@exit 1
+endif
+	$(eval TMP_DIR := $(shell mktemp -d))
+	@echo "Fetching $(ARTIFACT_NAME) artifact from osquery/osquery PR $(pr)..."
+	@PR_SHA=$$(gh pr view -R osquery/osquery $(pr) --json headRefOid -q .headRefOid) && \
+		echo "PR head SHA: $$PR_SHA" && \
+		RUN_IDS=$$(gh api "repos/osquery/osquery/actions/runs?head_sha=$$PR_SHA" \
+			-q '[.workflow_runs[] | .id] | .[]') && \
+		if [ -z "$$RUN_IDS" ]; then \
+			echo "Error: no workflow runs found for PR $(pr)"; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi && \
+		DOWNLOADED=false && \
+		for run_id in $$RUN_IDS; do \
+			if gh run download -R osquery/osquery $$run_id -n $(ARTIFACT_NAME) -D $(TMP_DIR)/artifact 2>/dev/null; then \
+				DOWNLOADED=true; \
+				echo "Downloaded artifact from run $$run_id"; \
+				break; \
+			fi; \
+		done && \
+		if [ "$$DOWNLOADED" != "true" ]; then \
+			echo "Error: $(ARTIFACT_NAME) artifact not found in any workflow run for PR $(pr)"; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi
+	@INNER_TGZ=$$(find $(TMP_DIR)/artifact -name '*.tar.gz' -o -name '*.tgz' | head -1) && \
+		if [ -z "$$INNER_TGZ" ]; then \
+			echo "Error: no tarball found inside downloaded artifact"; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi && \
+		mkdir -p $(TMP_DIR)/extracted && \
+		tar xf "$$INNER_TGZ" -C $(TMP_DIR)/extracted
+	@OSQUERYD=$$(find $(TMP_DIR)/extracted -type f -name 'osqueryd' | head -1) && \
+		if [ -z "$$OSQUERYD" ]; then \
+			echo "Error: osqueryd not found in extracted artifact. Contents:"; \
+			find $(TMP_DIR)/extracted -type f; \
+			rm -rf $(TMP_DIR); \
+			exit 1; \
+		fi && \
+		cp "$$OSQUERYD" "$(out-path)/osqueryd" && \
+		chmod +x "$(out-path)/osqueryd" && \
+		echo "Extracted osqueryd to $(out-path)/osqueryd"
+	rm -rf $(TMP_DIR)
 
 # Generate nudge.app.tar.gz bundle from nudge repo.
 #
@@ -672,21 +904,21 @@ endif
 # Generate swiftDialog.app.tar.gz bundle from the swiftDialog repo.
 #
 # Usage:
-# make swift-dialog-app-tar-gz version=2.2.1 build=4591 out-path=.
+# make swift-dialog-app-tar-gz version=2.5.6 build=4805 out-path=.
 swift-dialog-app-tar-gz:
 ifneq ($(shell uname), Darwin)
 	@echo "Makefile target swift-dialog-app-tar-gz is only supported on macOS"
 	@exit 1
 endif
-	# locking the version of swiftDialog to 2.2.1-4591 as newer versions
+	# locking the version of swiftDialog to 2.5.6-4805 as newer versions
 	# might have layout issues.
-ifneq ($(version), 2.2.1)
-	@echo "Version is locked at 2.1.0, see comments in Makefile target for details"
+ifneq ($(version), 2.5.6)
+	@echo "Version is locked at 2.5.6, see comments in Makefile target for details"
 	@exit 1
 endif
 
-ifneq ($(build), 4591)
-	@echo "Build version is locked at 4591, see comments in Makefile target for details"
+ifneq ($(build), 4805)
+	@echo "Build version is locked at 4805, see comments in Makefile target for details"
 	@exit 1
 endif
 	$(eval TMP_DIR := $(shell mktemp -d))
@@ -694,6 +926,8 @@ endif
 	pkgutil --expand $(TMP_DIR)/swiftDialog-$(version).pkg $(TMP_DIR)/swiftDialog_pkg_expanded
 	mkdir -p $(TMP_DIR)/swiftDialog_pkg_payload_expanded
 	tar xvf $(TMP_DIR)/swiftDialog_pkg_expanded/tmp-package.pkg/Payload --directory $(TMP_DIR)/swiftDialog_pkg_payload_expanded
+	# Remove xattrs which are included in the .pkg(erroneously?) in some versions
+	xattr -cr $(TMP_DIR)/swiftDialog_pkg_payload_expanded
 	$(TMP_DIR)/swiftDialog_pkg_payload_expanded/Library/Application\ Support/Dialog/Dialog.app/Contents/MacOS/Dialog --version
 	tar czf $(out-path)/swiftDialog.app.tar.gz -C $(TMP_DIR)/swiftDialog_pkg_payload_expanded/Library/Application\ Support/Dialog/ Dialog.app
 	rm -rf $(TMP_DIR)
@@ -757,7 +991,7 @@ desktop-linux:
 	docker build -f Dockerfile-desktop-linux -t desktop-linux-builder .
 	docker run --rm -v $(shell pwd):/output desktop-linux-builder /bin/bash -c "\
 		mkdir -p /output/fleet-desktop && \
-		go build -o /output/fleet-desktop/fleet-desktop -ldflags "-X=main.version=$(FLEET_DESKTOP_VERSION)" /usr/src/fleet/orbit/cmd/desktop && \
+		CGO_ENABLED=1 CC=musl-gcc go build -o /output/fleet-desktop/fleet-desktop -ldflags \"-s -w -linkmode external -extldflags \\\"-static\\\" -X=main.version=$(FLEET_DESKTOP_VERSION)\" /usr/src/fleet/orbit/cmd/desktop && \
 		cd /output && \
 		tar czf desktop.tar.gz fleet-desktop && \
 		rm -r fleet-desktop"
@@ -772,7 +1006,7 @@ desktop-linux-arm64:
 	docker build -f Dockerfile-desktop-linux -t desktop-linux-builder .
 	docker run --rm -v $(shell pwd):/output desktop-linux-builder /bin/bash -c "\
 		mkdir -p /output/fleet-desktop && \
-		GOARCH=arm64 go build -o /output/fleet-desktop/fleet-desktop -ldflags "-X=main.version=$(FLEET_DESKTOP_VERSION)" /usr/src/fleet/orbit/cmd/desktop && \
+		GOARCH=arm64 go build -o /output/fleet-desktop/fleet-desktop -ldflags \"-s -w -X=main.version=$(FLEET_DESKTOP_VERSION)\" /usr/src/fleet/orbit/cmd/desktop && \
 		cd /output && \
 		tar czf desktop.tar.gz fleet-desktop && \
 		rm -r fleet-desktop"
@@ -812,9 +1046,9 @@ db-replica-setup:
 	$(eval MYSQL_REPLICATION_USER := replicator)
 	$(eval MYSQL_REPLICATION_PASSWORD := rotacilper)
 	MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3309 -uroot -AN -e "stop slave; reset slave all;"
-	MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3308 -uroot -AN -e "drop user if exists '$(MYSQL_REPLICATION_USER)'; create user '$(MYSQL_REPLICATION_USER)'@'%' identified by '$(MYSQL_REPLICATION_PASSWORD)'; grant replication slave on *.* to '$(MYSQL_REPLICATION_USER)'@'%'; flush privileges;"
-	$(eval MAIN_POSITION := $(shell MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3308 -uroot -e 'show master status \G' | grep Position | grep -o '[0-9]*'))
-	$(eval MAIN_FILE := $(shell MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3308 -uroot -e 'show master status \G' | grep File | sed -n -e 's/^.*: //p'))
+	MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3308 -uroot -AN -e "drop user if exists '$(MYSQL_REPLICATION_USER)'; create user '$(MYSQL_REPLICATION_USER)'@'%' identified with mysql_native_password by '$(MYSQL_REPLICATION_PASSWORD)'; grant replication slave on *.* to '$(MYSQL_REPLICATION_USER)'@'%'; flush privileges;"
+	$(eval MAIN_POSITION := $(shell MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3308 -uroot --vertical -e 'show master status' | grep Position | grep -o '[0-9]*'))
+	$(eval MAIN_FILE := $(shell MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3308 -uroot --vertical -e 'show master status' | grep File | sed -n -e 's/^.*: //p'))
 	MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3309 -uroot -AN -e "change master to master_port=3306,master_host='mysql_main',master_user='$(MYSQL_REPLICATION_USER)',master_password='$(MYSQL_REPLICATION_PASSWORD)',master_log_file='$(MAIN_FILE)',master_log_pos=$(MAIN_POSITION);"
 	if [ "${FLEET_MYSQL_IMAGE}" == "mysql:8.0" ]; then MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3309 -uroot -AN -e "change master to get_master_public_key=1;"; fi
 	MYSQL_PWD=toor mysql --host 127.0.0.1 --port 3309 -uroot -AN -e "change master to master_delay=1;"
@@ -835,5 +1069,46 @@ vex-report:
 	sh -c 'go run ./tools/vex-parser ./security/vex/fleet >> security/status.md'
 	sh -c 'echo "## \`fleetdm/fleetctl\` docker image\n" >> security/status.md'
 	sh -c 'go run ./tools/vex-parser ./security/vex/fleetctl >> security/status.md'
+	sh -c 'echo "## \`fleetdm/wix\` docker image\n" >> security/status.md'
+	sh -c 'go run ./tools/vex-parser ./security/vex/wix >> security/status.md'
+
+# make update-go version=1.24.4
+UPDATE_GO_DOCKERFILES := ./Dockerfile-desktop-linux ./infrastructure/loadtesting/terraform/docker/loadtest.Dockerfile ./infrastructure/loadtesting/terraform/docker/apple-apns-mock.Dockerfile ./infrastructure/loadtesting/terraform/docker/android-amapi-mock.Dockerfile ./tools/mdm/migration/mdmproxy/Dockerfile
+UPDATE_GO_MODS := \
+	go.mod \
+	./tools/mdm/windows/bitlocker/go.mod \
+	./tools/snapshot/go.mod \
+	./tools/terraform/go.mod \
+	./third_party/vuln-check/go.mod \
+	./third_party/goval-dictionary/go.mod \
+	./tools/ci/apiparamcheck/go.mod \
+	./tools/ci/setboolcheck/go.mod \
+	./tools/github-manage/go.mod \
+	./tools/qacheck/go.mod \
+	./tools/screencap/go.mod \
+	./tools/hangar/go.mod \
+	./cmd/fleet-mcp/go.mod \
+	./tools/dibble/go.mod \
+	./tools/gitops-auto-complete/go.mod \
+	./tools/upgrade/go.mod
+# The index digest is scraped from the default `imagetools inspect` output rather than requested with
+# `--format '{{.Manifest.Digest}}'`: buildx >= v0.32 silently ignores that template and prints the full
+# report, which then gets written into the Dockerfile as the digest.
+update-go:
+	@test $(version) || (echo "Missing 'version' argument, usage: 'make update-go version=1.24.4'" ; exit 1)
+	@for dockerfile in $(UPDATE_GO_DOCKERFILES) ; do \
+		go run ./tools/tuf/replace $$dockerfile "golang:.+-" "golang:$(version)-" ; \
+		tag=$$(grep -oE 'golang:[^@[:space:]]+' $$dockerfile | head -n1) ; \
+		echo "Resolving index digest for $$tag ..." ; \
+		digest=$$(docker buildx imagetools inspect $$tag | awk '/^Digest:/ { print $$2 ; exit }') ; \
+		echo "$$digest" | grep -qE '^sha256:[0-9a-f]{64}$$' || { echo "Failed to resolve digest for $$tag (got: $$digest)" ; exit 1 ; } ; \
+		go run ./tools/tuf/replace $$dockerfile "$$tag@sha256:[0-9a-f]+" "$$tag@$$digest" ; \
+		echo "* Updated $$dockerfile -> $$tag@$$digest" ; \
+	done
+	@for gomod in $(UPDATE_GO_MODS) ; do \
+		go run ./tools/tuf/replace $$gomod "(?m)^go .+$$" "go $(version)" ; \
+	done
+	@echo "- Updated Go to $(version)." > changes/update-go-$(version)
+	@echo "* Updated Go to $(version)." > orbit/changes/update-go-$(version)
 
 include ./tools/makefile-support/helpsystem-targets

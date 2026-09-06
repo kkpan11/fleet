@@ -37,7 +37,7 @@ module.exports = {
     let thisPage = _.find(sails.config.builtStaticContent.markdownPages, { url: this.req.path });
     if (!thisPage) {// If there's no EXACTLY matching content page, try a revised version of the URL suffix that's lowercase, with all slashes deduped, and any leading or trailing slash removed (leading slashes are only possible if this is a regex, rather than "/*" route)
       let revisedPageUrlSuffix = pageUrlSuffix.toLowerCase().replace(/\/+/g, '/').replace(/^\/+/,'').replace(/\/+$/,'');
-      thisPage = _.find(sails.config.builtStaticContent.markdownPages, { url: '/' + revisedPageUrlSuffix });
+      thisPage = _.find(sails.config.builtStaticContent.markdownPages, (page)=>{return _.endsWith(page.url, revisedPageUrlSuffix); });
       if (thisPage) {// If we matched a page with the revised suffix, then redirect to that rather than rendering it, so the URL gets cleaned up.
         throw {redirect: thisPage.url};
       } else {// If no page could be found even with the revised suffix, then throw a 404 error.
@@ -58,10 +58,17 @@ module.exports = {
       pageDescriptionForMeta = _.trimRight(thisPage.meta.articleTitle, '.') + ' by ' + thisPage.meta.authorFullName;
     }//ﬁ
 
+
+    // If an article was updated three days after it was published, we'll show the user the date when it was last updated.
+    let showUpdatedTimestamp = false;
+    let publishedAt = new Date(thisPage.meta.publishedOn).getTime();
+    if(publishedAt + (1000 * 60 * 60 * 24 * 3) <= thisPage.lastModifiedAt) {
+      showUpdatedTimestamp = true;
+    }
+
     let articleCategorySlug = this.req.path.split('/')[1];
     // console.log(articleCategorySlug);
     let categoryFriendlyNamesByCategorySlug = {
-      'success-stories': 'Success stories',
       'releases': 'Releases',
       'guides': 'Guides',
       'securing': 'Security articles',
@@ -69,23 +76,18 @@ module.exports = {
       'announcements': 'Announcements',
       'podcasts': 'Podcasts',
       'report': 'Reports',
+      'articles': 'Blog',
+      'newsletters': 'Newsletters',
+      'industry-news': 'Industry news',
     };
     let categoryFriendlyName = categoryFriendlyNamesByCategorySlug[articleCategorySlug];
-    // Set a currentSection variable for the website header based on how the articles category page is linked to in the header navigation dropdown menus.
-    let currentSection;
-    if(['guides','releases'].includes(articleCategorySlug)) {
-      // If the articleCategorySlug is guides, or releases, highlight the "Documentation" dropdown.
-      currentSection = 'documentation';
-    } else {
-      // If the article is in any other category, highlight the "Community" dropdown.
-      currentSection = 'community';
-    }
 
 
     // Respond with view.
     return {
       path: require('path'),
       thisPage: thisPage,
+      showUpdatedTimestamp,
       markdownPages: sails.config.builtStaticContent.markdownPages,
       compiledPagePartialsAppPath: sails.config.builtStaticContent.compiledPagePartialsAppPath,
       pageTitleForMeta,
@@ -93,7 +95,7 @@ module.exports = {
       pageImageForMeta: thisPage.meta.articleImageUrl || undefined,
       articleCategorySlug,
       categoryFriendlyName,
-      currentSection,
+      currentSection: 'more',
       algoliaPublicKey: sails.config.custom.algoliaPublicKey,
     };
 

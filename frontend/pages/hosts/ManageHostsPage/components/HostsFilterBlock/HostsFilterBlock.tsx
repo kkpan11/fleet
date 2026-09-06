@@ -1,5 +1,6 @@
 import React, { useContext } from "react";
-import { invert } from "lodash";
+
+import { dateAgo } from "utilities/date_format";
 
 import { AppContext } from "context/app";
 import { ILabel } from "interfaces/label";
@@ -11,20 +12,26 @@ import {
   DiskEncryptionStatus,
   BootstrapPackageStatus,
   IMdmSolution,
-  MDM_ENROLLMENT_STATUS,
+  MDM_ENROLLMENT_STATUS_UI_MAP,
+  MdmEnrollmentStatus,
   MdmProfileStatus,
   IMdmProfile,
+  MdmEnrollmentFilterValue,
 } from "interfaces/mdm";
 import { IMunkiIssuesAggregate } from "interfaces/macadmins";
 import { IPolicy } from "interfaces/policy";
 import { SoftwareAggregateStatus } from "interfaces/software";
+import { getDisplayedSoftwareName } from "pages/SoftwarePage/helpers";
 
 import {
   HOSTS_QUERY_PARAMS,
   MacSettingsStatusQueryParam,
+  DEPDeviceStatus,
 } from "services/entities/hosts";
+import { ScriptBatchHostCountV1 } from "services/entities/scripts";
 
 import {
+  MDM_STATUS_TOOLTIP,
   PLATFORM_LABEL_DISPLAY_NAMES,
   PLATFORM_TYPE_ICONS,
   isPlatformLabelNameFromAPI,
@@ -34,7 +41,8 @@ import {
 // @ts-ignore
 import Dropdown from "components/forms/fields/Dropdown";
 import Button from "components/buttons/Button";
-import Icon from "components/Icon/Icon";
+import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
+import { abmIssueTooltip } from "pages/DashboardPage/cards/ABMIssueHosts/ABMIssueHosts";
 
 import FilterPill from "../FilterPill";
 import PoliciesFilter from "../PoliciesFilter";
@@ -57,14 +65,14 @@ interface IHostsFilterBlockProps {
   params: {
     munkiIssueDetails: IMunkiIssuesAggregate | null;
     policyResponse: PolicyResponse;
-    policyId?: any;
+    policyId?: string | number;
     policy?: IPolicy;
-    macSettingsStatus?: any;
+    macSettingsStatus?: MacSettingsStatusQueryParam;
     softwareId?: number;
     softwareTitleId?: number;
     softwareVersionId?: number;
     mdmId?: number;
-    mdmEnrollmentStatus?: any;
+    mdmEnrollmentStatus?: MdmEnrollmentFilterValue;
     lowDiskSpaceHosts?: number;
     osVersionId?: string;
     osName?: string;
@@ -72,7 +80,11 @@ interface IHostsFilterBlockProps {
     vulnerability?: string;
     munkiIssueId?: number;
     osVersions?: IOperatingSystemVersion[];
-    softwareDetails: { name: string; version?: string } | null;
+    softwareDetails: {
+      name: string;
+      display_name?: string;
+      version?: string;
+    } | null;
     mdmSolutionDetails: IMdmSolution | null;
     osSettingsStatus?: MdmProfileStatus;
     diskEncryptionStatus?: DiskEncryptionStatus;
@@ -81,6 +93,12 @@ interface IHostsFilterBlockProps {
     configProfileStatus?: string;
     configProfileUUID?: string;
     configProfile?: IMdmProfile;
+    scriptBatchExecutionStatus?: ScriptBatchHostCountV1;
+    scriptBatchExecutionId?: string;
+    scriptBatchRanAt: string | null;
+    scriptBatchScriptName: string | null;
+    depProfileError: string; // string "true" as we don't handle booleans
+    depAssignProfileResponse?: DEPDeviceStatus;
   };
   selectedLabel?: ILabel;
   isOnlyObserver?: boolean;
@@ -99,8 +117,11 @@ interface IHostsFilterBlockProps {
     newStatus: SoftwareAggregateStatus
   ) => void;
   onChangeConfigProfileStatusFilter: (newStatus: string) => void;
+  onChangeScriptBatchStatusFilter: (newStatus: ScriptBatchHostCountV1) => void;
   onClickEditLabel: (evt: React.MouseEvent<HTMLButtonElement>) => void;
   onClickDeleteLabel: () => void;
+  isLoading?: boolean;
+  isScriptPackage?: boolean;
 }
 
 /**
@@ -135,6 +156,12 @@ const HostsFilterBlock = ({
     configProfileStatus,
     configProfileUUID,
     configProfile,
+    scriptBatchExecutionStatus,
+    scriptBatchExecutionId,
+    scriptBatchRanAt,
+    scriptBatchScriptName,
+    depProfileError,
+    depAssignProfileResponse,
   },
   selectedLabel,
   isOnlyObserver,
@@ -147,14 +174,26 @@ const HostsFilterBlock = ({
   onChangeMacSettingsFilter,
   onChangeSoftwareInstallStatusFilter,
   onChangeConfigProfileStatusFilter,
+  onChangeScriptBatchStatusFilter,
   onClickEditLabel,
   onClickDeleteLabel,
+  isLoading = false,
+  isScriptPackage,
 }: IHostsFilterBlockProps) => {
   const { currentUser, isOnGlobalTeam } = useContext(AppContext);
 
+  if (isLoading) {
+    return <></>;
+  }
+
   const renderLabelFilterPill = () => {
     if (selectedLabel) {
-      const { description, display_text, label_type } = selectedLabel;
+      const {
+        description,
+        display_text,
+        label_type,
+        label_membership_type,
+      } = selectedLabel;
       const pillLabel =
         (isPlatformLabelNameFromAPI(display_text) &&
           PLATFORM_LABEL_DISPLAY_NAMES[display_text]) ||
@@ -180,22 +219,36 @@ const HostsFilterBlock = ({
           {label_type !== "builtin" &&
             !isOnlyObserver &&
             (isOnGlobalTeam || currentUser?.id === selectedLabel.author_id) && (
-              <>
-                <Button
-                  className={`${baseClass}__action-btn`}
-                  onClick={onClickEditLabel}
-                  variant="icon"
-                >
-                  <Icon name="pencil" size="small" />
-                </Button>
-                <Button
-                  className={`${baseClass}__action-btn`}
-                  onClick={onClickDeleteLabel}
-                  variant="icon"
-                >
-                  <Icon name="trash" size="small" />
-                </Button>
-              </>
+              <GitOpsModeTooltipWrapper
+                entityType="labels"
+                renderChildren={(disableChildren) => (
+                  <>
+                    {
+                      // TODO - remove condition if/when can edit host_vitals labels
+                      label_membership_type !== "host_vitals" && (
+                        <Button
+                          className={`${baseClass}__action-btn`}
+                          onClick={onClickEditLabel}
+                          variant="secondary"
+                          size="small"
+                          disabled={disableChildren}
+                          icon="pencil"
+                          ariaLabel="Edit label"
+                        />
+                      )
+                    }
+                    <Button
+                      className={`${baseClass}__action-btn`}
+                      onClick={onClickDeleteLabel}
+                      variant="secondary"
+                      size="small"
+                      disabled={disableChildren}
+                      icon="trash"
+                      ariaLabel="Delete label"
+                    />
+                  </>
+                )}
+              />
             )}
         </>
       );
@@ -278,7 +331,7 @@ const HostsFilterBlock = ({
   );
 
   const renderMacSettingsStatusFilterBlock = () => {
-    const label = "macOS settings";
+    const label = "Apple settings";
     return (
       <>
         <Dropdown
@@ -291,7 +344,9 @@ const HostsFilterBlock = ({
         />
         <FilterPill
           label={label}
-          onClear={() => handleClearFilter(["macos_settings"])}
+          onClear={() =>
+            handleClearFilter(["macos_settings", "apple_settings"])
+          }
         />
       </>
     );
@@ -300,12 +355,11 @@ const HostsFilterBlock = ({
   const renderSoftwareFilterBlock = (additionalClearParams?: string[]) => {
     if (!softwareDetails) return null;
 
-    const { name, version } = softwareDetails;
-    let label = name;
+    const { name, display_name, version } = softwareDetails;
+    let label = getDisplayedSoftwareName(name, display_name);
     if (version) {
       label += ` ${version}`;
     }
-    label = label.trim() || "Unknown software";
 
     const clearParams = [
       "software_id",
@@ -351,48 +405,20 @@ const HostsFilterBlock = ({
   const renderMDMEnrollmentFilterBlock = () => {
     if (!mdmEnrollmentStatus) return null;
 
+    const matchedStatus = Object.entries(MDM_ENROLLMENT_STATUS_UI_MAP).find(
+      ([, v]) => v.filterValue === mdmEnrollmentStatus
+    );
     const label = `MDM status: ${
-      invert(MDM_ENROLLMENT_STATUS)[mdmEnrollmentStatus]
+      matchedStatus?.[1].displayName ?? mdmEnrollmentStatus
     }`;
-
-    // More narrow tooltip than other MDM tooltip
-    const MDM_STATUS_PILL_TOOLTIP: Record<string, React.ReactNode> = {
-      automatic: (
-        <span>
-          MDM was turned on <br />
-          automatically using Apple <br />
-          Automated Device <br />
-          Enrollment (DEP), <br />
-          Windows Autopilot, or <br />
-          Windows Azure AD Join. <br />
-          Administrators can block <br />
-          device users from turning
-          <br /> MDM off.
-        </span>
-      ),
-      manual: (
-        <span>
-          MDM was turned on <br />
-          manually. Device users <br />
-          can turn MDM off.
-        </span>
-      ),
-      unenrolled: undefined, // no tooltip specified
-      pending: (
-        <span>
-          Hosts ordered using Apple <br />
-          Business Manager (ABM). <br />
-          They will automatically enroll <br />
-          to Fleet and turn on MDM <br />
-          when they&apos;re unboxed.
-        </span>
-      ),
-    };
+    const apiStatus = matchedStatus?.[0] as MdmEnrollmentStatus | undefined;
 
     return (
       <FilterPill
         label={label}
-        tooltipDescription={MDM_STATUS_PILL_TOOLTIP[mdmEnrollmentStatus]}
+        tooltipDescription={
+          apiStatus ? MDM_STATUS_TOOLTIP[apiStatus] : undefined
+        }
         onClear={() => handleClearFilter(["mdm_enrollment_status"])}
       />
     );
@@ -483,7 +509,9 @@ const HostsFilterBlock = ({
         />
         <FilterPill
           label="macOS settings: bootstrap package"
-          onClear={() => handleClearFilter(["bootstrap_package"])}
+          onClear={() =>
+            handleClearFilter(["macos_bootstrap_package", "bootstrap_package"])
+          }
         />
       </>
     );
@@ -491,7 +519,7 @@ const HostsFilterBlock = ({
 
   const renderSoftwareInstallStatusBlock = () => {
     const OPTIONS = [
-      { value: "installed", label: "Installed" },
+      { value: "installed", label: isScriptPackage ? "Ran" : "Installed" },
       { value: "failed", label: "Failed" },
       { value: "pending", label: "Pending" },
     ];
@@ -536,7 +564,117 @@ const HostsFilterBlock = ({
     );
   };
 
-  const showSelectedLabel = selectedLabel && selectedLabel.type !== "all";
+  const renderScriptBatchExecutionBlock = () => {
+    const OPTIONS = [
+      { value: "ran", label: "Ran" },
+      { value: "errored", label: "Error" },
+      { value: "pending", label: "Pending" },
+      { value: "incompatible", label: "Incompatible" },
+      { value: "canceled", label: "Canceled" },
+    ];
+    return (
+      <>
+        <Dropdown
+          value={scriptBatchExecutionStatus}
+          className={`${baseClass}__script-batch-status-dropdown`}
+          options={OPTIONS}
+          searchable={false}
+          onChange={onChangeScriptBatchStatusFilter}
+          iconName="filter-alt"
+        />
+        {scriptBatchScriptName && (
+          <FilterPill
+            label={scriptBatchScriptName}
+            onClear={() =>
+              handleClearFilter([
+                HOSTS_QUERY_PARAMS.SCRIPT_BATCH_EXECUTION_ID,
+                HOSTS_QUERY_PARAMS.SCRIPT_BATCH_EXECUTION_STATUS,
+              ])
+            }
+            tooltipDescription={
+              scriptBatchRanAt ? dateAgo(scriptBatchRanAt) : null
+            }
+          />
+        )}
+      </>
+    );
+  };
+
+  const renderDepProfileError = () => {
+    return (
+      <FilterPill
+        className={`${baseClass}__abm-issue-filter-pill`}
+        label="Apple Business (AB) issues"
+        tooltipDescription={abmIssueTooltip()}
+        onClear={() => handleClearFilter(["dep_profile_error"])}
+      />
+    );
+  };
+
+  const renderDepAssignProfileResponse = () => {
+    const renderLabel = () => {
+      switch (depAssignProfileResponse) {
+        case "SUCCESS":
+          return "Apple Business (AB) profile assignment successful";
+        case "FAILED":
+          return "Apple Business (AB) issue: Failed";
+        case "THROTTLED":
+          return "Apple Business (AB) issue: Throttled";
+        case "NOT_ACCESSIBLE":
+          return "Apple Business (AB) issue: Not accessible";
+        default:
+          return "Apple Business (AB) issues";
+      }
+    };
+
+    const renderTooltip = () => {
+      switch (depAssignProfileResponse) {
+        case "SUCCESS":
+          return "Hosts that had a successful response from Apple Business (AB) for profile assignment.";
+        case "FAILED":
+          return (
+            <>
+              Migration or new Mac setup won&apos;t work. Apple&apos;s servers
+              rejected the request to assign a profile to these hosts. Fleet
+              will try again every hour.
+            </>
+          );
+        case "THROTTLED":
+          return (
+            <>
+              Migration or new Mac setup won&apos;t work. Fleet hit Apple&apos;s
+              API rate limit when preparing the macOS Setup Assistant for these
+              hosts. Fleet will try again within 24 hours of each host&apos;s
+              last throttled response.
+            </>
+          );
+        case "NOT_ACCESSIBLE":
+          return (
+            <>
+              Migration or new Mac setup won&apos;t work. Details are not
+              accessible from Apple Business (AB). Verify these hosts are
+              assigned to your MDM server and Fleet has access permissions.
+            </>
+          );
+        default:
+          return abmIssueTooltip();
+      }
+    };
+
+    return (
+      <FilterPill
+        className={`${baseClass}__abm-issue-filter-pill`}
+        label={renderLabel()}
+        tooltipDescription={renderTooltip()}
+        onClear={() => handleClearFilter(["dep_assign_profile_response"])}
+      />
+    );
+  };
+
+  const showSelectedLabel =
+    selectedLabel &&
+    selectedLabel.type !== "all" &&
+    selectedLabel.type !== "platform";
 
   if (
     showSelectedLabel ||
@@ -556,7 +694,10 @@ const HostsFilterBlock = ({
     diskEncryptionStatus ||
     bootstrapPackageStatus ||
     vulnerability ||
-    (configProfileStatus && configProfileUUID && configProfile)
+    (configProfileStatus && configProfileUUID && configProfile) ||
+    (scriptBatchExecutionStatus && scriptBatchExecutionId) ||
+    depProfileError ||
+    depAssignProfileResponse
   ) {
     const renderFilterPill = () => {
       switch (true) {
@@ -581,6 +722,12 @@ const HostsFilterBlock = ({
               {renderLabelFilterPill()} {renderMDMEnrollmentFilterBlock()}
             </>
           );
+        case showSelectedLabel && !!osSettingsStatus:
+          return (
+            <>
+              {renderLabelFilterPill()} {renderOsSettingsBlock()}
+            </>
+          );
         case showSelectedLabel:
           return renderLabelFilterPill();
         case !!policyId:
@@ -590,6 +737,17 @@ const HostsFilterBlock = ({
         case !!softwareStatus:
           return renderSoftwareInstallStatusBlock();
         case !!softwareId || !!softwareVersionId || !!softwareTitleId:
+          // Software version can be combined with os name and os version
+          // e.g. Kernel version 6.8.0-71.71 (software version) on Ubuntu 24.04.2LTS (os name and os version)
+          // Note: This is our only double filter available in the UI, are there others?
+          if (!!osVersionId || (!!osName && !!osVersion)) {
+            return (
+              <div className={`${baseClass}__multi-filter`}>
+                {renderSoftwareFilterBlock()}
+                {renderOSFilterBlock()}
+              </div>
+            );
+          }
           return renderSoftwareFilterBlock();
         case !!mdmId:
           return renderMDMSolutionFilterBlock();
@@ -611,6 +769,12 @@ const HostsFilterBlock = ({
           return renderBootstrapPackageStatusBlock();
         case !!configProfileStatus && !!configProfileUUID && !!configProfile:
           return renderConfigProfileStatusBlock();
+        case !!scriptBatchExecutionStatus && !!scriptBatchExecutionId:
+          return renderScriptBatchExecutionBlock();
+        case !!depProfileError:
+          return renderDepProfileError();
+        case !!depAssignProfileResponse:
+          return renderDepAssignProfileResponse();
         default:
           return null;
       }

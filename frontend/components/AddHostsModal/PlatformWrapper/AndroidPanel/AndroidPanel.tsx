@@ -1,16 +1,31 @@
 import React, { useContext } from "react";
-import { Link } from "react-router";
 
 import PATHS from "router/paths";
 import { AppContext } from "context/app";
 
-// @ts-ignore
+import CustomLink from "components/CustomLink";
+import Radio from "components/forms/fields/Radio";
+
 import InputField from "components/forms/fields/InputField";
 
-const generateUrl = (serverUrl: string, enrollSecret: string) => {
-  return `${serverUrl}/enroll?enroll_secret=${encodeURIComponent(
+import EnrollQrCode from "../EnrollQrCode";
+
+type EnrollmentType = "workProfile" | "fullyManaged";
+
+const generateUrl = (
+  serverUrl: string,
+  enrollSecret: string,
+  enrollType: EnrollmentType
+) => {
+  const url = `${serverUrl}/enroll?enroll_secret=${encodeURIComponent(
     enrollSecret
   )}`;
+
+  if (enrollType === "fullyManaged") {
+    return `${url}&fully_managed=true`;
+  }
+
+  return url;
 };
 
 const baseClass = "android-panel";
@@ -22,31 +37,65 @@ interface IAndroidPanelProps {
 const AndroidPanel = ({ enrollSecret }: IAndroidPanelProps) => {
   const { config, isAndroidMdmEnabledAndConfigured } = useContext(AppContext);
 
+  const [enrollmentType, setEnrollmentType] = React.useState<EnrollmentType>(
+    "workProfile"
+  );
+
   if (!config) return null;
 
   if (!isAndroidMdmEnabledAndConfigured) {
     return (
       <p>
-        <Link to={PATHS.ADMIN_INTEGRATIONS_MDM_ANDROID}>
-          Turn on Android MDM
-        </Link>{" "}
+        <CustomLink
+          url={PATHS.ADMIN_INTEGRATIONS_MDM_ANDROID}
+          text="Turn on Android MDM"
+          emphasized
+        />{" "}
         to enroll Android hosts.
       </p>
     );
   }
 
-  const url = generateUrl(config.server_settings.server_url, enrollSecret);
+  const url = generateUrl(
+    config.server_settings.server_url,
+    enrollSecret,
+    enrollmentType
+  );
 
   return (
     <div className={baseClass}>
-      <InputField
-        label="Send this to your end users:"
-        enableCopy
-        readOnly
-        inputWrapperClass
-        name="enroll-link"
-        value={url}
-      />
+      <form>
+        <fieldset className="form-field">
+          <Radio
+            name="enrollmentType"
+            id="workProfile"
+            label="Personal (BYOD)"
+            value="workProfile"
+            checked={enrollmentType === "workProfile"}
+            onChange={() => setEnrollmentType("workProfile")}
+          />
+          <Radio
+            name="enrollmentType"
+            id="fullyManaged"
+            label="Company-owned (fully-managed)"
+            value="fullyManaged"
+            checked={enrollmentType === "fullyManaged"}
+            onChange={() => setEnrollmentType("fullyManaged")}
+          />
+        </fieldset>
+        <h3 className="platform-wrapper__panel-heading">
+          Enrollment instructions
+        </h3>
+        <InputField
+          label="Share this link with your end users:"
+          enableCopy
+          readOnly
+          inputWrapperClass={`${baseClass}__enroll-link`}
+          name="enroll-link"
+          value={url}
+        />
+        <EnrollQrCode url={url} />
+      </form>
     </div>
   );
 };

@@ -1,11 +1,11 @@
 # Configuration for contributors
 
+Don't use these Fleet server configuration options. For Fleet server configuration, please use the public [Fleet server configuration documentation](https://fleetdm.com/docs/configuration/fleet-server-configuration) instead. For YAML, please use the [public GitOps documentation](https://fleetdm.com/docs/configuration/yaml-files) instead.
+
+These options in this document are only used when contributing to Fleet. They frequently change to reflect current functionality.
+
 - [Fleet server configuration](#fleet-server-configuration)
 - [YAML files](#yaml-files)
-
-This document includes Fleet server configuration settings that are helpful when developing or contributing to Fleet.
-
-Unlike the [fleetctl apply format](https://github.com/fleetdm/fleet/tree/main/docs/Contributing/guides/cli/fleetctl-apply.md), the files and settings in this document are not recommended for production use. Each setting includes the best practice for being successful in production.
 
 ## Fleet server configuration
 
@@ -111,7 +111,7 @@ An alphanumeric secret for the Simple Certificate Enrollment Protocol (SCEP). De
 
 ### mdm.apple_bm_server_token_bytes
 
-This is the content of the Apple Business Manager encrypted server token downloaded from Apple Business Manager.
+This is the content of the Apple Business encrypted server token downloaded from Apple Business.
 
 - Default value: ""
 - Environment variable: `FLEET_MDM_APPLE_BM_SERVER_TOKEN_BYTES`
@@ -126,7 +126,7 @@ This is the content of the Apple Business Manager encrypted server token downloa
 
 ### mdm.apple_bm_cert_bytes
 
-This is the content of the Apple Business Manager certificate. The certificate is a PEM-encoded X.509 certificate that's typically generated via `fleetctl generate mdm-apple-bm`.
+This is the content of the Apple Business certificate. The certificate is a PEM-encoded X.509 certificate that's typically generated via `fleetctl generate mdm-apple-bm`.
 
 - Default value: ""
 - Environment variable: `FLEET_MDM_APPLE_BM_CERT_BYTES`
@@ -141,7 +141,7 @@ This is the content of the Apple Business Manager certificate. The certificate i
 
 ### mdm.apple_bm_key_bytes
 
-This is the content of the PEM-encoded private key for the Apple Business Manager. It's typically generated via `fleetctl generate mdm-apple-bm`.
+This is the content of the PEM-encoded private key for the Apple Business. It's typically generated via `fleetctl generate mdm-apple-bm`.
 
 - Default value: ""
 - Environment variable: `FLEET_MDM_APPLE_BM_KEY_BYTES`
@@ -152,21 +152,6 @@ This is the content of the PEM-encoded private key for the Apple Business Manage
       -----BEGIN RSA PRIVATE KEY-----
       ... PEM-encoded content ...
       -----END RSA PRIVATE KEY-----
-  ```
-
-### mdm.sso_rate_limit_per_minute
-
-The number of requests per minute allowed to [Initiate SSO during DEP enrollment](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/reference/api-for-contributors.md#initiate-sso-during-dep-enrollment) and
-[Complete SSO during DEP enrollment](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/reference/api-for-contributors.md#complete-sso-during-dep-enrollment) endpoints, combined.
-
-The best practice is to set this to 3x the number of new employees (end users) that onboard at the same time (ex. `300` if 100 end users setup their Macs simultaneously).
-
-- Default value: 10 (same rate limit for [Log in endpoint](https://fleetdm.com/docs/rest-api/rest-api#log-in))
-- Environment variable: `FLEET_MDM_SSO_RATE_LIMIT_PER_MINUTE`
-- Config file format:
-  ```yaml
-  mdm:
-    sso_rate_limit_per_minute: 200
   ```
 
 ### license.enforce_host_limit
@@ -180,6 +165,60 @@ Whether Fleet should enforce the host limit of the license, if true, attempting 
   license:
     enforce_host_limit: true
   ```
+
+### license.enable_analytics
+
+For approved Fleet Premium customers only.
+
+Whether to send anonymous usage statistics. Overrides the value set by `enable_analytics` in the [Modify configuration](https://fleetdm.com/docs/rest-api/rest-api#modify-configuration) API endpoint.
+
+- Default value: `true`
+- Environment variable: `FLEET_LICENSE_ENABLE_ANALYTICS`
+- Config file format:
+  ```yaml
+  license:
+    enable_analytics: false
+  ```
+
+### mdm.enable_custom_os_updates_and_filevault
+
+Documentation for setting has moved to the [Fleet server configuration](https://fleetdm.com/docs/configuration/fleet-server-configuration#mdm-enable-custom-os-updates-and-filevault) reference.
+
+### logging.tracing_enabled
+
+Enables OpenTelemetry tracing and metrics export. When enabled, traces and metrics are sent to the OTLP endpoint configured via the standard `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable.
+
+By default, OpenTelemetry is used. Set `tracing_type` to `elasticapm` only if you want to use Elastic APM instead.
+
+- Default value: `false`
+- Environment variable: `FLEET_LOGGING_TRACING_ENABLED`
+- Config file format:
+  ```yaml
+  logging:
+    tracing_enabled: true
+    # tracing_type: elasticapm  # Only set if using Elastic APM instead of OpenTelemetry
+  ```
+
+### logging.otel_logs_enabled
+
+Enables exporting logs to an OpenTelemetry collector in addition to stderr output. When enabled, logs are sent to the OTLP endpoint configured via the standard `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable. Logs are automatically correlated with traces via `trace_id` and `span_id` attributes.
+
+> **Note:** All log levels, including debug, are always sent to the OpenTelemetry collector regardless of the `logging.debug` setting. The `logging.debug` flag only controls what appears in stderr output.
+
+> **Note:** This option requires `logging.tracing_enabled` to be set to `true`. Fleet will fail to start if `otel_logs_enabled` is `true` but `tracing_enabled` is `false`.
+
+- Default value: `false`
+- Environment variable: `FLEET_LOGGING_OTEL_LOGS_ENABLED`
+- Config file format:
+  ```yaml
+  logging:
+    tracing_enabled: true
+    otel_logs_enabled: true
+  ```
+
+### mdm.allow_all_declarations
+
+Documentation for setting has moved to the [Fleet server configuration](https://fleetdm.com/docs/configuration/fleet-server-configuration#mdm-allow-all-declarations) reference.
 
 ### FLEET_ENABLE_POST_CLIENT_DEBUG_ERRORS
 

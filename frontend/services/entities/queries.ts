@@ -4,8 +4,8 @@ import endpoints from "utilities/endpoints";
 import { getErrorReason } from "interfaces/errors";
 import { ISelectedTargetsForApi } from "interfaces/target";
 import {
-  ICreateQueryRequestBody,
-  IModifyQueryRequestBody,
+  ICreateQueryFormData,
+  IEditQueryFormData,
   IQueryKeyQueriesLoadAll,
   ISchedulableQuery,
 } from "interfaces/schedulable_query";
@@ -29,9 +29,13 @@ export interface IQueryKeyLoadQueries extends ILoadQueriesParams {
   scope: "queries";
 }
 
+interface ICreateQueryResponse {
+  query: ISchedulableQuery;
+}
 export interface IQueriesResponse {
   queries: ISchedulableQuery[];
   count: number;
+  inherited_query_count: number;
   meta: {
     has_next_results: boolean;
     has_previous_results: boolean;
@@ -39,7 +43,9 @@ export interface IQueriesResponse {
 }
 
 export default {
-  create: (createQueryRequestBody: ICreateQueryRequestBody) => {
+  create: (
+    createQueryRequestBody: ICreateQueryFormData
+  ): Promise<ICreateQueryResponse> => {
     const { QUERIES } = endpoints;
     if (createQueryRequestBody.name) {
       createQueryRequestBody.name = createQueryRequestBody.name.trim();
@@ -94,7 +100,11 @@ export default {
       snakeCaseParams.platform = "macos";
     }
 
-    const queryString = buildQueryStringFromParams(snakeCaseParams);
+    const { team_id, ...restParams } = snakeCaseParams;
+    const queryString = buildQueryStringFromParams({
+      ...restParams,
+      fleet_id: team_id,
+    });
 
     return sendRequest(
       "GET",
@@ -115,7 +125,7 @@ export default {
     try {
       const { campaign } = await sendRequest("POST", LIVE_QUERY, {
         query,
-        query_id: queryId,
+        report_id: queryId,
         selected,
       });
       return campaign;
@@ -125,7 +135,7 @@ export default {
       );
     }
   },
-  update: (id: number, updateParams: IModifyQueryRequestBody) => {
+  update: (id: number, updateParams: IEditQueryFormData) => {
     const { QUERIES } = endpoints;
     const path = `${QUERIES}/${id}`;
     if (updateParams.name) {

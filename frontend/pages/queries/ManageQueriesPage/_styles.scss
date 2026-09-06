@@ -1,15 +1,18 @@
 .manage-queries-page {
+  @include vertical-page-layout;
+
   &__header-wrap {
-    @include normalize-team-header;
+    display: flex;
+    flex-direction: column;
+    gap: $pad-large;
   }
 
   &__header {
-    display: flex;
-    align-items: center;
+    @include normalize-team-header;
+  }
 
-    .form-field {
-      margin-bottom: 0;
-    }
+  &__manage-automations {
+    white-space: nowrap;
   }
 
   &__text {
@@ -33,20 +36,13 @@
     }
   }
 
-  &__description {
-    margin: 0 0 $pad-xxlarge;
-
-    p {
-      color: $ui-fleet-black-75;
-      margin: 0;
-      font-size: $x-small;
-      font-style: italic;
-    }
+  &__manage-automations-tooltip {
+    text-align: center;
   }
 
   &__action-button-container {
     display: flex;
-    gap: $pad-small;
+    gap: $gap-action-elements;
   }
 
   .queries-table {
@@ -57,13 +53,10 @@
     .data-table-block {
       .data-table {
         &__wrapper {
-          overflow-x: auto;
           overflow-y: hidden;
         }
         &__table {
           thead {
-            // maintain height when select header is removed
-            height: 52.3833px;
             .name__header {
               width: auto;
             }
@@ -101,10 +94,6 @@
           tbody {
             .name__cell {
               width: auto;
-
-              .inherited-badge {
-                overflow: initial;
-              }
             }
 
             @media (max-width: $break-md) {
@@ -153,11 +142,6 @@
           font-size: $xx-small;
         }
       }
-    }
-  }
-  .reveal-button {
-    .component__tooltip-wrapper__underline {
-      position: initial;
     }
   }
 }

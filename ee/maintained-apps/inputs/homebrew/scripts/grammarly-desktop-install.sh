@@ -1,0 +1,85 @@
+#!/bin/bash
+
+# variables
+APPDIR="/Applications/"
+TMPDIR=$(dirname "$(realpath "$INSTALLER_PATH")")
+
+# functions
+
+quit_application() {
+  local bundle_id="$1"
+  local timeout_duration=10
+
+  # check if the application is running
+  local app_running
+  app_running=$(osascript -e "application id \"$bundle_id\" is running" 2>/dev/null)
+  if [[ "$app_running" != "true" ]]; then
+    return
+  fi
+
+  local console_user
+  console_user=$(stat -f "%Su" /dev/console)
+  if [[ $EUID -eq 0 && "$console_user" == "root" ]]; then
+    echo "Not logged into a non-root GUI; skipping quitting application ID '$bundle_id'."
+    return
+  fi
+
+  echo "Quitting application '$bundle_id'..."
+
+  # try to quit the application within the timeout period
+  local quit_success=false
+  SECONDS=0
+  while (( SECONDS < timeout_duration )); do
+    if osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1; then
+      if ! pgrep -f "$bundle_id" >/dev/null 2>&1; then
+        echo "Application '$bundle_id' quit successfully."
+        quit_success=true
+        break
+      fi
+    fi
+    sleep 1
+  done
+
+  if [[ "$quit_success" = false ]]; then
+    echo "Application '$bundle_id' did not quit."
+  fi
+}
+
+# extract contents
+# Fail before the existing app is removed below, so a bad download can't leave
+# the host without a working install.
+MOUNT_POINT=$(mktemp -d /tmp/dmg_mount_XXXXXX)
+if ! hdiutil attach -plist -nobrowse -readonly -mountpoint "$MOUNT_POINT" "$INSTALLER_PATH"; then
+	echo "Failed to mount DMG '$INSTALLER_PATH'." >&2
+	exit 1
+fi
+if ! sudo cp -R "$MOUNT_POINT"/* "$TMPDIR"; then
+	hdiutil detach "$MOUNT_POINT" || true
+	exit 1
+fi
+hdiutil detach "$MOUNT_POINT"
+
+# copy to the applications folder
+# Homebrew uses: app "Grammarly Installer.app", target: "Grammarly Desktop.app"
+# This means we extract "Grammarly Installer.app" and copy it to "/Applications/Grammarly Desktop.app"
+quit_application 'com.grammarly.ProjectLlama'
+
+# Remove existing app if present
+if [ -d "$APPDIR/Grammarly Desktop.app" ]; then
+	sudo rm -rf "$APPDIR/Grammarly Desktop.app"
+fi
+
+# Copy Grammarly Installer.app from temp directory to Applications as Grammarly Desktop.app
+if [ -d "$TMPDIR/Grammarly Installer.app" ]; then
+	if ! sudo cp -R "$TMPDIR/Grammarly Installer.app" "$APPDIR/Grammarly Desktop.app"; then
+		# remove the partial copy so a failed install isn't inventoried as the new version
+		sudo rm -rf "$APPDIR/Grammarly Desktop.app"
+		echo "Installation failed"
+		exit 1
+	fi
+	echo "Installation verified"
+else
+	echo "Error: Grammarly Installer.app not found in extracted files"
+	exit 1
+fi
+

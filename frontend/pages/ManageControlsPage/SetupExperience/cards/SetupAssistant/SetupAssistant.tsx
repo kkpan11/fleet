@@ -8,27 +8,31 @@ import configAPI from "services/entities/config";
 import teamsAPI, { ILoadTeamResponse } from "services/entities/teams";
 import mdmAPI, {
   IAppleSetupEnrollmentProfileResponse,
+  IDefaultAppleSetupEnrollmentProfileResponse,
 } from "services/entities/mdm";
 import { DEFAULT_USE_QUERY_OPTIONS } from "utilities/constants";
+import PATHS from "router/paths";
 
 import SectionHeader from "components/SectionHeader";
+import PageDescription from "components/PageDescription";
 import Spinner from "components/Spinner";
 import CustomLink from "components/CustomLink";
+import EmptyState from "components/EmptyState";
+import Button from "components/buttons/Button";
 
-import SetupAssistantPreview from "./components/SetupAssistantPreview";
 import SetupAssistantProfileUploader from "./components/SetupAssistantProfileUploader";
 import SetupAssistantProfileCard from "./components/SetupAssistantProfileCard/SetupAssistantProfileCard";
 import DeleteAutoEnrollmentProfile from "./components/DeleteAutoEnrollmentProfile";
 import AdvancedOptionsForm from "./components/AdvancedOptionsForm";
 import SetupExperienceContentContainer from "../../components/SetupExperienceContentContainer";
+import { ISetupExperienceCardProps } from "../../SetupExperienceNavItems";
 
 const baseClass = "setup-assistant";
 
-interface ISetupAssistantProps {
-  currentTeamId: number;
-}
-
-const SetupAssistant = ({ currentTeamId }: ISetupAssistantProps) => {
+const SetupAssistant = ({
+  currentTeamId,
+  router,
+}: ISetupExperienceCardProps) => {
   const [showDeleteProfileModal, setShowDeleteProfileModal] = useState(false);
 
   const { data: globalConfig, isLoading: isLoadingGlobalConfig } = useQuery<
@@ -37,7 +41,6 @@ const SetupAssistant = ({ currentTeamId }: ISetupAssistantProps) => {
   >(["config", currentTeamId], () => configAPI.loadAll(), {
     ...DEFAULT_USE_QUERY_OPTIONS,
     retry: false,
-    enabled: currentTeamId === API_NO_TEAM_ID,
   });
 
   const { data: teamConfig, isLoading: isLoadingTeamConfig } = useQuery<
@@ -49,7 +52,7 @@ const SetupAssistant = ({ currentTeamId }: ISetupAssistantProps) => {
     refetchOnWindowFocus: false,
     retry: false,
     enabled: currentTeamId !== API_NO_TEAM_ID,
-    select: (res) => res.team,
+    select: (res) => res.fleet,
   });
 
   const {
@@ -65,14 +68,32 @@ const SetupAssistant = ({ currentTeamId }: ISetupAssistantProps) => {
       retry: false,
     }
   );
+  const enrollmentProfileNotFound = enrollmentProfileError?.status === 404;
+
+  const {
+    data: defaultEnrollmentProfileData,
+    isLoading: isLoadingDefaultEnrollmentProfile,
+  } = useQuery<IDefaultAppleSetupEnrollmentProfileResponse, AxiosError>(
+    ["default_enrollment_profile", currentTeamId],
+    () => mdmAPI.getDefaultSetupEnrollmentProfile(),
+    {
+      ...DEFAULT_USE_QUERY_OPTIONS,
+      retry: false,
+      enabled: enrollmentProfileNotFound, // only fetch the default profile if there is no team enrollment profile
+    }
+  );
 
   const getReleaseDeviceSetting = () => {
     if (currentTeamId === API_NO_TEAM_ID) {
       return (
-        globalConfig?.mdm.macos_setup.enable_release_device_manually || false
+        globalConfig?.mdm.setup_experience
+          .apple_enable_release_device_manually || false
       );
     }
-    return teamConfig?.mdm?.macos_setup.enable_release_device_manually || false;
+    return (
+      teamConfig?.mdm?.setup_experience.apple_enable_release_device_manually ||
+      false
+    );
   };
 
   const onUpload = () => {
@@ -87,48 +108,96 @@ const SetupAssistant = ({ currentTeamId }: ISetupAssistantProps) => {
   const defaultReleaseDeviceSetting = getReleaseDeviceSetting();
 
   const isLoading =
-    isLoadingGlobalConfig || isLoadingTeamConfig || isLoadingEnrollmentProfile;
-  const enrollmentProfileNotFound = enrollmentProfileError?.status === 404;
+    isLoadingGlobalConfig ||
+    isLoadingTeamConfig ||
+    isLoadingEnrollmentProfile ||
+    isLoadingDefaultEnrollmentProfile;
+
+  const renderContent = () => {
+    if (isLoading) {
+      return <Spinner />;
+    }
+
+    const mdmNotConfigured = !(
+      globalConfig?.mdm.enabled_and_configured &&
+      globalConfig?.mdm.apple_bm_enabled_and_configured
+    );
+
+    if (mdmNotConfigured) {
+      return (
+        <EmptyState
+          variant="form"
+          header="Additional configuration required"
+          info="Supported on macOS. Turn on MDM and automatic enrollment to customize."
+          primaryButton={
+            <Button onClick={() => router.push(PATHS.ADMIN_INTEGRATIONS_MDM)}>
+              Turn on
+            </Button>
+          }
+        />
+      );
+    }
+
+    return (
+      <>
+        {enrollmentProfileNotFound || !enrollmentProfileData ? (
+          <>
+            {defaultEnrollmentProfileData && (
+              <SetupAssistantProfileCard
+                profile={
+                  defaultEnrollmentProfileData as IAppleSetupEnrollmentProfileResponse
+                }
+                defaultProfile
+              />
+            )}
+            <SetupAssistantProfileUploader
+              currentTeamId={currentTeamId}
+              onUpload={onUpload}
+            />
+          </>
+        ) : (
+          <SetupAssistantProfileCard
+            profile={enrollmentProfileData}
+            onDelete={() => setShowDeleteProfileModal(true)}
+          />
+        )}
+        <AdvancedOptionsForm
+          key={String(defaultReleaseDeviceSetting)}
+          currentTeamId={currentTeamId}
+          defaultReleaseDevice={defaultReleaseDeviceSetting}
+        />
+      </>
+    );
+  };
 
   return (
     <section className={baseClass}>
-      <SectionHeader title="Setup assistant" />
-      {isLoading ? (
-        <Spinner />
-      ) : (
-        <SetupExperienceContentContainer>
-          <div className={`${baseClass}__upload-container`}>
-            <p className={`${baseClass}__section-description`}>
-              Add an automatic enrollment profile to customize the macOS Setup
-              Assistant.{" "}
-              <CustomLink
-                url="https://fleetdm.com/learn-more-about/setup-assistant"
-                text="Learn how"
-                newTab
-              />
-            </p>
-            {enrollmentProfileNotFound || !enrollmentProfileData ? (
-              <SetupAssistantProfileUploader
-                currentTeamId={currentTeamId}
-                onUpload={onUpload}
-              />
-            ) : (
-              <SetupAssistantProfileCard
-                profile={enrollmentProfileData}
-                onDelete={() => setShowDeleteProfileModal(true)}
-              />
-            )}
-            <AdvancedOptionsForm
-              key={String(defaultReleaseDeviceSetting)}
-              currentTeamId={currentTeamId}
-              defaultReleaseDevice={defaultReleaseDeviceSetting}
+      <SectionHeader
+        title="Setup Assistant"
+        details={
+          <CustomLink
+            url="https://fleetdm.com/learn-more-about/setup-assistant"
+            text="Preview end user experience"
+            newTab
+          />
+        }
+      />
+      <PageDescription
+        variant="right-panel"
+        content={
+          <>
+            Add an automatic enrollment profile to customize Setup Assistant.{" "}
+            <CustomLink
+              url="https://fleetdm.com/learn-more-about/enrollment-profiles"
+              text="Learn more"
+              newTab
             />
-          </div>
-          <div className={`${baseClass}__preview-container`}>
-            <SetupAssistantPreview />
-          </div>
-        </SetupExperienceContentContainer>
-      )}
+          </>
+        }
+      />
+      <SetupExperienceContentContainer>
+        {renderContent()}
+      </SetupExperienceContentContainer>
       {showDeleteProfileModal && (
         <DeleteAutoEnrollmentProfile
           currentTeamId={currentTeamId}

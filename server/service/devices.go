@@ -6,21 +6,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
+	"path"
 	"time"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/authz"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	hostctx "github.com/fleetdm/fleet/v4/server/contexts/host"
-	"github.com/fleetdm/fleet/v4/server/contexts/logging"
 	"github.com/fleetdm/fleet/v4/server/fleet"
-	apple_mdm "github.com/fleetdm/fleet/v4/server/mdm/apple"
-	mdmcrypto "github.com/fleetdm/fleet/v4/server/mdm/crypto"
 	"github.com/fleetdm/fleet/v4/server/ptr"
-	"github.com/go-kit/log/level"
 )
 
 /////////////////////////////////////////////////////////////////////////////////
@@ -98,6 +95,55 @@ func (svc *Service) GetFleetDesktopSummary(ctx context.Context) (fleet.DesktopSu
 }
 
 /////////////////////////////////////////////////////////////////////////////////
+// POST /device/{token}/sso
+/////////////////////////////////////////////////////////////////////////////////
+
+type initiateDeviceSSORequest struct {
+	Token string `url:"token"`
+}
+
+func (r *initiateDeviceSSORequest) deviceAuthToken() string { return r.Token }
+
+type initiateDeviceSSOResponse struct {
+	URL string `json:"url"`
+	Err error  `json:"error,omitempty"`
+	// Cookie fields
+	sessionID       string
+	sessionDuration time.Duration
+}
+
+func (r initiateDeviceSSOResponse) Error() error { return r.Err }
+
+func (r initiateDeviceSSOResponse) SetCookies(_ context.Context, w http.ResponseWriter) {
+	if r.sessionID == "" {
+		return
+	}
+	setSSOCookie(w, r.sessionID, int(r.sessionDuration.Seconds()))
+}
+
+func initiateDeviceSSOEndpoint(ctx context.Context, request any, svc fleet.Service) (fleet.Errorer, error) {
+	req := request.(*initiateDeviceSSORequest)
+	initiation, err := svc.InitiateDeviceSSO(ctx, "/device/"+req.Token)
+	if err != nil {
+		return initiateDeviceSSOResponse{Err: err}, nil
+	}
+	return initiateDeviceSSOResponse{
+		URL:             initiation.IdPURL,
+		sessionID:       initiation.SessionID,
+		sessionDuration: initiation.SessionDuration,
+	}, nil
+}
+
+func (svc *Service) InitiateDeviceSSO(ctx context.Context, deviceURL string) (*fleet.DeviceSSOInitiation, error) {
+	svc.authz.SkipAuthorization(ctx)
+	return nil, fleet.ErrMissingLicense
+}
+
+func (svc *Service) RequireDeviceSSOSession(ctx context.Context, host *fleet.Host, sessionID string) error {
+	return nil
+}
+
+/////////////////////////////////////////////////////////////////////////////////
 // Get Current Device's Host
 /////////////////////////////////////////////////////////////////////////////////
 
@@ -110,11 +156,24 @@ func (r *getDeviceHostRequest) deviceAuthToken() string {
 	return r.Token
 }
 
+// deviceHostDetailResponse wraps the host detail response to shadow the
+// host's policies with their device-safe representation, which excludes the
+// policy author's identity and the raw SQL query (this is a device-authenticated
+// endpoint, so it must not expose admin-only data).
+type deviceHostDetailResponse struct {
+	*fleet.HostDetailResponse
+	Policies *[]*fleet.DevicePolicy `json:"policies,omitempty"`
+}
+
 type getDeviceHostResponse struct {
-	Host                      *HostDetailResponse      `json:"host"`
-	SelfService               bool                     `json:"self_service"`
-	OrgLogoURL                string                   `json:"org_logo_url"`
+	Host *deviceHostDetailResponse `json:"host"`
+	// Deprecated: use OrgLogoURLDarkMode.
+	OrgLogoURL string `json:"org_logo_url"`
+	// Deprecated: use OrgLogoURLLightMode.
 	OrgLogoURLLightBackground string                   `json:"org_logo_url_light_background"`
+	OrgLogoURLDarkMode        string                   `json:"org_logo_url_dark_mode"`
+	OrgLogoURLLightMode       string                   `json:"org_logo_url_light_mode"`
+	SelfService               bool                     `json:"self_service"`
 	OrgContactURL             string                   `json:"org_contact_url"`
 	Err                       error                    `json:"error,omitempty"`
 	License                   fleet.LicenseInfo        `json:"license"`
@@ -160,6 +219,30 @@ func getDeviceHostEndpoint(ctx context.Context, request interface{}, svc fleet.S
 		return getDeviceHostResponse{Err: err}, nil
 	}
 
+	// Scrub sensitive data from the host response for iOS and iPadOS devices
+	if authzCtx, ok := authz.FromContext(ctx); ok && authzCtx.AuthnMethod() == authz.AuthnDeviceURL {
+		if host.Platform == "ios" || host.Platform == "ipados" {
+			resp.HardwareSerial = ""
+			resp.UUID = ""
+			resp.PrimaryMac = ""
+			resp.TeamName = nil
+			resp.MDM.Profiles = nil
+			resp.Labels = nil
+			resp.Hostname = ""
+			resp.ComputerName = ""
+			resp.DisplayText = ""
+			resp.DisplayName = ""
+			resp.HostMDMAppleDeviceVitals = fleet.HostMDMAppleDeviceVitals{}
+
+			// Scrub sensitive data from the license response
+			scrubbedLicense := *license
+			scrubbedLicense.Organization = ""
+			scrubbedLicense.DeviceCount = 0
+			scrubbedLicense.Expiration = time.Time{}
+			license = &scrubbedLicense
+		}
+	}
+
 	resp.DEPAssignedToFleet = ptr.Bool(false)
 	if ac.MDM.EnabledAndConfigured && license.IsPremium() {
 		hdep, err := svc.GetHostDEPAssignment(ctx, host)
@@ -170,14 +253,23 @@ func getDeviceHostEndpoint(ctx context.Context, request interface{}, svc fleet.S
 	}
 
 	softwareInventoryEnabled := ac.Features.EnableSoftwareInventory
+	requireAllSoftware := ac.MDM.MacOSSetup.RequireAllSoftware
+	var conditionalAccessEnabled bool
 	if resp.TeamID != nil {
 		// load the team to get the device's team's software inventory config.
 		tm, err := svc.GetTeam(ctx, *resp.TeamID)
-		if err != nil && !fleet.IsNotFound(err) {
+		if errors.Is(err, fleet.ErrMissingLicense) {
+			// Fleet Free does not support teams, so team-specific config
+			// (software inventory, conditional access, etc.) falls back to
+			// the global defaults set above.
+			tm = nil
+		} else if err != nil && !fleet.IsNotFound(err) {
 			return getDeviceHostResponse{Err: err}, nil
 		}
 		if tm != nil {
 			softwareInventoryEnabled = tm.Config.Features.EnableSoftwareInventory // TODO: We should look for opportunities to fix the confusing name of the `global_config` object in the API response. Also, how can we better clarify/document the expected order of precedence for team and global feature flags?
+			requireAllSoftware = tm.Config.MDM.MacOSSetup.RequireAllSoftware
+			conditionalAccessEnabled = ac.ConditionalAccess.OktaConfigured() && tm.Config.Integrations.ConditionalAccessEnabled.Valid && tm.Config.Integrations.ConditionalAccessEnabled.Value
 		}
 	}
 
@@ -194,25 +286,45 @@ func getDeviceHostEndpoint(ctx context.Context, request interface{}, svc fleet.S
 			// TODO(mna): It currently only returns the Apple enabled and configured,
 			// regardless of the platform of the device. See
 			// https://github.com/fleetdm/fleet/pull/19304#discussion_r1618792410.
-			EnabledAndConfigured: ac.MDM.EnabledAndConfigured,
+			EnabledAndConfigured:             ac.MDM.EnabledAndConfigured,
+			RequireAllSoftware:               requireAllSoftware,
+			OnlyAllowAppleBusinessEnrollment: ac.MDM.OnlyAllowAppleBusinessEnrollment,
 		},
 		Features: fleet.DeviceFeatures{
-			EnableSoftwareInventory: softwareInventoryEnabled,
+			EnableSoftwareInventory:       softwareInventoryEnabled,
+			EnableConditionalAccess:       conditionalAccessEnabled,
+			EnableConditionalAccessBypass: ac.ConditionalAccess != nil && ac.ConditionalAccess.BypassEnabled(),
 		},
 	}
 
+	deviceHost := &deviceHostDetailResponse{HostDetailResponse: resp}
+	if resp.Policies != nil {
+		devicePolicies := fleet.HostPoliciesToDevicePolicies(*resp.Policies)
+		deviceHost.Policies = &devicePolicies
+		// defense-in-depth: the shadow field above already wins over the
+		// embedded policies when marshaling, but clear the admin-facing
+		// policies anyway so they cannot leak if the wrapped response is ever
+		// marshaled directly.
+		resp.Policies = nil
+	}
+
 	return getDeviceHostResponse{
-		Host:          resp,
-		OrgLogoURL:    ac.OrgInfo.OrgLogoURL,
-		OrgContactURL: ac.OrgInfo.ContactURL,
-		License:       *license,
-		GlobalConfig:  deviceGlobalConfig,
-		SelfService:   hasSelfService,
+		Host:                      deviceHost,
+		OrgLogoURL:                ac.OrgInfo.OrgLogoURL,
+		OrgLogoURLLightBackground: ac.OrgInfo.OrgLogoURLLightBackground,
+		OrgLogoURLDarkMode:        ac.OrgInfo.OrgLogoURLDarkMode,
+		OrgLogoURLLightMode:       ac.OrgInfo.OrgLogoURLLightMode,
+		OrgContactURL:             ac.OrgInfo.ContactURL,
+		License:                   *license,
+		GlobalConfig:              deviceGlobalConfig,
+		SelfService:               hasSelfService,
 	}, nil
 }
 
 func (svc *Service) GetHostDEPAssignment(ctx context.Context, host *fleet.Host) (*fleet.HostDEPAssignment, error) {
-	alreadyAuthd := svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken)
+	alreadyAuthd := svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) ||
+		svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceCertificate) ||
+		svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceURL)
 	if !alreadyAuthd {
 		if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
 			return nil, err
@@ -241,6 +353,91 @@ func (svc *Service) AuthenticateDevice(ctx context.Context, authToken string) (*
 		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: invalid device authentication token"))
 	default:
 		return nil, false, ctxerr.Wrap(ctx, err, "authenticate device")
+	}
+
+	// iOS/iPadOS must use certificate authentication.
+	if host.Platform == "ios" || host.Platform == "ipados" {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: iOS and iPadOS devices must use certificate authentication"))
+	}
+
+	return host, svc.debugEnabledForHost(ctx, host.ID), nil
+}
+
+// AuthenticateDeviceByCertificate returns the host identified by the certificate
+// serial number and host UUID. This is used for iOS/iPadOS devices accessing the
+// My Device page via client certificate authentication. The certificate must match
+// the host's identity certificate, and the host must be iOS or iPadOS.
+func (svc *Service) AuthenticateDeviceByCertificate(ctx context.Context, certSerial uint64, hostUUID string) (*fleet.Host, bool, error) {
+	// skipauth: Authorization is currently for user endpoints only.
+	svc.authz.SkipAuthorization(ctx)
+
+	if certSerial == 0 {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: missing certificate serial"))
+	}
+
+	if hostUUID == "" {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: missing host UUID"))
+	}
+
+	// Look up the MDM SCEP certificate by serial number to get the device UUID
+	certDeviceUUID, err := svc.ds.GetMDMSCEPCertBySerial(ctx, certSerial)
+	switch {
+	case err == nil:
+		// OK
+	case fleet.IsNotFound(err):
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: invalid or missing certificate"))
+	default:
+		return nil, false, ctxerr.Wrap(ctx, err, "lookup certificate by serial")
+	}
+
+	// Verify certificate's device UUID matches the requested host UUID
+	if certDeviceUUID != hostUUID {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: certificate does not match host"))
+	}
+
+	// Look up the host by UUID
+	host, err := svc.ds.HostByIdentifier(ctx, hostUUID)
+	switch {
+	case err == nil:
+		// OK
+	case fleet.IsNotFound(err):
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: host not found"))
+	default:
+		return nil, false, ctxerr.Wrap(ctx, err, "lookup host by UUID")
+	}
+
+	// Verify host platform is iOS or iPadOS
+	if host.Platform != "ios" && host.Platform != "ipados" {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: certificate authentication only supported for iOS and iPadOS devices"))
+	}
+
+	return host, svc.debugEnabledForHost(ctx, host.ID), nil
+}
+
+// AuthenticateIDeviceByURL returns the host identified by the URL UUID.
+// This is used for iOS/iPadOS devices (iDevices) accessing endpoints via a unique URL parameter.
+// Returns an error if the UUID doesn't exist or if the host is not iOS/iPadOS.
+func (svc *Service) AuthenticateIDeviceByURL(ctx context.Context, urlUUID string) (*fleet.Host, bool, error) {
+	// skipauth: Authorization is currently for user endpoints only.
+	svc.authz.SkipAuthorization(ctx)
+
+	if urlUUID == "" {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: missing host UUID"))
+	}
+
+	host, err := svc.ds.HostByUUID(ctx, urlUUID)
+	switch {
+	case err == nil:
+		// OK
+	case fleet.IsNotFound(err):
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: host not found"))
+	default:
+		return nil, false, ctxerr.Wrap(ctx, err, "lookup host by UUID")
+	}
+
+	// Verify host platform is iOS or iPadOS
+	if host.Platform != "ios" && host.Platform != "ipados" {
+		return nil, false, ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("authentication error: URL authentication only supported for iOS and iPadOS devices"))
 	}
 
 	return host, svc.debugEnabledForHost(ctx, host.ID), nil
@@ -337,8 +534,8 @@ func (r *listDevicePoliciesRequest) deviceAuthToken() string {
 }
 
 type listDevicePoliciesResponse struct {
-	Err      error               `json:"error,omitempty"`
-	Policies []*fleet.HostPolicy `json:"policies"`
+	Err      error                 `json:"error,omitempty"`
+	Policies []*fleet.DevicePolicy `json:"policies"`
 }
 
 func (r listDevicePoliciesResponse) Error() error { return r.Err }
@@ -358,12 +555,91 @@ func listDevicePoliciesEndpoint(ctx context.Context, request interface{}, svc fl
 	return listDevicePoliciesResponse{Policies: data}, nil
 }
 
-func (svc *Service) ListDevicePolicies(ctx context.Context, host *fleet.Host) ([]*fleet.HostPolicy, error) {
+func (svc *Service) ListDevicePolicies(ctx context.Context, host *fleet.Host) ([]*fleet.DevicePolicy, error) {
 	// skipauth: No authorization check needed due to implementation returning
 	// only license error.
 	svc.authz.SkipAuthorization(ctx)
 
 	return nil, fleet.ErrMissingLicense
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Bypass conditional access
+////////////////////////////////////////////////////////////////////////////////
+
+type bypassConditionalAccessRequest struct {
+	Token string `url:"token"`
+}
+
+func (r *bypassConditionalAccessRequest) deviceAuthToken() string {
+	return r.Token
+}
+
+type bypassConditionalAccessResponse struct {
+	Err error `json:"error,omitempty"`
+}
+
+func (r bypassConditionalAccessResponse) Error() error { return r.Err }
+
+func bypassConditionalAccessEndpoint(ctx context.Context, request any, svc fleet.Service) (fleet.Errorer, error) {
+	host, ok := hostctx.FromContext(ctx)
+	if !ok {
+		err := ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("internal error: missing host from request context"))
+		return bypassConditionalAccessResponse{Err: err}, nil
+	}
+
+	if err := svc.BypassConditionalAccess(ctx, host); err != nil {
+		return bypassConditionalAccessResponse{Err: err}, nil
+	}
+
+	return bypassConditionalAccessResponse{}, nil
+}
+
+func (svc *Service) BypassConditionalAccess(ctx context.Context, host *fleet.Host) error {
+	// skipauth: No authorization check needed due to implementation returning
+	// only license error.
+	svc.authz.SkipAuthorization(ctx)
+
+	return fleet.ErrMissingLicense
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Resend configuration profile
+////////////////////////////////////////////////////////////////////////////////
+
+type resendDeviceConfigurationProfileRequest struct {
+	Token       string `url:"token"`
+	ProfileUUID string `url:"profile_uuid"`
+}
+
+func (r *resendDeviceConfigurationProfileRequest) deviceAuthToken() string {
+	return r.Token
+}
+
+type resendDeviceConfigurationProfileResponse struct {
+	Err error `json:"error,omitempty"`
+}
+
+func (r resendDeviceConfigurationProfileResponse) Error() error { return r.Err }
+
+func (r resendDeviceConfigurationProfileResponse) Status() int { return http.StatusAccepted }
+
+func resendDeviceConfigurationProfileEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
+	host, ok := hostctx.FromContext(ctx)
+	if !ok {
+		err := ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("internal error: missing host from request context"))
+		return resendDeviceConfigurationProfileResponse{Err: err}, nil
+	}
+
+	req := request.(*resendDeviceConfigurationProfileRequest)
+	err := svc.ResendDeviceHostMDMProfile(ctx, host, req.ProfileUUID)
+	if err != nil {
+		return resendDeviceConfigurationProfileResponse{
+			Err: err,
+		}, nil
+	}
+
+	return resendDeviceConfigurationProfileResponse{}, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -387,7 +663,7 @@ func getDeviceMDMCommandResultsEndpoint(ctx context.Context, request interface{}
 	}
 
 	req := request.(*getDeviceMDMCommandResultsRequest)
-	results, err := svc.GetMDMCommandResults(ctx, req.CommandUUID)
+	results, err := svc.GetMDMCommandResults(ctx, req.CommandUUID, "")
 	if err != nil {
 		return getMDMCommandResultsResponse{
 			Err: err,
@@ -454,6 +730,90 @@ func (svc *Service) GetTransparencyURL(ctx context.Context) (string, error) {
 	return transparencyURL, nil
 }
 
+// ///////////////////////////////////////////////////////////////////////////////
+// Software title icons
+// ///////////////////////////////////////////////////////////////////////////////
+type getDeviceSoftwareIconRequest struct {
+	Token           string `url:"token"`
+	SoftwareTitleID uint   `url:"software_title_id"`
+}
+
+func (r *getDeviceSoftwareIconRequest) deviceAuthToken() string {
+	return r.Token
+}
+
+type getDeviceSoftwareIconResponse struct {
+	Err         error  `json:"error,omitempty"`
+	ImageData   []byte `json:"-"`
+	ContentType string `json:"-"`
+	Filename    string `json:"-"`
+	Size        int64  `json:"-"`
+}
+
+func (r getDeviceSoftwareIconResponse) Error() error { return r.Err }
+
+type getDeviceSoftwareIconRedirectResponse struct {
+	Err         error  `json:"error,omitempty"`
+	RedirectURL string `json:"-"`
+}
+
+func (r getDeviceSoftwareIconRedirectResponse) Error() error { return r.Err }
+
+func (r getDeviceSoftwareIconRedirectResponse) HijackRender(ctx context.Context, w http.ResponseWriter) {
+	if r.Err != nil {
+		return
+	}
+
+	w.Header().Set("Location", r.RedirectURL)
+	w.WriteHeader(http.StatusFound)
+}
+
+func (r getDeviceSoftwareIconResponse) HijackRender(ctx context.Context, w http.ResponseWriter) {
+	w.Header().Set("Content-Type", r.ContentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, r.Filename))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", r.Size))
+
+	_, _ = w.Write(r.ImageData)
+}
+
+func getDeviceSoftwareIconEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
+	host, ok := hostctx.FromContext(ctx)
+	if !ok {
+		err := ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("internal error: missing host from request context"))
+		return getDeviceSoftwareIconResponse{Err: err}, nil
+	}
+
+	req := request.(*getDeviceSoftwareIconRequest)
+	var teamID uint
+	if host.TeamID != nil {
+		teamID = *host.TeamID
+	}
+	iconData, size, filename, err := svc.GetDeviceSoftwareIconsTitleIcon(ctx, teamID, req.SoftwareTitleID)
+	if err != nil {
+		var vppErr *fleet.VPPIconAvailable
+		if errors.As(err, &vppErr) {
+			// 302 redirect to vpp app IconURL
+			return getDeviceSoftwareIconRedirectResponse{RedirectURL: vppErr.IconURL}, nil
+		}
+		return getDeviceSoftwareIconResponse{Err: err}, nil
+	}
+
+	return getDeviceSoftwareIconResponse{
+		ImageData:   iconData,
+		ContentType: "image/png", // only type of icon we currently allow
+		Filename:    filename,
+		Size:        size,
+	}, nil
+}
+
+func (svc *Service) GetDeviceSoftwareIconsTitleIcon(ctx context.Context, teamID uint, titleID uint) ([]byte, int64, string, error) {
+	// skipauth: No authorization check needed due to implementation returning
+	// only license error.
+	svc.authz.SkipAuthorization(ctx)
+
+	return nil, 0, "", fleet.ErrMissingLicense
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Receive errors from the client
 ////////////////////////////////////////////////////////////////////////////////
@@ -470,11 +830,9 @@ func (f *fleetdErrorRequest) deviceAuthToken() string {
 // Since we're directly storing what we get in Redis, limit the request size to
 // 5MB, this combined with the rate limit of this endpoint should be enough to
 // prevent a malicious actor.
-const maxFleetdErrorReportSize int64 = 5 * 1024 * 1024
-
+// body limiting is done at the handler level
 func (f *fleetdErrorRequest) DecodeBody(ctx context.Context, r io.Reader, u url.Values, c []*x509.Certificate) error {
-	limitedReader := io.LimitReader(r, maxFleetdErrorReportSize+1)
-	decoder := json.NewDecoder(limitedReader)
+	decoder := json.NewDecoder(r)
 
 	for {
 		if err := decoder.Decode(&f.FleetdError); err == io.EOF {
@@ -503,17 +861,14 @@ func fleetdError(ctx context.Context, request interface{}, svc fleet.Service) (f
 }
 
 func (svc *Service) LogFleetdError(ctx context.Context, fleetdError fleet.FleetdError) error {
-	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) {
+	// iOS/iPadOS devices don't have fleetd, so URL auth is not allowed here.
+	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) &&
+		!svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceCertificate) {
 		return ctxerr.Wrap(ctx, fleet.NewPermissionError("forbidden: only device-authenticated hosts can access this endpoint"))
 	}
 
 	err := ctxerr.WrapWithData(ctx, fleetdError, "receive fleetd error", fleetdError.ToMap())
-	level.Warn(svc.logger).Log(
-		"msg",
-		"fleetd error",
-		"error",
-		err,
-	)
+	svc.logger.WarnContext(ctx, "fleetd error", "error", err)
 	// Send to Redis/telemetry (if enabled)
 	ctxerr.Handle(ctx, err)
 
@@ -533,26 +888,10 @@ func (r *getDeviceMDMManualEnrollProfileRequest) deviceAuthToken() string {
 }
 
 type getDeviceMDMManualEnrollProfileResponse struct {
-	// Profile field is used in HijackRender for the response.
-	Profile []byte
+	// EnrollURL field is used in HijackRender for the response.
+	EnrollURL string `json:"enroll_url,omitempty"`
 
 	Err error `json:"error,omitempty"`
-}
-
-func (r getDeviceMDMManualEnrollProfileResponse) HijackRender(ctx context.Context, w http.ResponseWriter) {
-	// make the browser download the content to a file
-	w.Header().Add("Content-Disposition", `attachment; filename="fleet-mdm-enrollment-profile.mobileconfig"`)
-	// explicitly set the content length before the write, so the caller can
-	// detect short writes (if it fails to send the full content properly)
-	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(r.Profile)), 10))
-	// this content type will make macos open the profile with the proper application
-	w.Header().Set("Content-Type", "application/x-apple-aspen-config; charset=utf-8")
-	// prevent detection of content, obey the provided content-type
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if n, err := w.Write(r.Profile); err != nil {
-		logging.WithExtras(ctx, "err", err, "written", n)
-	}
 }
 
 func (r getDeviceMDMManualEnrollProfileResponse) Error() error { return r.Err }
@@ -565,22 +904,28 @@ func getDeviceMDMManualEnrollProfileEndpoint(ctx context.Context, request interf
 		return getDeviceMDMManualEnrollProfileResponse{Err: err}, nil
 	}
 
-	profile, err := svc.GetDeviceMDMAppleEnrollmentProfile(ctx)
+	enrollURL, err := svc.GetDeviceMDMAppleEnrollmentProfile(ctx)
 	if err != nil {
 		return getDeviceMDMManualEnrollProfileResponse{Err: err}, nil
 	}
-	return getDeviceMDMManualEnrollProfileResponse{Profile: profile}, nil
+	return getDeviceMDMManualEnrollProfileResponse{EnrollURL: enrollURL.String()}, nil
 }
 
-func (svc *Service) GetDeviceMDMAppleEnrollmentProfile(ctx context.Context) ([]byte, error) {
+func (svc *Service) GetDeviceMDMAppleEnrollmentProfile(ctx context.Context) (*url.URL, error) {
 	// must be device-authenticated, no additional authorization is required
-	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) {
+	// iOS/iPadOS devices are enrolled via MDM profile or ABM, so URL auth is not allowed here.
+	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) &&
+		!svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceCertificate) {
 		return nil, ctxerr.Wrap(ctx, fleet.NewPermissionError("forbidden: only device-authenticated hosts can access this endpoint"))
 	}
 
 	cfg, err := svc.ds.AppConfig(ctx)
 	if err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "fetching app config")
+	}
+
+	if cfg.MDM.OnlyAllowAppleBusinessEnrollment {
+		return nil, &fleet.ABOnlyEnrollmentForbiddenError{}
 	}
 
 	host, ok := hostctx.FromContext(ctx)
@@ -601,19 +946,22 @@ func (svc *Service) GetDeviceMDMAppleEnrollmentProfile(ctx context.Context) ([]b
 	if len(tmSecrets) == 0 {
 		return nil, &fleet.BadRequestError{Message: "unable to find an enroll secret to generate enrollment profile"}
 	}
-
-	enrollSecret := tmSecrets[0].Secret
-	profBytes, err := apple_mdm.GenerateOTAEnrollmentProfileMobileconfig(cfg.OrgInfo.OrgName, cfg.MDMUrl(), enrollSecret)
-	if err != nil {
-		return nil, ctxerr.Wrap(ctx, err, "generating ota mobileconfig file for manual enrollment")
+	var enrollSecret fleet.EnrollSecret
+	for _, s := range tmSecrets {
+		if s.CreatedAt.After(enrollSecret.CreatedAt) {
+			enrollSecret = *s
+		}
 	}
-
-	signed, err := mdmcrypto.Sign(ctx, profBytes, svc.ds)
+	url, err := url.Parse(cfg.MDMUrl())
 	if err != nil {
-		return nil, ctxerr.Wrap(ctx, err, "signing profile")
+		return nil, ctxerr.Wrap(ctx, err, "parsing MDM URL from config")
 	}
+	url.Path = path.Join(url.Path, "enroll")
+	q := url.Query()
+	q.Set("enroll_secret", enrollSecret.Secret)
+	url.RawQuery = q.Encode()
 
-	return signed, nil
+	return url, nil
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -721,6 +1069,11 @@ func getDeviceSoftwareEndpoint(ctx context.Context, request interface{}, svc fle
 
 	req := request.(*getDeviceSoftwareRequest)
 	res, meta, err := svc.ListHostSoftware(ctx, host.ID, req.HostSoftwareTitleListOptions)
+	for _, s := range res {
+		// mutate HostSoftwareWithInstaller records for my device page
+		s.ForMyDevicePage(req.Token)
+	}
+
 	if err != nil {
 		return getDeviceSoftwareResponse{Err: err}, nil
 	}
@@ -753,6 +1106,7 @@ func (r *listDeviceCertificatesRequest) deviceAuthToken() string {
 type listDeviceCertificatesResponse struct {
 	Certificates []*fleet.HostCertificatePayload `json:"certificates"`
 	Meta         *fleet.PaginationMetadata       `json:"meta,omitempty"`
+	Count        uint                            `json:"count"`
 	Err          error                           `json:"error,omitempty"`
 }
 
@@ -773,5 +1127,75 @@ func listDeviceCertificatesEndpoint(ctx context.Context, request interface{}, sv
 	if res == nil {
 		res = []*fleet.HostCertificatePayload{}
 	}
-	return listDeviceCertificatesResponse{Certificates: res, Meta: meta}, nil
+	return listDeviceCertificatesResponse{Certificates: res, Meta: meta, Count: meta.TotalResults}, nil
+}
+
+/////////////////////////////////////////////////////////////////////////////////
+// Get "Setup experience" status.
+/////////////////////////////////////////////////////////////////////////////////
+
+type getDeviceSetupExperienceStatusRequest struct {
+	Token string `url:"token"`
+}
+
+func (r *getDeviceSetupExperienceStatusRequest) deviceAuthToken() string {
+	return r.Token
+}
+
+type getDeviceSetupExperienceStatusResponse struct {
+	Results *fleet.DeviceSetupExperienceStatusPayload `json:"setup_experience_results,omitempty"`
+	Err     error                                     `json:"error,omitempty"`
+}
+
+func (r getDeviceSetupExperienceStatusResponse) Error() error { return r.Err }
+
+func getDeviceSetupExperienceStatusEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (fleet.Errorer, error) {
+	req, ok := request.(*getDeviceSetupExperienceStatusRequest)
+	if !ok {
+		return nil, fmt.Errorf("internal error: invalid request type: %T", request)
+	}
+	results, err := svc.GetDeviceSetupExperienceStatus(ctx)
+	if err != nil {
+		return &getDeviceSetupExperienceStatusResponse{Err: err}, nil
+	}
+
+	// only software can have custom icons, so no need to iterate over Scripts
+	for _, r := range results.Software {
+		// mutate SetupExperienceStatusResult records for my device page
+		// (same approach used for HostSoftwareWithInstaller)
+		r.ForMyDevicePage(req.Token)
+	}
+
+	return &getDeviceSetupExperienceStatusResponse{Results: results}, nil
+}
+
+func (svc *Service) GetDeviceSetupExperienceStatus(ctx context.Context) (*fleet.DeviceSetupExperienceStatusPayload, error) {
+	// skipauth: No authorization check needed due to implementation returning
+	// only license error.
+	svc.authz.SkipAuthorization(ctx)
+
+	return nil, fleet.ErrMissingLicense
+}
+
+type deviceSendAPNSPingRequest struct {
+	Token string `url:"token"`
+}
+
+func (r *deviceSendAPNSPingRequest) deviceAuthToken() string {
+	return r.Token
+}
+
+func deviceSendAPNSPing(ctx context.Context, request any, svc fleet.Service) (fleet.Errorer, error) {
+	host, ok := hostctx.FromContext(ctx)
+	if !ok {
+		err := ctxerr.Wrap(ctx, fleet.NewAuthRequiredError("internal error: missing host from request context"))
+		return sendAPNSPingResponse{Err: err}, nil
+	}
+
+	err := svc.DeviceSendAPNSPing(ctx, host)
+	if err != nil {
+		return sendAPNSPingResponse{Err: err}, nil
+	}
+
+	return sendAPNSPingResponse{Err: nil}, nil
 }

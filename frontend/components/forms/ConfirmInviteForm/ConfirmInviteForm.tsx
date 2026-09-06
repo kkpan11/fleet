@@ -3,9 +3,8 @@ import React, { useCallback, useState } from "react";
 import validateEquality from "components/forms/validators/validate_equality";
 
 import Button from "components/buttons/Button";
-// @ts-ignore
 import InputField from "components/forms/fields/InputField";
-import { IFormField } from "interfaces/form_field";
+import { IInputFieldParseTarget } from "interfaces/form_field";
 
 const baseClass = "confirm-invite-page__form";
 export interface IConfirmInviteFormData {
@@ -69,7 +68,7 @@ const ConfirmInviteForm = ({
 
   const { name, password, password_confirmation } = formData;
 
-  const onInputChange = ({ name: n, value }: IFormField) => {
+  const onInputChange = ({ name: n, value }: IInputFieldParseTarget) => {
     const newFormData = { ...formData, [n]: value };
     setFormData(newFormData);
     const newErrs = validate(newFormData);
@@ -111,7 +110,8 @@ const ConfirmInviteForm = ({
         value={name}
         error={formErrors.name}
         parseTarget
-        maxLength={80}
+        inputOptions={{ maxLength: 80 }}
+        ignore1password={false}
       />
       <InputField
         label="Password"
@@ -123,6 +123,7 @@ const ConfirmInviteForm = ({
         value={password}
         error={formErrors.password}
         parseTarget
+        ignore1password={false}
       />
       <InputField
         label="Confirm password"
@@ -133,14 +134,17 @@ const ConfirmInviteForm = ({
         value={password_confirmation}
         error={formErrors.password_confirmation}
         parseTarget
+        ignore1password={false}
       />
-      <Button
-        type="submit"
-        disabled={Object.keys(formErrors).length > 0}
-        className="confirm-invite-button"
-      >
-        Submit
-      </Button>
+      <div className="button-wrap--center">
+        <Button
+          type="submit"
+          disabled={Object.keys(formErrors).length > 0}
+          size="wide"
+        >
+          Submit
+        </Button>
+      </div>
     </form>
   );
 };

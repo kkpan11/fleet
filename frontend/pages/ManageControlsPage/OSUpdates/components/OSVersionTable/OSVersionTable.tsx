@@ -1,9 +1,11 @@
 import React, { useCallback } from "react";
+import { Row } from "react-table";
 import { InjectedRouter } from "react-router";
 
 import PATHS from "router/paths";
 import { IOperatingSystemVersion } from "interfaces/operating_system";
 import { getNextLocationPath } from "utilities/helpers";
+import { getPathWithQueryParams } from "utilities/url";
 
 import { ITableQueryData } from "components/TableContainer/TableContainer";
 import TableContainer from "components/TableContainer";
@@ -13,6 +15,14 @@ import OSVersionsEmptyState from "../OSVersionsEmptyState";
 import { parseOSUpdatesCurrentVersionsQueryParams } from "../CurrentVersionSection/CurrentVersionSection";
 
 const baseClass = "os-version-table";
+
+interface IRowProps extends Row {
+  original: {
+    id?: number;
+    name_only?: string;
+    version?: string;
+  };
+}
 
 interface IOSVersionTableProps {
   router: InjectedRouter;
@@ -55,7 +65,7 @@ const OSVersionTable = ({
   const generateNewQueryParams = useCallback(
     (newTableQuery: ITableQueryData, changedParam: string) => {
       const newQueryParam: Record<string, string | number | undefined> = {
-        team_id: currentTeamId,
+        fleet_id: currentTeamId,
         order_direction: newTableQuery.sortDirection,
         order_key: newTableQuery.sortHeader,
         page: changedParam === "pageIndex" ? newTableQuery.pageIndex : 0,
@@ -89,6 +99,22 @@ const OSVersionTable = ({
     [determineQueryParamChange, generateNewQueryParams, router]
   );
 
+  const onSelectSingleRow = useCallback(
+    (row: IRowProps) => {
+      const { name_only, version } = row.original;
+
+      const hostsQueryParams = {
+        os_name: name_only,
+        os_version: version,
+        fleet_id: currentTeamId,
+      };
+      const path = getPathWithQueryParams(PATHS.MANAGE_HOSTS, hostsQueryParams);
+
+      router.push(path);
+    },
+    [router, currentTeamId]
+  );
+
   return (
     <div className={baseClass}>
       <TableContainer
@@ -107,6 +133,10 @@ const OSVersionTable = ({
         pageSize={queryParams.per_page}
         onQueryChange={onQueryChange}
         disableNextPage={!hasNextPage}
+        hideFooter={!hasNextPage && queryParams.page === 0}
+        // these 2 properties allow linking on click anywhere in the row
+        disableMultiRowSelect
+        onSelectSingleRow={onSelectSingleRow}
       />
     </div>
   );

@@ -1,19 +1,22 @@
 import React, { useRef } from "react";
-import ReactTooltip from "react-tooltip";
 import classnames from "classnames";
 
-import { isAndroid } from "interfaces/platform";
+import { isAndroid, isIPadOrIPhone } from "interfaces/platform";
 
 import Button from "components/buttons/Button";
-import Icon from "components/Icon/Icon";
 import { HumanTimeDiffWithFleetLaunchCutoff } from "components/HumanTimeDiffWithDateTip";
 import { DEFAULT_EMPTY_CELL_VALUE } from "utilities/constants";
-import { COLORS } from "styles/var/colors";
 import { useCheckTruncatedElement } from "hooks/useCheckTruncatedElement";
 import TooltipWrapper from "components/TooltipWrapper";
+import { MdmEnrollmentStatus } from "interfaces/mdm";
+import { humanLastSeen, internationalTimeFormat } from "utilities/helpers";
 
 import { HostMdmDeviceStatusUIState } from "../../helpers";
-import { DEVICE_STATUS_TAGS, REFETCH_TOOLTIP_MESSAGES } from "./helpers";
+import {
+  ANDROID_NO_REFETCH_TOOLTIP_MESSAGE,
+  DEVICE_STATUS_TAGS,
+  REFETCH_TOOLTIP_MESSAGES,
+} from "./helpers";
 
 const baseClass = "host-header";
 
@@ -33,7 +36,6 @@ const RefetchButton = ({
   onRefetchHost,
 }: IRefetchButtonProps) => {
   const classNames = classnames({
-    tooltip: isDisabled,
     "refetch-spinner": isFetching,
     "refetch-btn": !isFetching,
   });
@@ -42,41 +44,27 @@ const RefetchButton = ({
     ? "Fetching fresh vitals...this may take a moment"
     : "Refetch";
 
-  // add additonal props when we need to display a tooltip for the button
-  const conditionalProps: { "data-tip"?: boolean; "data-for"?: string } = {};
-
-  if (tooltip) {
-    conditionalProps["data-tip"] = true;
-    conditionalProps["data-for"] = "refetch-tooltip";
-  }
-
-  const renderTooltip = () => {
-    return (
-      <ReactTooltip
-        place="top"
-        effect="solid"
-        id="refetch-tooltip"
-        backgroundColor={COLORS["tooltip-bg"]}
-      >
-        <span className={`${baseClass}__tooltip-text`}>{tooltip}</span>
-      </ReactTooltip>
-    );
-  };
-
   return (
     <>
-      <div className={`${baseClass}__refetch`} {...conditionalProps}>
-        <Button
-          className={classNames}
-          disabled={isDisabled}
-          onClick={onRefetchHost}
-          variant="text-icon"
-        >
-          <Icon name="refresh" color="core-fleet-blue" size="small" />
-          {buttonText}
-        </Button>
-        {tooltip && renderTooltip()}
-      </div>
+      <TooltipWrapper
+        underline={false}
+        disableTooltip={!tooltip}
+        tipContent={tooltip}
+        position="top"
+        showArrow
+      >
+        <div className={`${baseClass}__refetch`}>
+          <Button
+            className={classNames}
+            disabled={isDisabled || isFetching}
+            onClick={onRefetchHost}
+            variant="secondary"
+            icon="refresh"
+          >
+            {buttonText}
+          </Button>
+        </div>
+      </TooltipWrapper>
     </>
   );
 };
@@ -87,37 +75,48 @@ interface IHostSummaryProps {
   onRefetchHost: (
     evt: React.MouseEvent<HTMLButtonElement, React.MouseEvent>
   ) => void;
-  renderActionDropdown: () => JSX.Element | null;
+  renderActionsDropdown: () => JSX.Element | null;
   deviceUser?: boolean;
+  /** Optional override for the title shown when `deviceUser` is true.
+   * Falls back to "My device" if not provided. */
+  deviceUserHeader?: string;
   hostMdmDeviceStatus?: HostMdmDeviceStatusUIState;
+  hostMdmEnrollmentStatus: MdmEnrollmentStatus | null;
 }
 
 const HostHeader = ({
   summaryData,
   showRefetchSpinner,
   onRefetchHost,
-  renderActionDropdown,
+  renderActionsDropdown,
   deviceUser,
+  deviceUserHeader,
   hostMdmDeviceStatus,
-}: IHostSummaryProps): JSX.Element => {
+  hostMdmEnrollmentStatus,
+}: IHostSummaryProps) => {
   const { platform } = summaryData;
 
-  const isAndroidHost = isAndroid(platform);
-  const isIosOrIpadosHost = platform === "ios" || platform === "ipados";
   const hostDisplayName = useRef<HTMLHeadingElement>(null);
   const isTruncated = useCheckTruncatedElement(hostDisplayName);
 
   const renderRefetch = () => {
-    if (isAndroidHost) {
-      return null;
+    if (isAndroid(platform)) {
+      return (
+        <RefetchButton
+          isDisabled
+          isFetching={false}
+          tooltip={ANDROID_NO_REFETCH_TOOLTIP_MESSAGE}
+          onRefetchHost={onRefetchHost}
+        />
+      );
     }
 
     const isOnline = summaryData.status === "online";
     let isDisabled = false;
     let tooltip;
 
-    // we don't have a concept of "online" for iPads and iPhones, so always enable refetch
-    if (!isIosOrIpadosHost) {
+    // we don't have a concept of "online" for iPads and iPhones
+    if (!isIPadOrIPhone(platform)) {
       // deviceStatus can be `undefined` in the case of the MyDevice Page not sending
       // this prop. When this is the case or when it is `unlocked`, we only take
       // into account the host being online or offline for correctly render the
@@ -131,9 +130,23 @@ const HostHeader = ({
         tooltip = !isOnline ? REFETCH_TOOLTIP_MESSAGES.offline : null;
       } else {
         isDisabled = true;
-        tooltip = !isOnline
-          ? REFETCH_TOOLTIP_MESSAGES.offline
-          : REFETCH_TOOLTIP_MESSAGES[hostMdmDeviceStatus];
+        tooltip = REFETCH_TOOLTIP_MESSAGES[hostMdmDeviceStatus];
+      }
+    } else {
+      // ios and ipad devices refresh buttons disable state is determined only by the
+      // host mdm device status.
+      // eslint-disable-next-line
+      if (
+        hostMdmDeviceStatus === undefined ||
+        hostMdmDeviceStatus === "unlocked" ||
+        (hostMdmDeviceStatus === "locked" &&
+          hostMdmEnrollmentStatus === "On (automatic)")
+      ) {
+        isDisabled = false;
+        tooltip = null;
+      } else {
+        isDisabled = true;
+        tooltip = REFETCH_TOOLTIP_MESSAGES[hostMdmDeviceStatus];
       }
     }
 
@@ -147,18 +160,80 @@ const HostHeader = ({
     );
   };
 
-  const lastFetched = summaryData.detail_updated_at ? (
-    <HumanTimeDiffWithFleetLaunchCutoff
-      timeString={summaryData.detail_updated_at}
-    />
-  ) : (
-    ": unavailable"
-  );
+  // `summaryData` is run through `normalizeEmptyValues`, so a host that has
+  // never checked in reports "---", while platforms whose API response omits
+  // the field altogether leave it undefined.
+  const lastMdmCheckIn = summaryData.last_mdm_checked_in_at;
+  const hasMdmCheckIn =
+    !!lastMdmCheckIn && lastMdmCheckIn !== DEFAULT_EMPTY_CELL_VALUE;
+
+  // "Last fetched" is the most recent of the osquery detail refresh and the
+  // policy refresh, so a patch-when-closed skip driven by a fresh policy
+  // re-eval doesn't look older than the page itself.
+  const detailUpdatedAtMs = Date.parse(summaryData.detail_updated_at);
+  const policyUpdatedAtMs = Date.parse(summaryData.policy_updated_at);
+  const detailValid = Number.isFinite(detailUpdatedAtMs);
+  const policyValid = Number.isFinite(policyUpdatedAtMs);
+  let lastFetchedAt: string | undefined;
+  if (detailValid && policyValid) {
+    lastFetchedAt = new Date(
+      Math.max(detailUpdatedAtMs, policyUpdatedAtMs)
+    ).toISOString();
+  } else if (detailValid) {
+    lastFetchedAt = summaryData.detail_updated_at;
+  } else if (policyValid) {
+    lastFetchedAt = summaryData.policy_updated_at;
+  }
+
+  const withTooltip = (content: React.ReactNode) => {
+    if (!hasMdmCheckIn) {
+      return content;
+    }
+
+    return (
+      <TooltipWrapper
+        tipContent={
+          <>
+            <span>
+              Last fetched:
+              <b>
+                {" "}
+                {lastFetchedAt
+                  ? internationalTimeFormat(new Date(lastFetchedAt))
+                  : "unavailable"}
+              </b>
+            </span>
+            <br />
+            <span>
+              Last MDM check-in:
+              <b> {internationalTimeFormat(new Date(lastMdmCheckIn))}</b>
+            </span>
+          </>
+        }
+        position="top"
+        underline={false}
+        showArrow
+      >
+        {content}
+      </TooltipWrapper>
+    );
+  };
+
+  let lastFetched: React.ReactNode = ": unavailable";
+  if (lastFetchedAt && hasMdmCheckIn) {
+    lastFetched = humanLastSeen(lastFetchedAt);
+  } else if (lastFetchedAt) {
+    lastFetched = (
+      <HumanTimeDiffWithFleetLaunchCutoff timeString={lastFetchedAt} />
+    );
+  }
 
   const renderDeviceStatusTag = () => {
     if (!hostMdmDeviceStatus || hostMdmDeviceStatus === "unlocked") return null;
-
     const tag = DEVICE_STATUS_TAGS[hostMdmDeviceStatus];
+
+    const title = tag.title;
+    const tipContent = tag.generateTooltip(platform);
 
     const classNames = classnames(
       `${baseClass}__device-status-tag`,
@@ -167,32 +242,28 @@ const HostHeader = ({
 
     return (
       <>
-        <span className={classNames} data-tip data-for="tag-tooltip">
-          {tag.title}
-        </span>
-        <ReactTooltip
-          place="top"
-          effect="solid"
-          id="tag-tooltip"
-          backgroundColor={COLORS["tooltip-bg"]}
+        <TooltipWrapper
+          tipContent={tipContent}
+          position="top"
+          underline={false}
+          showArrow
+          className={`${baseClass}__device-status-tag-wrapper`}
         >
-          <span className={`${baseClass}__tooltip-text`}>
-            {tag.generateTooltip(platform)}
-          </span>
-        </ReactTooltip>
+          <span className={classNames}>{title}</span>
+        </TooltipWrapper>
       </>
     );
   };
 
   return (
-    <div className="header title">
+    <div className={`${baseClass} header title`}>
       <div className="title__inner">
         <div className="display-name-container">
           <TooltipWrapper
             disableTooltip={!isTruncated}
             tipContent={
               deviceUser
-                ? "My device"
+                ? deviceUserHeader || "My device"
                 : summaryData.display_name || DEFAULT_EMPTY_CELL_VALUE
             }
             underline={false}
@@ -201,7 +272,7 @@ const HostHeader = ({
           >
             <h1 className="display-name" ref={hostDisplayName}>
               {deviceUser
-                ? "My device"
+                ? deviceUserHeader || "My device"
                 : summaryData.display_name || DEFAULT_EMPTY_CELL_VALUE}
             </h1>
           </TooltipWrapper>
@@ -209,13 +280,18 @@ const HostHeader = ({
           {renderDeviceStatusTag()}
 
           <div className={`${baseClass}__last-fetched`}>
-            {"Last fetched"} {lastFetched}
-            &nbsp;
+            {withTooltip(
+              <>
+                {"Last fetched"} {lastFetched}
+              </>
+            )}
           </div>
-          {renderRefetch()}
         </div>
       </div>
-      {renderActionDropdown()}
+      <div className="title__actions">
+        {renderRefetch()}
+        {renderActionsDropdown()}
+      </div>
     </div>
   );
 };

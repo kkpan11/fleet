@@ -10,6 +10,7 @@ import (
 	"github.com/WatchBeam/clock"
 	"github.com/fleetdm/fleet/v4/server/config"
 	"github.com/fleetdm/fleet/v4/server/datastore/mysql"
+	"github.com/fleetdm/fleet/v4/server/datastore/mysql/mysqltest"
 	"github.com/fleetdm/fleet/v4/server/datastore/redis"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mock"
@@ -131,7 +132,7 @@ func testCollectHostsLastSeen(t *testing.T, ds *mysql.Datastore, pool fleet.Redi
 
 	selectRows := func(t *testing.T) []hostLastSeen {
 		var rows []hostLastSeen
-		mysql.ExecAdhocSQL(t, ds, func(tx sqlx.ExtContext) error {
+		mysqltest.ExecAdhocSQL(t, ds, func(tx sqlx.ExtContext) error {
 			return sqlx.SelectContext(ctx, tx, &rows, `SELECT host_id, seen_time FROM host_seen_times ORDER BY 1`)
 		})
 		return rows
@@ -144,12 +145,14 @@ func testCollectHostsLastSeen(t *testing.T, ds *mysql.Datastore, pool fleet.Redi
 
 			// run the collection
 			var stats collectorExecStats
-			task := NewTask(nil, nil, mockTime, config.OsqueryConfig{
-				AsyncHostInsertBatch:        batchSizes,
-				AsyncHostUpdateBatch:        batchSizes,
-				AsyncHostDeleteBatch:        batchSizes,
-				AsyncHostRedisPopCount:      batchSizes,
-				AsyncHostRedisScanKeysCount: 10,
+			task := NewTask(nil, nil, mockTime, &config.FleetConfig{
+				Osquery: config.OsqueryConfig{
+					AsyncHostInsertBatch:        batchSizes,
+					AsyncHostUpdateBatch:        batchSizes,
+					AsyncHostDeleteBatch:        batchSizes,
+					AsyncHostRedisPopCount:      batchSizes,
+					AsyncHostRedisScanKeysCount: 10,
+				},
 			})
 			err := task.collectHostsLastSeen(ctx, ds, pool, &stats)
 			require.NoError(t, err)
@@ -177,7 +180,7 @@ func testRecordHostLastSeenSync(t *testing.T, ds *mock.Store, pool fleet.RedisPo
 		return nil
 	}
 
-	task := NewTask(ds, pool, clock.C, config.OsqueryConfig{})
+	task := NewTask(ds, pool, clock.C, nil)
 	err := task.RecordHostLastSeen(ctx, 1)
 	require.NoError(t, err)
 	err = task.RecordHostLastSeen(ctx, 2)
@@ -214,10 +217,12 @@ func testRecordHostLastSeenAsync(t *testing.T, ds *mock.Store, pool fleet.RedisP
 		return nil
 	}
 
-	task := NewTask(ds, pool, clock.C, config.OsqueryConfig{
-		EnableAsyncHostProcessing:   "true",
-		AsyncHostInsertBatch:        2,
-		AsyncHostRedisScanKeysCount: 10,
+	task := NewTask(ds, pool, clock.C, &config.FleetConfig{
+		Osquery: config.OsqueryConfig{
+			EnableAsyncHostProcessing:   "true",
+			AsyncHostInsertBatch:        2,
+			AsyncHostRedisScanKeysCount: 10,
+		},
 	})
 
 	err := task.RecordHostLastSeen(ctx, 1)

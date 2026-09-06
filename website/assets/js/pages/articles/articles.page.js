@@ -18,10 +18,6 @@ parasails.registerPage('articles', {
     // Using the category to  articles,
     switch(this.category) {
       // If a specific category was provided, we'll set the articleCategory and categoryDescription.
-      case 'success-stories':
-        this.articleCategory = 'Success stories';
-        this.categoryDescription = 'Read about how others are using Fleet and osquery.';
-        break;
       case 'securing':
         this.articleCategory = 'Security';
         this.categoryDescription = 'Learn more about how we secure Fleet.';
@@ -39,8 +35,8 @@ parasails.registerPage('articles', {
         this.categoryDescription = 'Learn more about how to use Fleet to accomplish your goals.';
         break;
       case 'announcements':
-        this.articleCategory = 'Announcements';
-        this.categoryDescription = 'The latest news from Fleet.';
+        this.articleCategory = 'News';
+        this.categoryDescription = 'The latest announcements from Fleet.';
         break;
       case 'podcasts':
         this.articleCategory = 'Podcasts';
@@ -50,26 +46,48 @@ parasails.registerPage('articles', {
         this.articleCategory = 'Reports';
         this.categoryDescription = '';
         break;
+      case 'whitepapers':
+        this.articleCategory = 'Whitepapers';
+        this.categoryDescription = 'Browse our whitepapers to learn how modern teams manage and secure their devices.';
+        break;
+      case 'webinars':
+        this.articleCategory = 'Webinars';
+        this.categoryDescription = 'Watch Fleet and industry practitioners discuss real-world device management and IT operations.';
+        break;
+      case 'newsletters':
+        this.articleCategory = 'Newsletters';
+        this.categoryDescription = 'Catch up on past issues of the Fleet newsletter.';
+        break;
+      case 'industry-news':
+        this.articleCategory = 'Industry news';
+        this.categoryDescription = 'Device management and security news, and what it means for the devices you manage.';
+        break;
       case 'articles':
-        this.articleCategory = 'Articles';
+        this.articleCategory = 'Blog';
         this.categoryDescription = 'Read the latest articles from the Fleet team and community.';
         break;
     }
   },
 
   mounted: async function() {
-    if(['Articles', 'Announcements', 'Guides', 'Releases'].includes(this.articleCategory)) {
+    if(['Blog', 'News', 'Guides', 'Releases'].includes(this.articleCategory)) {
       if(this.algoliaPublicKey) {// Note: Docsearch will only be enabled if sails.config.custom.algoliaPublicKey is set. If the value is undefined, the handbook search will be disabled.
         docsearch({
           appId: 'NZXAYZXDGH',
           apiKey: this.algoliaPublicKey,
           indexName: 'fleetdm',
           container: '#docsearch-query',
-          placeholder: 'Search',
+          placeholder: 'Search articles',
           debug: false,
           clickAnalytics: true,
           searchParameters: {
             facetFilters: ['section:articles']
+          },
+          translations: {
+            button: {
+              buttonText: 'Search articles',
+              buttonAriaLabel: 'Search articles',
+            },
           },
         });
       }
@@ -80,6 +98,8 @@ parasails.registerPage('articles', {
   //  ║║║║ ║ ║╣ ╠╦╝╠═╣║   ║ ║║ ║║║║╚═╗
   //  ╩╝╚╝ ╩ ╚═╝╩╚═╩ ╩╚═╝ ╩ ╩╚═╝╝╚╝╚═╝
   methods: {
-
+    clickGotoStart: function() {
+      this.goto('/register');
+    },
   }
 });

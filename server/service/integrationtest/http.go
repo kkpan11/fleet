@@ -1,14 +1,15 @@
 package integrationtest
 
 import (
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
 
+	"github.com/fleetdm/fleet/v4/pkg/fleethttp"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/test/httptest"
-	"github.com/go-json-experiment/json"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,7 +43,12 @@ func (s *BaseSuite) DoRaw(t *testing.T, verb string, path string, rawBytes []byt
 func (s *BaseSuite) DoRawWithHeaders(
 	t *testing.T, verb string, path string, rawBytes []byte, expectedStatusCode int, headers map[string]string, queryParams ...string,
 ) *http.Response {
-	return httptest.DoHTTPReq(t, decodeJSON, verb, rawBytes, s.Server.URL+path, headers, expectedStatusCode, queryParams...)
+	opts := []fleethttp.ClientOpt{}
+	if expectedStatusCode >= 300 && expectedStatusCode <= 399 {
+		opts = append(opts, fleethttp.WithFollowRedir(false))
+	}
+	client := fleethttp.NewClient(opts...)
+	return httptest.DoHTTPReq(t, client, decodeJSON, verb, rawBytes, s.Server.URL+path, headers, expectedStatusCode, queryParams...)
 }
 
 func decodeJSON(r io.Reader, v interface{}) error {

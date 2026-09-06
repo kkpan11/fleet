@@ -1,5 +1,7 @@
-FROM --platform=linux/amd64 golang:1.24.2-bullseye@sha256:f50ff25f8331682b44c1582974eb9e620fcb08052fc6ed434f93ca24636fc4d6
+FROM --platform=linux/amd64 golang:1.27.1-trixie@sha256:137ca8442e368f5f5bb4d4f84d8cc1f6c2d898edf8a380459eb407f89d149b0d
 LABEL maintainer="Fleet Developers"
+
+RUN apt-get update && apt-get install -y musl-tools && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /usr/src/fleet
 RUN mkdir -p /output
@@ -7,9 +9,11 @@ RUN mkdir -p /output
 WORKDIR /usr/src/fleet
 
 COPY orbit ./orbit
+COPY ee/pkg ./ee/pkg
 COPY server ./server
-COPY ee ./ee
+COPY client ./client
 COPY pkg ./pkg
+COPY ./third_party ./third_party
 COPY go.mod go.sum ./
 
 CMD /bin/bash

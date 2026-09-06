@@ -20,6 +20,13 @@ interface IFileDetailsProps {
     | IFileDetailsSupportedGraphicNames[];
   fileDetails: IFileDetails;
   canEdit: boolean;
+  /** If present, will default to a custom editor section instead of edit icon */
+  customEditor?: () => React.ReactNode;
+  /** If present, replaces the default Graphic on the left of the file
+   * details (e.g. to render a preview thumbnail of an uploaded image). */
+  customPreview?: React.ReactNode;
+  /** If present, will show a trash icon */
+  onDeleteFile?: () => void;
   onFileSelect?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   accept?: string;
   progress?: number;
@@ -34,30 +41,78 @@ const FileDetails = ({
   graphicNames,
   fileDetails,
   canEdit,
+  customEditor,
+  customPreview,
+  onDeleteFile,
   onFileSelect,
   accept,
   progress,
   gitopsCompatible = true,
   gitOpsModeEnabled = false,
 }: IFileDetailsProps) => {
+  const inputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const handleClickEdit = (disabled?: boolean) => {
+    if (disabled) return;
+    inputRef.current?.click();
+  };
+
   const infoClasses = classnames(`${baseClass}__info`, {
     [`${baseClass}__info--disabled-by-gitops-mode`]:
       gitOpsModeEnabled && gitopsCompatible,
   });
+
+  const renderEditButton = (disabled?: boolean) => {
+    if (customEditor) {
+      return (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
+          {customEditor()}
+        </div>
+      );
+    }
+
+    return (
+      <div className={`${baseClass}__edit`}>
+        <Button
+          disabled={disabled}
+          className={`${baseClass}__edit-button`}
+          variant="subdued"
+          onClick={() => handleClickEdit(disabled)}
+          title="Replace file"
+        >
+          <Icon name="pencil" />
+        </Button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          onChange={onFileSelect}
+          className="file-input-visually-hidden"
+        />
+      </div>
+    );
+  };
+
   return (
     <div className={baseClass}>
       {/* disabling at this level preserves funcitonality of GitOpsModeTooltipWrapper around the edit icon */}
       <div className={infoClasses}>
-        <Graphic
-          name={
-            typeof graphicNames === "string" ? graphicNames : graphicNames[0]
-          }
-        />
+        {customPreview ?? (
+          <Graphic
+            name={
+              typeof graphicNames === "string" ? graphicNames : graphicNames[0]
+            }
+          />
+        )}
         <div className={`${baseClass}__content`}>
           <div className={`${baseClass}__name`}>{fileDetails.name}</div>
-          {fileDetails.platform && (
-            <div className={`${baseClass}__platform`}>
-              {fileDetails.platform}
+          {fileDetails.description && (
+            <div className={`${baseClass}__description`}>
+              {fileDetails.description}
             </div>
           )}
         </div>
@@ -67,44 +122,28 @@ const FileDetails = ({
         onFileSelect &&
         (gitopsCompatible ? (
           <GitOpsModeTooltipWrapper
-            position="left"
-            tipOffset={4}
-            renderChildren={(disableChildren) => (
-              <div className={`${baseClass}__edit`}>
-                <Button
-                  disabled={disableChildren}
-                  className={`${baseClass}__edit-button`}
-                  variant="icon"
-                >
-                  <label htmlFor="edit-file">
-                    <Icon name="pencil" color="ui-fleet-black-75" />
-                  </label>
-                </Button>
-                <input
-                  disabled={disableChildren}
-                  accept={accept}
-                  id="edit-file"
-                  type="file"
-                  onChange={onFileSelect}
-                />
-              </div>
-            )}
+            position="top"
+            tipOffset={8}
+            renderChildren={(disableChildren) =>
+              renderEditButton(disableChildren)
+            }
           />
         ) : (
-          <div className={`${baseClass}__edit`}>
-            <Button className={`${baseClass}__edit-button`} variant="icon">
-              <label htmlFor="edit-file">
-                <Icon name="pencil" color="ui-fleet-black-75" />
-              </label>
-            </Button>
-            <input
-              accept={accept}
-              id="edit-file"
-              type="file"
-              onChange={onFileSelect}
-            />
-          </div>
+          renderEditButton()
         ))}
+      {!progress && onDeleteFile && (
+        <div className={`${baseClass}__delete`}>
+          <Button
+            className={`${baseClass}__delete-button`}
+            variant="subdued"
+            onClick={onDeleteFile}
+          >
+            <label htmlFor="delete-file">
+              <Icon name="trash" color="ui-fleet-black-75" />
+            </label>
+          </Button>
+        </div>
+      )}
       {!!progress && (
         <div className={`${baseClass}__progress-wrapper`}>
           <div className={`${baseClass}__progress-bar`}>

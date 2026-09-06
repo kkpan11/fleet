@@ -21,10 +21,13 @@ export const userStub: IUser = {
   role: "Observer",
   global_role: null,
   api_only: false,
+  last_login_at: null,
+  last_activity_at: null,
   force_password_reset: false,
   gravatar_url: "https://image.com",
   sso_enabled: false,
   teams: [{ ...userTeamStub }],
+  fleets: [{ ...userTeamStub }],
 };
 
 export default {

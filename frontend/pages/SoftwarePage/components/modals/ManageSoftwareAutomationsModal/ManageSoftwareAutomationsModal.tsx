@@ -1,9 +1,18 @@
 import React, { useState, useEffect, useContext } from "react";
 import { useQuery } from "react-query";
+import { InjectedRouter } from "react-router";
+import { isEmpty, omit } from "lodash";
 
-import { Link } from "react-router";
+import useDeepEffect from "hooks/useDeepEffect";
+import useGitOpsMode from "hooks/useGitOpsMode";
+
 import PATHS from "router/paths";
+
 import { AppContext } from "context/app";
+
+import configAPI from "services/entities/config";
+
+import { SUPPORT_LINK } from "utilities/constants";
 
 import {
   IJiraIntegration,
@@ -16,8 +25,8 @@ import {
   IConfig,
   CONFIG_DEFAULT_RECENT_VULNERABILITY_MAX_AGE_IN_DAYS,
 } from "interfaces/config";
-import configAPI from "services/entities/config";
-import { SUPPORT_LINK } from "utilities/constants";
+import { ITeamConfig } from "interfaces/team";
+import { IWebhookSoftwareVulnerabilities } from "interfaces/webhook";
 
 // @ts-ignore
 import Dropdown from "components/forms/fields/Dropdown";
@@ -25,19 +34,18 @@ import Modal from "components/Modal";
 import Button from "components/buttons/Button";
 import Slider from "components/forms/fields/Slider";
 import Radio from "components/forms/fields/Radio";
-// @ts-ignore
 import InputField from "components/forms/fields/InputField";
 import CustomLink from "components/CustomLink";
 import validUrl from "components/forms/validators/valid_url";
 import TooltipWrapper from "components/TooltipWrapper";
 import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
 
-import { IWebhookSoftwareVulnerabilities } from "interfaces/webhook";
-import useDeepEffect from "hooks/useDeepEffect";
-import { isEmpty, omit } from "lodash";
-
 import PreviewPayloadModal from "../PreviewPayloadModal";
 import PreviewTicketModal from "../PreviewTicketModal";
+
+export const isGlobalSWConfig = (
+  config: IConfig | ITeamConfig
+): config is IConfig => "vulnerabilities" in config;
 
 interface ISoftwareAutomations {
   webhook_settings: {
@@ -50,16 +58,14 @@ interface ISoftwareAutomations {
 }
 
 interface IManageSoftwareAutomationsModalProps {
+  router: InjectedRouter;
   onCancel: () => void;
   onCreateWebhookSubmit: (formData: ISoftwareAutomations) => void;
   togglePreviewPayloadModal: () => void;
   togglePreviewTicketModal: () => void;
   showPreviewPayloadModal: boolean;
   showPreviewTicketModal: boolean;
-  softwareVulnerabilityAutomationEnabled?: boolean;
-  softwareVulnerabilityWebhookEnabled?: boolean;
-  currentDestinationUrl?: string;
-  recentVulnerabilityMaxAge?: number;
+  softwareConfig: IConfig | ITeamConfig;
 }
 
 const validateWebhookURL = (url: string) => {
@@ -68,7 +74,7 @@ const validateWebhookURL = (url: string) => {
   if (!url) {
     errors.url = "Please add a destination URL";
   } else if (!validUrl({ url })) {
-    errors.url = `${url} is not a valid URL`;
+    errors.url = "Destination URL is not a valid URL";
   } else {
     delete errors.url;
   }
@@ -79,17 +85,30 @@ const validateWebhookURL = (url: string) => {
 const baseClass = "manage-software-automations-modal";
 
 const ManageAutomationsModal = ({
+  router,
   onCancel: onReturnToApp,
   onCreateWebhookSubmit,
   togglePreviewPayloadModal,
   togglePreviewTicketModal,
   showPreviewPayloadModal,
   showPreviewTicketModal,
-  softwareVulnerabilityAutomationEnabled,
-  softwareVulnerabilityWebhookEnabled,
-  currentDestinationUrl,
-  recentVulnerabilityMaxAge,
+  softwareConfig,
 }: IManageSoftwareAutomationsModalProps): JSX.Element => {
+  const vulnWebhookSettings =
+    softwareConfig?.webhook_settings?.vulnerabilities_webhook;
+  const softwareVulnerabilityWebhookEnabled = !!vulnWebhookSettings?.enable_vulnerabilities_webhook;
+  const currentDestinationUrl = vulnWebhookSettings?.destination_url || "";
+  const isVulnIntegrationEnabled =
+    !!softwareConfig?.integrations.jira?.some(
+      (j) => j.enable_software_vulnerabilities
+    ) ||
+    !!softwareConfig?.integrations.zendesk?.some(
+      (z) => z.enable_software_vulnerabilities
+    );
+
+  const softwareVulnerabilityAutomationEnabled =
+    softwareVulnerabilityWebhookEnabled || isVulnIntegrationEnabled;
+
   const [destinationUrl, setDestinationUrl] = useState(
     currentDestinationUrl || ""
   );
@@ -114,8 +133,18 @@ const ManageAutomationsModal = ({
     setSelectedIntegration,
   ] = useState<IIntegration>();
 
-  const gitOpsModeEnabled = useContext(AppContext).config?.gitops
-    .gitops_mode_enabled;
+  const { config: globalConfigFromContext, isFreeTier } = useContext(
+    AppContext
+  );
+  const { gitOpsModeEnabled } = useGitOpsMode("software");
+
+  const maxAgeInNanoseconds = isGlobalSWConfig(softwareConfig)
+    ? softwareConfig.vulnerabilities.recent_vulnerability_max_age
+    : globalConfigFromContext?.vulnerabilities.recent_vulnerability_max_age;
+
+  const recentVulnerabilityMaxAge = maxAgeInNanoseconds
+    ? Math.round(maxAgeInNanoseconds / 86400000000000) // convert from nanoseconds to days
+    : CONFIG_DEFAULT_RECENT_VULNERABILITY_MAX_AGE_IN_DAYS;
 
   useDeepEffect(() => {
     setSoftwareAutomationsEnabled(
@@ -190,8 +219,23 @@ const ManageAutomationsModal = ({
     }
   }, [allIntegrationsIndexed]);
 
+  const onAddIntegration = () => {
+    router.push(PATHS.ADMIN_INTEGRATIONS);
+  };
+
   const onURLChange = (value: string) => {
     setDestinationUrl(value);
+  };
+
+  const onURLBlur = () => {
+    // Skip validation whenever the field is disabled (automations off or GitOps
+    // mode) so we don't surface an error on a control the user can't edit. This
+    // must mirror the InputField's `disabled` condition below.
+    if (!softwareAutomationsEnabled || gitOpsModeEnabled) {
+      return;
+    }
+    const { errors: webhookErrors } = validateWebhookURL(destinationUrl);
+    setErrors((prevErrs) => ({ ...omit(prevErrs, "url"), ...webhookErrors }));
   };
 
   const handleSaveAutomation = (evt: React.MouseEvent<HTMLFormElement>) => {
@@ -345,11 +389,20 @@ const ManageAutomationsModal = ({
     return (
       <>
         <div className={`${baseClass}__software-automation-description`}>
-          A ticket will be created in your <b>Integration</b> if a detected
-          vulnerability (CVE) was published in the last{" "}
-          {recentVulnerabilityMaxAge ||
-            CONFIG_DEFAULT_RECENT_VULNERABILITY_MAX_AGE_IN_DAYS}{" "}
-          days.
+          {isFreeTier ? (
+            <>
+              A ticket will be created in your <b>Integration</b> for each
+              detected vulnerability (CVE).
+            </>
+          ) : (
+            <>
+              A ticket will be created in your <b>Integration</b> if a detected
+              vulnerability (CVE) was published in the last{" "}
+              {recentVulnerabilityMaxAge ||
+                CONFIG_DEFAULT_RECENT_VULNERABILITY_MAX_AGE_IN_DAYS}{" "}
+              days.
+            </>
+          )}
         </div>
         {(jiraIntegrationsIndexed && jiraIntegrationsIndexed.length > 0) ||
         (zendeskIntegrationsIndexed &&
@@ -368,19 +421,20 @@ const ManageAutomationsModal = ({
         ) : (
           <div className={`form-field ${baseClass}__no-integrations`}>
             <div className="form-field__label">You have no integrations.</div>
-            <Link
-              to={PATHS.ADMIN_INTEGRATIONS}
-              className={`${baseClass}__add-integration-link`}
-              tabIndex={softwareAutomationsEnabled ? 0 : -1}
-            >
-              Add integration
-            </Link>
+            <div>
+              <Button
+                onClick={onAddIntegration}
+                disabled={gitOpsModeEnabled || !softwareAutomationsEnabled} // Not keyboard accessible if modal is disabled
+              >
+                Add integration
+              </Button>
+            </div>
           </div>
         )}
         {!!selectedIntegration && (
           <Button
             type="button"
-            variant="text-link"
+            variant="secondary"
             onClick={togglePreviewTicketModal}
           >
             Preview ticket
@@ -395,9 +449,18 @@ const ManageAutomationsModal = ({
       <>
         <div className={`${baseClass}__software-automation-description`}>
           <p>
-            A request will be sent to your configured <b>Destination URL</b> if
-            a detected vulnerability (CVE) was published in the last{" "}
-            {recentVulnerabilityMaxAge || "30"} days.
+            {isFreeTier ? (
+              <>
+                A request will be sent to your configured <b>Destination URL</b>{" "}
+                for each detected vulnerability (CVE).
+              </>
+            ) : (
+              <>
+                A request will be sent to your configured <b>Destination URL</b>{" "}
+                if a detected vulnerability (CVE) was published in the last{" "}
+                {recentVulnerabilityMaxAge || "30"} days.
+              </>
+            )}
           </p>
         </div>
         <InputField
@@ -407,6 +470,7 @@ const ManageAutomationsModal = ({
           type="text"
           value={destinationUrl}
           onChange={onURLChange}
+          onBlur={onURLBlur}
           error={errors.url}
           helpText={
             "For each new vulnerability detected, Fleet will send a JSON payload to this URL with a list of the affected hosts."
@@ -417,11 +481,10 @@ const ManageAutomationsModal = ({
         />
         <Button
           type="button"
-          variant="text-link"
+          variant="secondary"
           onClick={togglePreviewPayloadModal}
-          disabled={!softwareAutomationsEnabled}
         >
-          Preview payload
+          Example payload
         </Button>
       </>
     );
@@ -452,8 +515,7 @@ const ManageAutomationsModal = ({
       <TooltipWrapper
         tipContent={
           <>
-            Add an integration to create
-            <br /> tickets for vulnerability automations.
+            Add an integration to create tickets for vulnerability automations.
           </>
         }
         disableTooltip={hasIntegrations || gomDisabled}
@@ -481,6 +543,7 @@ const ManageAutomationsModal = ({
     );
     return (
       <GitOpsModeTooltipWrapper
+        entityType="software"
         renderChildren={renderRawButton}
         tipOffset={6}
       />
@@ -546,7 +609,7 @@ const ManageAutomationsModal = ({
         </div>
         <div className="modal-cta-wrap">
           {renderSaveButton()}
-          <Button onClick={onReturnToApp} variant="inverse">
+          <Button onClick={onReturnToApp} variant="secondary">
             Cancel
           </Button>
         </div>

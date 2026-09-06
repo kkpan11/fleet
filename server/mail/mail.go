@@ -3,6 +3,7 @@ package mail
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -18,6 +19,10 @@ import (
 	"github.com/fleetdm/fleet/v4/server/fleet"
 )
 
+// ErrSTARTTLSWithoutSSLTLS is returned when a STARTTLS handshake fails while
+// the user has SSL/TLS disabled and SSL cert verification enabled.
+var ErrSTARTTLSWithoutSSLTLS = errors.New("STARTTLS must be disabled if not using SSL/TLS to connect.")
+
 func NewService(config config.FleetConfig) (fleet.MailService, error) {
 	switch strings.ToLower(config.Email.EmailBackend) {
 	case "ses":
@@ -28,6 +33,7 @@ func NewService(config config.FleetConfig) (fleet.MailService, error) {
 			config.SES.StsAssumeRoleArn,
 			config.SES.StsExternalID,
 			config.SES.SourceArn,
+			config.SES.SenderDomain,
 		)
 	default:
 		return &mailService{}, nil
@@ -37,7 +43,7 @@ func NewService(config config.FleetConfig) (fleet.MailService, error) {
 type mailService struct{}
 
 type sender interface {
-	sendMail(e fleet.Email, msg []byte) error
+	sendMail(ctx context.Context, e fleet.Email, msg []byte) error
 }
 
 func Test(mailer fleet.MailService, e fleet.Email) error {
@@ -51,7 +57,7 @@ func Test(mailer fleet.MailService, e fleet.Email) error {
 		return nil
 	}
 
-	err = svc.sendMail(e, mailBody)
+	err = svc.sendMail(context.Background(), e, mailBody)
 	if err != nil {
 		return fmt.Errorf("sending mail: %w", err)
 	}
@@ -92,15 +98,15 @@ func getFrom(e fleet.Email) (string, error) {
 	return "From: " + e.SMTPSettings.SMTPSenderAddress + "\r\n", nil
 }
 
-func (m mailService) SendEmail(e fleet.Email) error {
+func (m mailService) SendEmail(ctx context.Context, e fleet.Email) error {
 	if !e.SMTPSettings.SMTPConfigured {
-		return errors.New("email not configured")
+		return errors.New("requires that SMTP or SES (email) is configured.")
 	}
 	msg, err := getMessageBody(e, getFrom)
 	if err != nil {
 		return err
 	}
-	return m.sendMail(e, msg)
+	return m.sendMail(ctx, e, msg)
 }
 
 func (m mailService) CanSendEmail(smtpSettings fleet.SMTPSettings) bool {
@@ -173,7 +179,7 @@ func smtpAuth(e fleet.Email) (smtp.Auth, error) {
 	return auth, nil
 }
 
-func (m mailService) sendMail(e fleet.Email, msg []byte) error {
+func (m mailService) sendMail(ctx context.Context, e fleet.Email, msg []byte) error {
 	smtpHost := fmt.Sprintf(
 		"%s:%d", e.SMTPSettings.SMTPServer, e.SMTPSettings.SMTPPort)
 	auth, err := smtpAuth(e)
@@ -213,6 +219,11 @@ func (m mailService) sendMail(e fleet.Email, msg []byte) error {
 	if e.SMTPSettings.SMTPEnableStartTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			if err = client.StartTLS(tlsConfig); err != nil {
+				// Surface a prescriptive error only when the user has SSL/TLS
+				// off and SSL cert verification on.
+				if !e.SMTPSettings.SMTPEnableTLS && e.SMTPSettings.SMTPVerifySSLCerts {
+					return ErrSTARTTLSWithoutSSLTLS
+				}
 				return fmt.Errorf("startTLS error: %w", err)
 			}
 		}

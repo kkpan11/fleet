@@ -1,76 +1,74 @@
 // TODO: make 'queryParams', 'router', and 'tableQueryData' dependencies stable (aka, memoized)
-import React, { useCallback, useContext, useEffect, useState } from "react";
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useQuery } from "react-query";
 import { InjectedRouter } from "react-router/lib/Router";
 import PATHS from "router/paths";
 import { isEqual } from "lodash";
 
-import { getNextLocationPath, wait } from "utilities/helpers";
+import { getNextLocationPath } from "utilities/helpers";
 
 import { AppContext } from "context/app";
 import { PolicyContext } from "context/policy";
 import { TableContext } from "context/table";
-import { NotificationContext } from "context/notification";
+import { notify } from "components/ToastNotification";
 import useTeamIdParam from "hooks/useTeamIdParam";
-import { IConfig, IWebhookSettings } from "interfaces/config";
-import { IZendeskJiraIntegrations } from "interfaces/integration";
-import { INotification } from "interfaces/notification";
+import { IConfig } from "interfaces/config";
 import {
   IPolicyStats,
   ILoadAllPoliciesResponse,
   ILoadTeamPoliciesResponse,
   IPoliciesCountResponse,
-  IPolicy,
+  OtherAutomationType,
 } from "interfaces/policy";
 import {
   API_ALL_TEAMS_ID,
   API_NO_TEAM_ID,
   APP_CONTEXT_ALL_TEAMS_ID,
-  ITeamConfig,
 } from "interfaces/team";
-import { TooltipContent } from "interfaces/dropdownOption";
+import { isQueryablePlatform } from "interfaces/platform";
 
 import configAPI from "services/entities/config";
 import globalPoliciesAPI, {
+  GlobalPoliciesAutomationType,
   IPoliciesCountQueryKey,
   IPoliciesQueryKey,
 } from "services/entities/global_policies";
 import teamPoliciesAPI, {
   ITeamPoliciesCountQueryKey,
   ITeamPoliciesQueryKey,
+  AutomationType,
 } from "services/entities/team_policies";
 import teamsAPI, { ILoadTeamResponse } from "services/entities/teams";
 
 import { ITableQueryData } from "components/TableContainer/TableContainer";
 import TableCount from "components/TableContainer/TableCount";
 import Button from "components/buttons/Button";
+import AutomationsButton from "components/buttons/AutomationsButton";
 
 import { SingleValue } from "react-select-5";
 import DropdownWrapper from "components/forms/fields/DropdownWrapper";
 import { CustomOptionType } from "components/forms/fields/DropdownWrapper/DropdownWrapper";
 import Spinner from "components/Spinner";
-import TeamsDropdown from "components/TeamsDropdown";
+import FleetsDropdown from "components/FleetsDropdown";
 import TableDataError from "components/DataError";
 import MainContent from "components/MainContent";
+import PageDescription from "components/PageDescription";
 import LastUpdatedText from "components/LastUpdatedText";
 import TooltipWrapper from "components/TooltipWrapper";
 
+import { getTicketOrWebhookInfo } from "pages/policies/helpers";
+
 import PoliciesTable from "./components/PoliciesTable";
-import OtherWorkflowsModal from "./components/OtherWorkflowsModal";
-import DeletePolicyModal from "./components/DeletePolicyModal";
-import CalendarEventsModal from "./components/CalendarEventsModal";
-import { ICalendarEventsFormData } from "./components/CalendarEventsModal/CalendarEventsModal";
-import InstallSoftwareModal from "./components/InstallSoftwareModal";
-import { IInstallSoftwareFormData } from "./components/InstallSoftwareModal/InstallSoftwareModal";
-import PolicyRunScriptModal from "./components/PolicyRunScriptModal";
-import { IPolicyRunScriptFormData } from "./components/PolicyRunScriptModal/PolicyRunScriptModal";
-import {
-  getInstallSoftwareErrorMessage,
-  getRunScriptErrorMessage,
-} from "./helpers";
+import DeletePoliciesModal from "./components/DeletePoliciesModal";
 import { DEFAULT_POLICY } from "../constants";
-import ConditionalAccessModal from "./components/ConditionalAccessModal";
-import { IConditionalAccessFormData } from "./components/ConditionalAccessModal/ConditionalAccessModal";
+import AutomationsModal from "./components/AutomationsModal";
+import ManageAutomationsModal from "./components/ManageAutomationsModal";
 
 interface IManagePoliciesPageProps {
   router: InjectedRouter;
@@ -80,11 +78,14 @@ interface IManagePoliciesPageProps {
     key: string;
     pathname: string;
     query: {
-      team_id?: string;
+      fleet_id?: string;
       query?: string;
       order_key?: string;
       order_direction?: "asc" | "desc";
       page?: string;
+      automation_type?: AutomationType;
+      platform?: string;
+      manage_automations?: string;
     };
     search: string;
   };
@@ -93,13 +94,34 @@ interface IManagePoliciesPageProps {
 export const DEFAULT_SORT_DIRECTION = "asc";
 export const DEFAULT_PAGE_SIZE = 20;
 export const DEFAULT_SORT_COLUMN = "name";
-const [
-  DEFAULT_AUTOMATION_UPDATE_SUCCESS_MSG,
-  DEFAULT_AUTOMATION_UPDATE_ERR_MSG,
-] = [
-  "Successfully updated policy automations.",
-  "Could not update policy automations.",
+
+const AUTOMATION_TYPES: AutomationType[] = [
+  "software",
+  "patch",
+  "scripts",
+  "profiles",
+  "calendar",
+  "conditional_access",
+  "other",
 ];
+
+const GLOBAL_AUTOMATION_TYPES: GlobalPoliciesAutomationType[] = ["other"];
+
+const getValidAutomationTypesForTeam = (
+  teamIdForApi: number | undefined
+): (AutomationType | GlobalPoliciesAutomationType)[] => {
+  if (teamIdForApi === undefined) {
+    // All fleets → global policies only support webhook/ticket automations.
+    return GLOBAL_AUTOMATION_TYPES;
+  }
+  if (teamIdForApi === API_NO_TEAM_ID) {
+    // Unassigned supports every automation type EXCEPT calendar events,
+    // which PolicyAutomationsFields hardcodes as fleet-only (never available
+    // for "All fleets" or "Unassigned").
+    return AUTOMATION_TYPES.filter((type) => type !== "calendar");
+  }
+  return AUTOMATION_TYPES;
+};
 
 const baseClass = "manage-policies-page";
 
@@ -112,14 +134,15 @@ const ManagePolicyPage = ({
     isGlobalAdmin,
     isGlobalMaintainer,
     isOnGlobalTeam,
-    isFreeTier,
     isPremiumTier,
     config: globalConfigFromContext,
     setConfig,
     setFilteredPoliciesPath,
     filteredPoliciesPath,
   } = useContext(AppContext);
-  const { renderFlash, renderMultiFlash } = useContext(NotificationContext);
+  const isPrimoMode =
+    globalConfigFromContext?.partnerships?.enable_primo || false;
+
   const { setResetSelectedRows } = useContext(TableContext);
   const {
     setLastEditedQueryName,
@@ -134,7 +157,6 @@ const ManagePolicyPage = ({
 
   const {
     currentTeamId,
-    currentTeamName,
     currentTeamSummary,
     isAllTeamsSelected,
     isTeamAdmin,
@@ -153,6 +175,7 @@ const ManagePolicyPage = ({
       maintainer: true,
       observer: true,
       observer_plus: true,
+      technician: true,
     },
   });
 
@@ -160,23 +183,12 @@ const ManagePolicyPage = ({
   const [isUpdatingPolicies, setIsUpdatingPolicies] = useState(false);
 
   const [selectedPolicyIds, setSelectedPolicyIds] = useState<number[]>([]);
-  const [showDeletePolicyModal, setShowDeletePolicyModal] = useState(false);
-  const [showInstallSoftwareModal, setShowInstallSoftwareModal] = useState(
-    false
-  );
-  const [showPolicyRunScriptModal, setShowPolicyRunScriptModal] = useState(
-    false
-  );
-  const [showCalendarEventsModal, setShowCalendarEventsModal] = useState(false);
-  const [showOtherWorkflowsModal, setShowOtherWorkflowsModal] = useState(false);
-  const [showConditionalAccessModal, setShowConditionalAccessModal] = useState(
-    false
-  );
+  const [showDeletePoliciesModal, setShowDeletePoliciesModal] = useState(false);
+  const [showAutomationsModal, setShowAutomationsModal] = useState(false);
   const [
-    policiesAvailableToAutomate,
-    setPoliciesAvailableToAutomate,
-  ] = useState<IPolicyStats[]>([]);
-
+    selectedPolicyForAutomations,
+    setSelectedPolicyForAutomations,
+  ] = useState<IPolicyStats | null>(null);
   // Functions to avoid race conditions
   const initialSearchQuery = (() => queryParams.query ?? "")();
   const initialSortHeader = (() =>
@@ -187,6 +199,24 @@ const ManagePolicyPage = ({
     DEFAULT_SORT_DIRECTION)();
   const page =
     queryParams && queryParams.page ? parseInt(queryParams?.page, 10) : 0;
+  const targetedPlatformParam = isQueryablePlatform(queryParams?.platform)
+    ? queryParams?.platform
+    : undefined;
+  const initialAutomationFilter = (() => {
+    const automationQueryParam = queryParams.automation_type;
+
+    if (!automationQueryParam) {
+      return null;
+    }
+
+    const validValues = getValidAutomationTypesForTeam(teamIdForApi);
+
+    return (validValues as string[]).includes(automationQueryParam)
+      ? automationQueryParam
+      : null;
+  })();
+
+  const isFirstNavigation = useRef(true);
 
   // Needs update on location change or table state might not match URL
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
@@ -198,6 +228,9 @@ const ManagePolicyPage = ({
   const [sortDirection, setSortDirection] = useState<
     "asc" | "desc" | undefined
   >(initialSortDirection);
+  const [automationFilter, setAutomationFilter] = useState<
+    AutomationType | GlobalPoliciesAutomationType | null
+  >(initialAutomationFilter);
 
   useEffect(() => {
     setLastEditedQueryPlatform(null);
@@ -210,12 +243,14 @@ const ManagePolicyPage = ({
     setSearchQuery(initialSearchQuery);
     setSortHeader(initialSortHeader);
     setSortDirection(initialSortDirection);
+    setAutomationFilter(initialAutomationFilter);
   }, [
     location,
     isRouteOk,
     initialSearchQuery,
     initialSortHeader,
     initialSortDirection,
+    initialAutomationFilter,
   ]);
 
   useEffect(() => {
@@ -254,6 +289,8 @@ const ManagePolicyPage = ({
         query: searchQuery,
         orderDirection: sortDirection,
         orderKey: sortHeader,
+        automationType: automationFilter as GlobalPoliciesAutomationType,
+        platform: targetedPlatformParam,
       },
     ],
     ({ queryKey }) => {
@@ -263,22 +300,22 @@ const ManagePolicyPage = ({
       enabled: isRouteOk && isAllTeamsSelected,
       select: (data) => data.policies || [],
       staleTime: 5000,
-      onSuccess: (data) => {
-        setPoliciesAvailableToAutomate(data || []);
-      },
+      refetchOnWindowFocus: false,
     }
   );
 
   const {
     data: globalPoliciesCount,
-
     isFetching: isFetchingGlobalCount,
+    isError: isErrorGlobalPoliciesCount,
     refetch: refetchGlobalPoliciesCount,
   } = useQuery<IPoliciesCountResponse, Error, number, IPoliciesCountQueryKey[]>(
     [
       {
         scope: "policiesCount",
         query: !isAllTeamsSelected ? "" : searchQuery,
+        automationType: automationFilter as GlobalPoliciesAutomationType,
+        platform: targetedPlatformParam,
       },
     ],
     ({ queryKey }) => globalPoliciesAPI.getCount(queryKey[0]),
@@ -314,6 +351,8 @@ const ManagePolicyPage = ({
         teamId: teamIdForApi || 0,
         // no teams does inherit
         mergeInherited: true,
+        automationType: automationFilter as AutomationType,
+        platform: targetedPlatformParam,
       },
     ],
     ({ queryKey }) => {
@@ -322,23 +361,19 @@ const ManagePolicyPage = ({
     {
       enabled: isRouteOk && isPremiumTier && !isAllTeamsSelected,
       select: (data: ILoadTeamPoliciesResponse) => data.policies || [],
-      onSuccess: (data) => {
-        const allPoliciesAvailableToAutomate = data.filter(
-          (policy: IPolicy) => policy.team_id === currentTeamId
-        );
-        setPoliciesAvailableToAutomate(allPoliciesAvailableToAutomate || []);
-      },
+      refetchOnWindowFocus: false,
     }
   );
 
   const {
-    data: teamPoliciesCountMergeInherited,
+    data: teamPoliciesCountResponse,
     isFetching: isFetchingTeamCountMergeInherited,
+    isError: isErrorTeamPoliciesCount,
     refetch: refetchTeamPoliciesCountMergeInherited,
   } = useQuery<
     IPoliciesCountResponse,
     Error,
-    number,
+    IPoliciesCountResponse,
     ITeamPoliciesCountQueryKey[]
   >(
     [
@@ -347,6 +382,8 @@ const ManagePolicyPage = ({
         query: searchQuery,
         teamId: teamIdForApi || 0, // TODO: Fix number/undefined type
         mergeInherited: true,
+        automationType: automationFilter as AutomationType,
+        platform: targetedPlatformParam,
       },
     ],
     ({ queryKey }) => teamPoliciesAPI.getCount(queryKey[0]),
@@ -355,46 +392,46 @@ const ManagePolicyPage = ({
       keepPreviousData: true,
       refetchOnWindowFocus: false,
       retry: 1,
-      select: (data) => data.count,
     }
   );
 
-  const canAddOrDeletePolicy =
-    isGlobalAdmin || isGlobalMaintainer || isTeamMaintainer || isTeamAdmin;
-  const canManageAutomations =
-    isGlobalAdmin || isGlobalMaintainer || isTeamAdmin || isTeamMaintainer;
+  const teamPoliciesCountMergeInherited = teamPoliciesCountResponse?.count;
 
-  const {
-    data: globalConfig,
-    isFetching: isFetchingGlobalConfig,
-    refetch: refetchGlobalConfig,
-  } = useQuery<IConfig, Error>(
+  const canAddOrDeletePolicies =
+    isGlobalAdmin || isGlobalMaintainer || isTeamMaintainer || isTeamAdmin;
+
+  const canEditAutomationsSettings = isGlobalAdmin || isTeamAdmin;
+
+  const { data: globalConfig, isFetching: isFetchingGlobalConfig } = useQuery<
+    IConfig,
+    Error
+  >(
     ["config"],
     () => {
       return configAPI.loadAll();
     },
     {
-      enabled: isRouteOk && canAddOrDeletePolicy,
+      enabled: isRouteOk,
       onSuccess: (data) => {
         setConfig(data);
       },
       staleTime: 5000,
+      refetchOnWindowFocus: false,
     }
   );
 
-  const {
-    data: teamConfig,
-    isFetching: isFetchingTeamConfig,
-    refetch: refetchTeamConfig,
-  } = useQuery<ILoadTeamResponse, Error, ITeamConfig>(
-    ["teams", teamIdForApi],
-    () => teamsAPI.load(teamIdForApi),
-    {
-      // no call for no team (teamIdForApi === 0)
-      enabled: isRouteOk && !!teamIdForApi && canAddOrDeletePolicy,
-      select: (data) => data.team,
-    }
-  );
+  const { data: teamData, isFetching: isFetchingTeamConfig } = useQuery<
+    ILoadTeamResponse,
+    Error
+  >(["teams", teamIdForApi], () => teamsAPI.load(teamIdForApi), {
+    // Enable for all teams including "No team" (teamIdForApi === 0)
+    enabled: isRouteOk && teamIdForApi !== undefined,
+    staleTime: 5000,
+    refetchOnWindowFocus: false,
+  });
+  const teamConfig = teamData?.team;
+
+  const automationsConfig = isAllTeamsSelected ? globalConfig : teamConfig;
 
   const refetchPolicies = (teamId?: number) => {
     if (teamId !== undefined) {
@@ -448,7 +485,7 @@ const ManagePolicyPage = ({
       }
 
       if (isRouteOk && teamIdForApi !== undefined) {
-        newQueryParams.team_id = teamIdForApi;
+        newQueryParams.fleet_id = teamIdForApi;
       }
 
       const locationPath = getNextLocationPath({
@@ -456,7 +493,12 @@ const ManagePolicyPage = ({
         queryParams: { ...queryParams, ...newQueryParams },
       });
 
-      router?.push(locationPath);
+      if (isFirstNavigation.current) {
+        isFirstNavigation.current = false;
+        router?.replace(locationPath);
+      } else {
+        router?.push(locationPath);
+      }
     },
     [
       isRouteOk,
@@ -470,366 +512,17 @@ const ManagePolicyPage = ({
     ] // Other dependencies can cause infinite re-renders as URL is source of truth
   );
 
-  const toggleOtherWorkflowsModal = () =>
-    setShowOtherWorkflowsModal(!showOtherWorkflowsModal);
+  const toggleDeletePoliciesModal = () =>
+    setShowDeletePoliciesModal(!showDeletePoliciesModal);
 
-  const toggleDeletePolicyModal = () =>
-    setShowDeletePolicyModal(!showDeletePolicyModal);
+  const toggleAutomationsModal = () =>
+    setShowAutomationsModal(!showAutomationsModal);
 
-  const toggleInstallSoftwareModal = () => {
-    setShowInstallSoftwareModal(!showInstallSoftwareModal);
-  };
+  const onOpenManageAutomationsModal = (policy: IPolicyStats) =>
+    setSelectedPolicyForAutomations(policy);
 
-  const togglePolicyRunScriptModal = () => {
-    setShowPolicyRunScriptModal(!showPolicyRunScriptModal);
-  };
-
-  const toggleCalendarEventsModal = () => {
-    setShowCalendarEventsModal(!showCalendarEventsModal);
-  };
-
-  const toggleConditionalAccessModal = () => {
-    setShowConditionalAccessModal(!showConditionalAccessModal);
-  };
-
-  const onSelectAutomationOption = (option: SingleValue<CustomOptionType>) => {
-    switch (option?.value) {
-      case "calendar_events":
-        toggleCalendarEventsModal();
-        break;
-      case "install_software":
-        toggleInstallSoftwareModal();
-        break;
-      case "run_script":
-        togglePolicyRunScriptModal();
-        break;
-      case "conditional_access":
-        toggleConditionalAccessModal();
-        break;
-      case "other_workflows":
-        toggleOtherWorkflowsModal();
-        break;
-      default:
-    }
-  };
-
-  const onUpdateOtherWorkflows = async (requestBody: {
-    webhook_settings: Pick<IWebhookSettings, "failing_policies_webhook">;
-    integrations: IZendeskJiraIntegrations;
-  }) => {
-    setIsUpdatingPolicies(true);
-    try {
-      await (!isAllTeamsSelected
-        ? teamsAPI.update(requestBody, teamIdForApi)
-        : configAPI.update(requestBody));
-      renderFlash("success", DEFAULT_AUTOMATION_UPDATE_SUCCESS_MSG);
-    } catch {
-      renderFlash("error", DEFAULT_AUTOMATION_UPDATE_ERR_MSG);
-    } finally {
-      toggleOtherWorkflowsModal();
-      setIsUpdatingPolicies(false);
-      !isAllTeamsSelected ? refetchTeamConfig() : refetchGlobalConfig();
-    }
-  };
-
-  const onUpdatePolicySoftwareInstall = async (
-    formData: IInstallSoftwareFormData
-  ) => {
-    try {
-      setIsUpdatingPolicies(true);
-
-      const changedPolicies = formData.filter((formPolicy) => {
-        const prevPolicyState = policiesAvailableToAutomate.find(
-          (policy) => policy.id === formPolicy.id
-        );
-
-        const turnedOff =
-          prevPolicyState?.install_software !== undefined &&
-          formPolicy.installSoftwareEnabled === false;
-
-        const turnedOn =
-          prevPolicyState?.install_software === undefined &&
-          formPolicy.installSoftwareEnabled === true;
-
-        const updatedSwId =
-          prevPolicyState?.install_software?.software_title_id !== undefined &&
-          formPolicy.swIdToInstall !==
-            prevPolicyState?.install_software?.software_title_id;
-
-        return turnedOff || turnedOn || updatedSwId;
-      });
-
-      if (!changedPolicies.length) {
-        renderFlash("success", "No changes detected.");
-        return;
-      }
-
-      const promises = changedPolicies.map((changedPolicy) =>
-        teamPoliciesAPI.update(changedPolicy.id, {
-          software_title_id: changedPolicy.swIdToInstall || null,
-          team_id: teamIdForApi,
-        })
-      );
-
-      // Allows for all API calls to settle even if there is an error on one
-      const results = await Promise.allSettled(promises);
-
-      const successfulUpdates = results.filter(
-        (result) => result.status === "fulfilled"
-      );
-      const failedUpdates = results.filter(
-        (result) => result.status === "rejected"
-      );
-
-      // Renders API error reason for each error in a single message
-      if (failedUpdates.length > 0) {
-        const errorNotifications: INotification[] = failedUpdates.map(
-          (result, index) => {
-            const message = getInstallSoftwareErrorMessage(
-              result as PromiseRejectedResult,
-              formData,
-              currentTeamName
-            );
-
-            return {
-              id: `error-${index}`,
-              alertType: "error",
-              isVisible: true,
-              message,
-              persistOnPageChange: false,
-            };
-          }
-        );
-
-        renderMultiFlash({
-          notifications: errorNotifications,
-        });
-      } else if (successfulUpdates.length > 0) {
-        // Only render success message if there are no failures
-        renderFlash("success", DEFAULT_AUTOMATION_UPDATE_SUCCESS_MSG);
-      }
-
-      await wait(100); // Wait 100ms to avoid race conditions with refetch
-      refetchTeamPolicies();
-    } catch {
-      renderFlash("error", DEFAULT_AUTOMATION_UPDATE_ERR_MSG);
-    } finally {
-      toggleInstallSoftwareModal();
-      setIsUpdatingPolicies(false);
-    }
-  };
-
-  const onUpdatePolicyRunScript = async (
-    formData: IPolicyRunScriptFormData
-  ) => {
-    try {
-      setIsUpdatingPolicies(true);
-
-      const changedPolicies = formData.filter((formPolicy) => {
-        const prevPolicyState = policiesAvailableToAutomate.find(
-          (policy) => policy.id === formPolicy.id
-        );
-
-        const turnedOff =
-          prevPolicyState?.run_script !== undefined &&
-          formPolicy.scriptIdToRun === null;
-
-        const turnedOn =
-          prevPolicyState?.run_script === undefined &&
-          formPolicy.scriptIdToRun !== null;
-
-        const updatedScriptId =
-          prevPolicyState?.run_script?.id !== undefined &&
-          formPolicy.scriptIdToRun !== prevPolicyState?.run_script?.id;
-
-        return turnedOff || turnedOn || updatedScriptId;
-      });
-
-      if (!changedPolicies.length) {
-        renderFlash("success", "No changes detected.");
-        return;
-      }
-
-      const promises = formData.map((changedPolicy) =>
-        teamPoliciesAPI.update(changedPolicy.id, {
-          // "script_id": null will unset running a script for the policy
-          // "script_id": X will sets script X to run when the policy fails
-          script_id: changedPolicy.scriptIdToRun || null,
-          team_id: teamIdForApi,
-        })
-      );
-
-      // Allows for all API calls to settle even if there is an error on one
-      const results = await Promise.allSettled(promises);
-
-      const successfulUpdates = results.filter(
-        (result) => result.status === "fulfilled"
-      );
-      const failedUpdates = results.filter(
-        (result) => result.status === "rejected"
-      );
-
-      // Renders API error reason for each error in a single message
-      if (failedUpdates.length > 0) {
-        const errorNotifications: INotification[] = failedUpdates.map(
-          (result, index) => {
-            const message = getRunScriptErrorMessage(
-              result as PromiseRejectedResult,
-              formData,
-              currentTeamName
-            );
-
-            return {
-              id: `error-${index}`,
-              alertType: "error",
-              isVisible: true,
-              message,
-              persistOnPageChange: false,
-            };
-          }
-        );
-
-        renderMultiFlash({
-          notifications: errorNotifications,
-        });
-      } else if (successfulUpdates.length > 0) {
-        // Only render success message if there are no failures
-        renderFlash("success", DEFAULT_AUTOMATION_UPDATE_SUCCESS_MSG);
-      }
-
-      await wait(100); // Wait 100ms to avoid race conditions with refetch
-      refetchTeamPolicies();
-    } catch {
-      renderFlash("error", DEFAULT_AUTOMATION_UPDATE_ERR_MSG);
-    } finally {
-      togglePolicyRunScriptModal();
-      setIsUpdatingPolicies(false);
-    }
-  };
-
-  const onUpdateCalendarEvents = async (formData: ICalendarEventsFormData) => {
-    setIsUpdatingPolicies(true);
-
-    try {
-      // update team config if either field has been changed
-      const responses: Promise<any>[] = [];
-      if (
-        formData.enabled !==
-          teamConfig?.integrations.google_calendar?.enable_calendar_events ||
-        formData.url !== teamConfig?.integrations.google_calendar?.webhook_url
-      ) {
-        responses.push(
-          teamsAPI.update(
-            {
-              integrations: {
-                google_calendar: {
-                  enable_calendar_events: formData.enabled,
-                  webhook_url: formData.url,
-                },
-                // These fields will never actually be changed here. See comment above
-                // IGlobalIntegrations definition.
-                zendesk: teamConfig?.integrations.zendesk || [],
-                jira: teamConfig?.integrations.jira || [],
-              },
-            },
-            teamIdForApi
-          )
-        );
-      }
-
-      // update changed policies calendar events enabled
-      responses.concat(
-        formData.changedPolicies.map((changedPolicy) => {
-          return teamPoliciesAPI.update(changedPolicy.id, {
-            calendar_events_enabled: changedPolicy.calendar_events_enabled,
-            team_id: teamIdForApi,
-          });
-        })
-      );
-
-      await Promise.all(responses);
-      await wait(100); // Wait 100ms to avoid race conditions with refetch
-      await refetchTeamPolicies();
-      await refetchTeamConfig();
-
-      renderFlash("success", DEFAULT_AUTOMATION_UPDATE_SUCCESS_MSG);
-    } catch {
-      renderFlash("error", DEFAULT_AUTOMATION_UPDATE_ERR_MSG);
-    } finally {
-      toggleCalendarEventsModal();
-      setIsUpdatingPolicies(false);
-    }
-  };
-
-  const onUpdateConditionalAccess = async ({
-    enabled: enableConditionalAccess,
-    changedPolicies,
-  }: IConditionalAccessFormData) => {
-    setIsUpdatingPolicies(true);
-
-    try {
-      // TODO - narrow type for update policy responses
-      const responses: (Promise<ITeamConfig> | Promise<any>)[] = [];
-      let refetchConfig: any;
-
-      // If enabling/disabling the feature, update appropriate config
-      if (teamIdForApi === API_NO_TEAM_ID) {
-        if (
-          enableConditionalAccess !==
-          globalConfig?.integrations.conditional_access_enabled
-        ) {
-          const payload = {
-            integrations: {
-              conditional_access_enabled: enableConditionalAccess,
-            },
-          };
-          responses.push(configAPI.update(payload));
-          refetchConfig = refetchGlobalConfig;
-        }
-      } else if (
-        enableConditionalAccess !==
-        teamConfig?.integrations.conditional_access_enabled
-      ) {
-        // patch team config (all teams but No team)
-        const payload = {
-          integrations: {
-            // These fields will never actually be changed here. See comment above
-            // IGlobalIntegrations definition.
-            zendesk: teamConfig?.integrations.zendesk || [],
-            jira: teamConfig?.integrations.jira || [],
-            conditional_access_enabled: enableConditionalAccess,
-          },
-        };
-        responses.push(teamsAPI.update(payload, teamIdForApi));
-        refetchConfig = refetchTeamConfig;
-      }
-
-      // handle any changed policies for no team or a team
-      responses.concat(
-        changedPolicies.map((changedPolicy) => {
-          return teamPoliciesAPI.update(changedPolicy.id, {
-            conditional_access_enabled:
-              changedPolicy.conditional_access_enabled,
-            team_id: teamIdForApi,
-          });
-        })
-      );
-      await Promise.all(responses);
-      await wait(100); // helps avoid refetch race conditions
-      if (refetchConfig) {
-        await refetchConfig();
-      }
-      renderFlash(
-        "success",
-        "Successfully updated conditional access automations."
-      );
-    } catch {
-      renderFlash("error", "Could not update conditional access automations.");
-    } finally {
-      toggleConditionalAccessModal();
-      setIsUpdatingPolicies(false);
-    }
-  };
+  const onCloseManageAutomationsModal = () =>
+    setSelectedPolicyForAutomations(null);
 
   const onAddPolicyClick = () => {
     setLastEditedQueryName("");
@@ -846,43 +539,94 @@ const ManagePolicyPage = ({
     router.push(
       currentTeamId === API_ALL_TEAMS_ID
         ? PATHS.NEW_POLICY
-        : `${PATHS.NEW_POLICY}?team_id=${currentTeamId}`
+        : `${PATHS.NEW_POLICY}?fleet_id=${currentTeamId}`
     );
   };
 
-  const onDeletePolicyClick = (selectedTableIds: number[]): void => {
-    toggleDeletePolicyModal();
+  const onDeletePoliciesClick = (selectedTableIds: number[]): void => {
+    toggleDeletePoliciesModal();
     setSelectedPolicyIds(selectedTableIds);
   };
 
-  const onDeletePolicySubmit = async () => {
+  const onDeletePolicySubmit = useCallback(async () => {
     setIsUpdatingPolicies(true);
     try {
-      const request = !isAllTeamsSelected
-        ? teamPoliciesAPI.destroy(teamIdForApi, selectedPolicyIds)
-        : globalPoliciesAPI.destroy(selectedPolicyIds);
-
-      await request.then(() => {
-        renderFlash(
-          "success",
-          `Successfully deleted ${
-            selectedPolicyIds?.length === 1 ? "policy" : "policies"
-          }.`
+      const responses: Promise<any>[] = [];
+      if (isPrimoMode) {
+        // filter selected policies by All team and no team
+        const selectedSet = new Set(selectedPolicyIds); // more efficient for below reduce
+        const [
+          globalPolicyIdsToDelete,
+          teamPolicyIdsToDelete, // will be No team, since this is Primo mode
+        ] = (teamPolicies ?? []).reduce(
+          (acc, policy) => {
+            if (selectedSet.has(policy.id)) {
+              // need to compare policy team id
+              if (policy.team_id === null) {
+                // note `null` not `undefined` here
+                acc[0].push(policy.id);
+              } else {
+                acc[1].push(policy.id);
+              }
+            }
+            return acc;
+          },
+          [[], []] as [number[], number[]]
         );
-        setResetSelectedRows(true);
-        refetchPolicies(teamIdForApi);
+        // delete all team policies via global endpoint, No team via team endpoint
+        if (globalPolicyIdsToDelete.length) {
+          responses.push(globalPoliciesAPI.destroy(globalPolicyIdsToDelete));
+        }
+        if (teamPolicyIdsToDelete.length) {
+          responses.push(
+            teamPoliciesAPI.destroy(teamIdForApi, teamPolicyIdsToDelete)
+          );
+        }
+      } else {
+        // normal Fleet operation
+        responses.push(
+          !isAllTeamsSelected
+            ? teamPoliciesAPI.destroy(teamIdForApi, selectedPolicyIds)
+            : globalPoliciesAPI.destroy(selectedPolicyIds)
+        );
+      }
+
+      await Promise.all(responses);
+      notify.success("Successfully deleted policies.");
+      setResetSelectedRows(true);
+      refetchPolicies(teamIdForApi);
+    } catch (e) {
+      notify.error("Unable to delete policies. Please try again.", {
+        response: e,
       });
-    } catch {
-      renderFlash(
-        "error",
-        `Unable to delete ${
-          selectedPolicyIds?.length === 1 ? "policy" : "policies"
-        }. Please try again.`
-      );
     } finally {
-      toggleDeletePolicyModal();
+      toggleDeletePoliciesModal();
       setIsUpdatingPolicies(false);
     }
+  }, [
+    isAllTeamsSelected,
+    isPrimoMode,
+    refetchPolicies,
+    selectedPolicyIds,
+    setResetSelectedRows,
+    teamIdForApi,
+    teamPolicies,
+    toggleDeletePoliciesModal,
+  ]);
+
+  const onChangeAutomationFilter = (val: SingleValue<CustomOptionType>) => {
+    const automationType = val?.value;
+
+    const locationPath = getNextLocationPath({
+      pathPrefix: PATHS.MANAGE_POLICIES,
+      queryParams: {
+        ...queryParams,
+        page: "0",
+        automation_type: automationType === "all" ? undefined : automationType,
+      },
+    });
+
+    router?.push(locationPath);
   };
 
   const policiesErrors = !isAllTeamsSelected
@@ -890,42 +634,77 @@ const ManagePolicyPage = ({
     : globalPoliciesError;
 
   const policyResults = !isAllTeamsSelected
-    ? teamPolicies && teamPolicies.length > 0
-    : globalPolicies && globalPolicies.length > 0;
+    ? teamPolicies !== undefined
+    : globalPolicies !== undefined;
 
   // Show CTA buttons if there are no errors
   const showCtaButtons = !policiesErrors;
 
-  const automationsConfig = !isAllTeamsSelected ? teamConfig : globalConfig;
-  const hasPoliciesToAutomateOrDelete = policiesAvailableToAutomate.length > 0;
-  const showAutomationsDropdown = canManageAutomations;
+  const hasPoliciesToAutomate = isAllTeamsSelected
+    ? (globalPoliciesCount ?? 0) > 0
+    : (teamPoliciesCountMergeInherited ?? 0) >
+      (teamPoliciesCountResponse?.inherited_policy_count ?? 0);
+  const hasPoliciesToDelete =
+    hasPoliciesToAutomate || (isPrimoMode && (teamPolicies?.length ?? 0) > 0); // in Primo mode, allow deleting inherited policies, which will be included in teamPolicies, from this view
 
-  // NOTE: backend uses webhook_settings to store automated policy ids for both webhooks and integrations
-  let currentAutomatedPolicies: number[] = [];
-  if (automationsConfig) {
-    const {
-      webhook_settings: { failing_policies_webhook: webhook },
-      integrations,
-    } = automationsConfig;
-
-    let isIntegrationEnabled = false;
-    if (integrations) {
-      const { jira, zendesk } = integrations;
-      isIntegrationEnabled =
-        !!jira?.find((j) => j.enable_failing_policies) ||
-        !!zendesk?.find((z) => z.enable_failing_policies);
+  // Open the Manage automations modal via deep-link (e.g. from the
+  // command palette). Gate on the same predicate the in-page button
+  // uses — the param alone must not surface a privileged modal to
+  // non-admins or when there's nothing to automate. Wait for the
+  // relevant count query to settle (data OR error) so
+  // `hasPoliciesToAutomate` is meaningful; then always strip the param
+  // so a refresh doesn't reopen and the URL doesn't get stuck if the
+  // count call errored.
+  useEffect(() => {
+    if (location.query.manage_automations !== "1") return;
+    const countSettled = isAllTeamsSelected
+      ? globalPoliciesCount !== undefined || isErrorGlobalPoliciesCount
+      : teamPoliciesCountResponse !== undefined || isErrorTeamPoliciesCount;
+    if (!countSettled) return;
+    if (canEditAutomationsSettings && hasPoliciesToAutomate) {
+      setShowAutomationsModal(true);
     }
+    const { manage_automations, ...rest } = location.query;
+    router.replace({ pathname: location.pathname, query: rest });
+  }, [
+    location.query,
+    location.pathname,
+    router,
+    canEditAutomationsSettings,
+    hasPoliciesToAutomate,
+    isAllTeamsSelected,
+    globalPoliciesCount,
+    teamPoliciesCountResponse,
+    isErrorGlobalPoliciesCount,
+    isErrorTeamPoliciesCount,
+  ]);
 
-    if (isIntegrationEnabled || webhook?.enable_failing_policies_webhook) {
-      currentAutomatedPolicies = webhook?.policy_ids || [];
-    }
-  }
+  const fleetAutomationInfo = getTicketOrWebhookInfo(automationsConfig);
+  // Inherited (global) policies are listed in team views, but their webhook
+  // membership lives on the *global* config — not the team's. Union both
+  // so an inherited policy with a global-config webhook/ticket still shows
+  // the correct data.
+  const inheritedAutomationInfo = !isAllTeamsSelected
+    ? getTicketOrWebhookInfo(globalConfig)
+    : { state: "disabled" as const, policyIds: [] };
+  const currentAutomatedPolicies: number[] = Array.from(
+    new Set([
+      ...fleetAutomationInfo.policyIds,
+      ...inheritedAutomationInfo.policyIds,
+    ])
+  );
+  const ticketOrWebhookState =
+    fleetAutomationInfo.state !== "disabled"
+      ? fleetAutomationInfo.state
+      : inheritedAutomationInfo.state;
+  const otherAutomationType: OtherAutomationType | undefined =
+    ticketOrWebhookState === "disabled" ? undefined : ticketOrWebhookState;
 
   const renderPoliciesCountAndLastUpdated = (
     count?: number,
     policies?: IPolicyStats[]
   ) => {
-    // Hide count if fetching count || there are errors OR there are no policy results with no a search filter
+    // Hide count if fetching count || there are errors OR there are no policy results with no filters (search or automation dropdown)
     const isFetchingCount = !isAllTeamsSelected
       ? isFetchingTeamCountMergeInherited
       : isFetchingGlobalCount;
@@ -933,7 +712,10 @@ const ManagePolicyPage = ({
     const hide =
       isFetchingCount ||
       policiesErrors ||
-      (!policyResults && searchQuery === "");
+      (!policyResults &&
+        searchQuery === "" &&
+        !automationFilter &&
+        !targetedPlatformParam);
 
     if (hide) {
       return null;
@@ -950,15 +732,108 @@ const ManagePolicyPage = ({
           lastUpdatedAt={updatedAt}
           customTooltipText={
             <>
-              Counts are updated hourly. Click host
-              <br />
-              counts for the most up-to-date count.
+              Counts are updated hourly. Click host counts for the most
+              up-to-date count.
             </>
           }
         />
       </>
     );
   };
+
+  const automationFilterOptions: CustomOptionType[] = [
+    {
+      label: "All automations",
+      value: "all",
+      helpText: "All policies added to Fleet.",
+    },
+    {
+      label: "Software",
+      value: "software",
+      helpText: "Policies with software automation enabled.",
+    },
+    {
+      label: "Patch",
+      value: "patch",
+      helpText: "Patch policies for Fleet-maintained apps.",
+    },
+    {
+      label: "Scripts",
+      value: "scripts",
+      helpText: "Policies with script automation enabled.",
+    },
+    {
+      label: "Profiles",
+      value: "profiles",
+      helpText: "Policies with configuration profile automation enabled.",
+    },
+    {
+      label: "Calendar",
+      value: "calendar",
+      helpText: "Policies with calendar event automation enabled.",
+    },
+    {
+      label: "Conditional access",
+      value: "conditional_access",
+      helpText: "Policies with conditional access automation enabled.",
+    },
+    {
+      label: "Webhooks or tickets",
+      value: "other",
+      helpText: "Policies with webhook or ticket automation enabled.",
+    },
+  ];
+
+  const allPoliciesOption = automationFilterOptions[0]; // value: "all"
+
+  const getSelectedFilterOption = () => {
+    if (!automationFilter) {
+      return allPoliciesOption; // Default to all policies option
+    }
+    return automationFilterOptions.find(
+      (opt) => opt.value === automationFilter
+    );
+  };
+
+  const renderAutomationFilter = isPremiumTier
+    ? () => {
+        // Hide dropdown only on errors
+        if (policiesErrors) {
+          return null;
+        }
+
+        const policiesCount = isAllTeamsSelected
+          ? globalPoliciesCount
+          : teamPoliciesCountMergeInherited;
+        const isTrulyEmpty =
+          (policiesCount ?? 0) === 0 &&
+          searchQuery === "" &&
+          !automationFilter &&
+          !targetedPlatformParam;
+
+        const validAutomationTypesForTeam = getValidAutomationTypesForTeam(
+          teamIdForApi
+        );
+        const optionsForTeam = automationFilterOptions.filter(
+          (opt) =>
+            opt.value === "all" ||
+            (validAutomationTypesForTeam as string[]).includes(opt.value)
+        );
+
+        return (
+          <DropdownWrapper
+            className={`${baseClass}__filter-automation-dropdown`}
+            name="filter-by-automation"
+            value={getSelectedFilterOption()}
+            onChange={onChangeAutomationFilter}
+            placeholder="Filter by automation"
+            options={optionsForTeam}
+            variant="table-filter"
+            isDisabled={isTrulyEmpty}
+          />
+        );
+      }
+    : undefined;
 
   const renderMainTable = () => {
     if (!isRouteOk || (isPremiumTier && !userTeams)) {
@@ -974,9 +849,10 @@ const ManagePolicyPage = ({
         <PoliciesTable
           policiesList={globalPolicies || []}
           isLoading={isFetchingGlobalPolicies || isFetchingGlobalConfig}
-          onDeletePolicyClick={onDeletePolicyClick}
-          canAddOrDeletePolicy={canAddOrDeletePolicy}
-          hasPoliciesToDelete={hasPoliciesToAutomateOrDelete}
+          onDeletePoliciesClick={onDeletePoliciesClick}
+          onAddPolicyClick={onAddPolicyClick}
+          canAddOrDeletePolicies={canAddOrDeletePolicies}
+          hasPoliciesToDelete={hasPoliciesToDelete}
           currentTeam={currentTeamSummary}
           currentAutomatedPolicies={currentAutomatedPolicies}
           isPremiumTier={isPremiumTier}
@@ -992,6 +868,15 @@ const ManagePolicyPage = ({
           sortDirection={sortDirection}
           page={page}
           onQueryChange={onQueryChange}
+          customControl={renderAutomationFilter}
+          isFiltered={!!automationFilter || !!targetedPlatformParam}
+          router={router}
+          queryParams={queryParams}
+          platform={targetedPlatformParam}
+          otherAutomationType={otherAutomationType}
+          onOpenManageAutomationsModal={
+            canAddOrDeletePolicies ? onOpenManageAutomationsModal : undefined
+          }
         />
       );
     }
@@ -1000,24 +885,27 @@ const ManagePolicyPage = ({
     if (teamPoliciesError) {
       return <TableDataError verticalPaddingSize="pad-xxxlarge" />;
     }
+    const displayedTeamPolicies = teamPolicies || [];
+
     return (
       <div>
         <PoliciesTable
-          policiesList={teamPolicies || []}
+          policiesList={displayedTeamPolicies}
           isLoading={
             isFetchingTeamPolicies ||
             isFetchingTeamConfig ||
             isFetchingGlobalConfig
           }
-          onDeletePolicyClick={onDeletePolicyClick}
-          canAddOrDeletePolicy={canAddOrDeletePolicy}
-          hasPoliciesToDelete={hasPoliciesToAutomateOrDelete}
+          onDeletePoliciesClick={onDeletePoliciesClick}
+          onAddPolicyClick={onAddPolicyClick}
+          canAddOrDeletePolicies={canAddOrDeletePolicies}
+          hasPoliciesToDelete={hasPoliciesToDelete}
           currentTeam={currentTeamSummary}
           currentAutomatedPolicies={currentAutomatedPolicies}
           renderPoliciesCount={() =>
             renderPoliciesCountAndLastUpdated(
               teamPoliciesCountMergeInherited,
-              teamPolicies
+              displayedTeamPolicies
             )
           }
           isPremiumTier={isPremiumTier}
@@ -1027,157 +915,37 @@ const ManagePolicyPage = ({
           sortDirection={sortDirection}
           page={page}
           onQueryChange={onQueryChange}
-        />
-      </div>
-    );
-  };
-
-  const gitOpsModeEnabled = globalConfig?.gitops.gitops_mode_enabled;
-
-  const isCalEventsConfigured =
-    (globalConfig?.integrations.google_calendar &&
-      globalConfig?.integrations.google_calendar.length > 0) ??
-    false;
-
-  const isCalEventsEnabled =
-    teamConfig?.integrations.google_calendar?.enable_calendar_events ?? false;
-
-  const isConditionalAccessConfigured =
-    globalConfig?.conditional_access?.microsoft_entra_connection_configured ??
-    false;
-
-  const isConditionalAccessEnabled =
-    teamConfig?.integrations.conditional_access_enabled ?? false;
-
-  const getAutomationsDropdownOptions = (configPresent: boolean) => {
-    let disabledInstallTooltipContent: TooltipContent;
-    let disabledCalendarTooltipContent: TooltipContent;
-    let disabledRunScriptTooltipContent: TooltipContent;
-    let disabledConditionalAccessTooltipContent: TooltipContent;
-    if (!isPremiumTier) {
-      disabledInstallTooltipContent = "Available in Fleet Premium";
-      disabledCalendarTooltipContent = "Available in Fleet Premium";
-      disabledRunScriptTooltipContent = "Available in Fleet Premium";
-      disabledConditionalAccessTooltipContent = "Available in Fleet Premium";
-    } else if (isAllTeamsSelected) {
-      disabledInstallTooltipContent = (
-        <>
-          Select a team to manage
-          <br />
-          install software automation.
-        </>
-      );
-      disabledCalendarTooltipContent = (
-        <>
-          Select a team to manage
-          <br />
-          calendar events.
-        </>
-      );
-      disabledRunScriptTooltipContent = (
-        <>
-          Select a team to manage
-          <br />
-          run script automation.
-        </>
-      );
-      disabledConditionalAccessTooltipContent = (
-        <>
-          Select a team to manage
-          <br />
-          condtional access.
-        </>
-      );
-    } else if (
-      (isGlobalMaintainer || isTeamMaintainer) &&
-      !isCalEventsEnabled
-    ) {
-      disabledCalendarTooltipContent = (
-        <>
-          Contact a user with an
-          <br />
-          admin role for access.
-        </>
-      );
-    }
-
-    const options: CustomOptionType[] = [
-      {
-        label: "Calendar",
-        value: "calendar_events",
-        isDisabled: !!disabledCalendarTooltipContent,
-        helpText: "Automatically reserve time to resolve failing policies.",
-        tooltipContent: disabledCalendarTooltipContent,
-      },
-      {
-        label: "Software",
-        value: "install_software",
-        isDisabled: !!disabledInstallTooltipContent,
-        helpText: "Install software to resolve failing policies.",
-        tooltipContent: disabledInstallTooltipContent,
-      },
-      {
-        label: "Scripts",
-        value: "run_script",
-        isDisabled: !!disabledRunScriptTooltipContent,
-        helpText: "Run script to resolve failing policies.",
-        tooltipContent: disabledRunScriptTooltipContent,
-      },
-    ];
-
-    if (
-      globalConfigFromContext?.license.managed_cloud &&
-      featureFlags.allowConditionalAccess === "true"
-    ) {
-      options.push({
-        label: "Conditional access",
-        value: "conditional_access",
-        isDisabled: !!disabledConditionalAccessTooltipContent,
-        helpText: "Block single sign-on for hosts failing policies.",
-        tooltipContent: disabledConditionalAccessTooltipContent,
-      });
-    }
-
-    // Maintainers do not have access to other workflows
-    if (configPresent && !isGlobalMaintainer && !isTeamMaintainer) {
-      options.push({
-        label: "Other",
-        value: "other_workflows",
-        isDisabled: false,
-        helpText: "Create tickets or fire webhooks for failing policies.",
-      });
-    }
-
-    return options;
-  };
-
-  let automationsDropdown = null;
-  if (showAutomationsDropdown) {
-    automationsDropdown = (
-      <div className={`${baseClass}__manage-automations-wrapper`}>
-        <DropdownWrapper
-          isDisabled={!hasPoliciesToAutomateOrDelete}
-          className={`${baseClass}__manage-automations-dropdown`}
-          name="policy-automations"
-          onChange={onSelectAutomationOption}
-          placeholder="Manage automations"
-          options={
-            hasPoliciesToAutomateOrDelete
-              ? getAutomationsDropdownOptions(!!automationsConfig)
-              : []
+          customControl={renderAutomationFilter}
+          isFiltered={!!automationFilter || !!targetedPlatformParam}
+          router={router}
+          queryParams={queryParams}
+          platform={targetedPlatformParam}
+          otherAutomationType={otherAutomationType}
+          onOpenManageAutomationsModal={
+            canAddOrDeletePolicies ? onOpenManageAutomationsModal : undefined
           }
-          variant="button"
-          nowrapMenu
         />
       </div>
     );
-    if (!hasPoliciesToAutomateOrDelete) {
+  };
+
+  let automationsButton = null;
+  if (canEditAutomationsSettings) {
+    automationsButton = (
+      <AutomationsButton
+        onClick={toggleAutomationsModal}
+        disabled={!hasPoliciesToAutomate}
+      />
+    );
+    if (!hasPoliciesToAutomate) {
       const tipContent =
-        isPremiumTier && currentTeamId !== APP_CONTEXT_ALL_TEAMS_ID ? (
+        isPremiumTier &&
+        currentTeamId !== APP_CONTEXT_ALL_TEAMS_ID &&
+        !globalConfigFromContext?.partnerships?.enable_primo ? (
           <div className={`${baseClass}__header__tooltip`}>
-            To manage automations add a policy to this team.
+            To manage automations add a policy to this fleet.
             <br />
-            For inherited policies select &ldquo;All teams&rdquo;.
+            For inherited policies select &ldquo;All fleets&rdquo;.
           </div>
         ) : (
           <div className={`${baseClass}__header__tooltip`}>
@@ -1185,14 +953,14 @@ const ManagePolicyPage = ({
           </div>
         );
 
-      automationsDropdown = (
+      automationsButton = (
         <TooltipWrapper
           underline={false}
           tipContent={tipContent}
           position="top"
           showArrow
         >
-          {automationsDropdown}
+          {automationsButton}
         </TooltipWrapper>
       );
     }
@@ -1203,14 +971,14 @@ const ManagePolicyPage = ({
   }
 
   const renderHeader = () => {
-    if (isPremiumTier && !globalConfigFromContext?.partnerships?.enable_primo) {
+    if (isPremiumTier && !isPrimoMode) {
       if ((userTeams && userTeams.length > 1) || isOnGlobalTeam) {
         return (
-          <TeamsDropdown
-            currentUserTeams={userTeams || []}
-            selectedTeamId={currentTeamId}
+          <FleetsDropdown
+            currentUserFleets={userTeams || []}
+            selectedFleetId={currentTeamId}
             onChange={onTeamChange}
-            includeNoTeams
+            includeUnassigned
           />
         );
       }
@@ -1222,108 +990,83 @@ const ManagePolicyPage = ({
     return <h1>Policies</h1>;
   };
 
-  let teamsDropdownHelpText: string;
-  if (teamIdForApi === API_NO_TEAM_ID) {
-    teamsDropdownHelpText =
-      "Detect device health issues for hosts that are not on a team.";
-  } else if (teamIdForApi === API_ALL_TEAMS_ID) {
-    teamsDropdownHelpText = "Detect device health issues for all hosts.";
-  } else {
-    // a team is selected
-    teamsDropdownHelpText =
-      "Detect device health issues for all hosts assigned to this team.";
-  }
   return (
     <MainContent className={baseClass}>
-      <div className={`${baseClass}__wrapper`}>
+      <>
         <div className={`${baseClass}__header-wrap`}>
           <div className={`${baseClass}__header`}>
             <div className={`${baseClass}__text`}>
               <div className={`${baseClass}__title`}>{renderHeader()}</div>
             </div>
+
+            {showCtaButtons && (
+              <div className={`${baseClass} button-wrap`}>
+                {automationsButton}
+                {canAddOrDeletePolicies && (
+                  <div className={`${baseClass}__action-button-container`}>
+                    <Button
+                      className={`${baseClass}__select-policy-button`}
+                      onClick={onAddPolicyClick}
+                    >
+                      Add policy
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          {showCtaButtons && (
-            <div className={`${baseClass} button-wrap`}>
-              {automationsDropdown}
-              {canAddOrDeletePolicy && (
-                <div className={`${baseClass}__action-button-container`}>
-                  <Button
-                    className={`${baseClass}__select-policy-button`}
-                    onClick={onAddPolicyClick}
-                  >
-                    Add policy
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div className={`${baseClass}__description`}>
-          <p>{teamsDropdownHelpText}</p>
+          <PageDescription content={"Detect device health issues."} />
         </div>
         {renderMainTable()}
-        {globalConfig && automationsConfig && showOtherWorkflowsModal && (
-          <OtherWorkflowsModal
-            automationsConfig={automationsConfig}
-            availableIntegrations={globalConfig.integrations}
-            availablePolicies={policiesAvailableToAutomate}
-            isUpdating={isUpdatingPolicies}
-            onExit={toggleOtherWorkflowsModal}
-            onSubmit={onUpdateOtherWorkflows}
-            teamId={currentTeamId ?? 0}
-            gitOpsModeEnabled={gitOpsModeEnabled}
-          />
-        )}
-        {showDeletePolicyModal && (
-          <DeletePolicyModal
+        {showDeletePoliciesModal && (
+          <DeletePoliciesModal
             isUpdatingPolicies={isUpdatingPolicies}
-            onCancel={toggleDeletePolicyModal}
+            onCancel={toggleDeletePoliciesModal}
             onSubmit={onDeletePolicySubmit}
           />
         )}
-        {showInstallSoftwareModal && (
-          <InstallSoftwareModal
-            onExit={toggleInstallSoftwareModal}
-            onSubmit={onUpdatePolicySoftwareInstall}
-            isUpdating={isUpdatingPolicies}
-            // currentTeamId will at this point be present
-            teamId={currentTeamId ?? 0}
-            gitOpsModeEnabled={gitOpsModeEnabled}
+        {showAutomationsModal && (
+          <AutomationsModal
+            router={router}
+            isAllTeamsSelected={isAllTeamsSelected}
+            teamIdForApi={teamIdForApi}
+            globalConfig={globalConfig}
+            teamConfig={teamConfig}
+            gitOpsModeEnabled={
+              globalConfig?.gitops.gitops_mode_enabled ?? false
+            }
+            refetchPolicies={() => refetchPolicies(teamIdForApi)}
+            onExit={toggleAutomationsModal}
           />
         )}
-        {showPolicyRunScriptModal && (
-          <PolicyRunScriptModal
-            onExit={togglePolicyRunScriptModal}
-            onSubmit={onUpdatePolicyRunScript}
-            isUpdating={isUpdatingPolicies}
-            // currentTeamId will at this point be present
-            teamId={currentTeamId ?? 0}
-          />
-        )}
-        {showCalendarEventsModal && (
-          <CalendarEventsModal
-            onExit={toggleCalendarEventsModal}
-            onSubmit={onUpdateCalendarEvents}
-            configured={isCalEventsConfigured}
-            enabled={isCalEventsEnabled}
-            url={teamConfig?.integrations.google_calendar?.webhook_url || ""}
-            teamId={currentTeamId ?? 0}
-            isUpdating={isUpdatingPolicies}
-            gitOpsModeEnabled={gitOpsModeEnabled}
-          />
-        )}
-        {showConditionalAccessModal && (
-          <ConditionalAccessModal
-            onExit={toggleConditionalAccessModal}
-            onSubmit={onUpdateConditionalAccess}
-            configured={isConditionalAccessConfigured}
-            enabled={isConditionalAccessEnabled}
-            isUpdating={isUpdatingPolicies}
-            gitOpsModeEnabled={gitOpsModeEnabled}
-            teamId={currentTeamId ?? 0}
-          />
-        )}
-      </div>
+        {selectedPolicyForAutomations &&
+          (() => {
+            // An inherited policy (team_id === null) is global even when viewed
+            // from within a fleet's list — its automations live on the global
+            // config, so route the modal there.
+            const isInheritedGlobal =
+              selectedPolicyForAutomations.team_id === null;
+            const modalAutomationsConfig = isInheritedGlobal
+              ? globalConfig
+              : automationsConfig;
+            return (
+              <ManageAutomationsModal
+                policy={selectedPolicyForAutomations}
+                fleetName={
+                  isInheritedGlobal
+                    ? "All fleets"
+                    : currentTeamSummary?.name ?? ""
+                }
+                isGlobalPolicy={isInheritedGlobal}
+                teamIdForApi={teamIdForApi}
+                automationsConfig={modalAutomationsConfig}
+                globalConfig={globalConfig}
+                refetchPolicies={() => refetchPolicies(teamIdForApi)}
+                onExit={onCloseManageAutomationsModal}
+              />
+            );
+          })()}
+      </>
     </MainContent>
   );
 };

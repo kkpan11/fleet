@@ -1,34 +1,13 @@
 # Log destinations
 
 Log destinations can be used in Fleet to log:
-- Osquery [status logs](https://osquery.readthedocs.io/en/stable/deployment/logging/#status-logs).
+- Schedule report result logs
+- Fleet [audit logs](https://fleetdm.com/docs/using-fleet/audit-logs)
+- Status logs from [osquery](https://osquery.readthedocs.io/en/stable/deployment/logging/#status-logs)
 
-- Osquery [schedule query result logs](https://osquery.readthedocs.io/en/stable/deployment/logging/#results-logs).
+By default, logs are stored in the local filesystem on each host.
 
-- Fleet [audit logs](https://fleetdm.com/docs/using-fleet/audit-logs).
-
-
-To configure each log destination, you must set the correct logging configuration options in Fleet.
-
-Check out the reference documentation for:
-  - [Osquery status logging configuration options](https://fleetdm.com/docs/deploying/configuration#osquery-status-log-plugin).
-  - [Osquery result logging configuration options](https://fleetdm.com/docs/deploying/configuration#osquery-result-log-plugin).
-  - [Activity audit logging configuration options](https://fleetdm.com/docs/deploying/configuration#activity_audit_log_plugin).
-
-This guide provides a list of the supported log destinations in Fleet.
-
-### In this guide:
-
-- [Amazon Kinesis Data Firehose](#amazon-kinesis-data-firehose)
-- [Snowflake](#snowflake)
-- [Splunk](#splunk)
-- [Amazon Kinesis Data Streams](#amazon-kinesis-data-streams)
-- [AWS Lambda](#aws-lambda)
-- [Google Cloud Pub/Sub](#google-cloud-pubsub)
-- [Apache Kafka](#apache-kafka)
-- [Stdout](#stdout)
-- [Filesystem](#filesystem)
-- [Sending logs outside of Fleet](#sending-logs-outside-of-fleet)
+To configure an external log destination, you must set the correct logging configuration options in Fleet. Currently, only self-hosted users can modify this configuration. If you're a managed-cloud customer, please reach out to Fleet about modifying the configuration.
 
 ## Amazon Kinesis Data Firehose
 
@@ -40,6 +19,10 @@ Logs are written to [Amazon Kinesis Data Firehose (Firehose)](https://aws.amazon
 This is a very good method for aggregating osquery logs into [Amazon S3](https://aws.amazon.com/s3/).
 
 Note that Firehose logging has limits [discussed in the documentation](https://docs.aws.amazon.com/firehose/latest/dev/limits.html). When Fleet encounters logs that are too big for Firehose, notifications will be output in the Fleet logs and those logs _will not_ be sent to Firehose.
+
+## Webhook
+
+See [webhook configuration docs](https://fleetdm.com/docs/deploying/configuration#webhook)
 
 ## Snowflake
 
@@ -53,9 +36,32 @@ Snowflake provides instructions on setting up the destination tables and IAM rol
 
 ## Splunk
 
-How to send logs to Splunk:
+Logs are sent directly to [Splunk](https://www.splunk.com/) via the [HTTP Event Collector (HEC)](https://docs.splunk.com/Documentation/Splunk/latest/Data/UsetheHTTPEventCollector) endpoint.
 
-1. Follow [Splunk's instructions](https://docs.splunk.com/Documentation/AddOns/latest/Firehose/ConfigureFirehose) to prepare the Splunk for Firehose data.
+- Plugin name: `splunk`
+- Flag namespace: [splunk](https://fleetdm.com/docs/deploying/configuration#splunk)
+
+Events are batched up to 1MB before sending. Events over 1MB are dropped, with a notification sent to the Fleet server logs. Fleet retries on transient errors (HTTP 503) with exponential backoff.
+
+To use this destination, enable HEC on your Splunk instance and create an HEC token. Then configure Fleet with the HEC URL and token:
+
+```yaml
+osquery:
+  status_log_plugin: splunk
+  result_log_plugin: splunk
+splunk:
+  url: https://splunk.example.com:8088
+  token: your-hec-token
+  index: main
+  source: fleet
+  source_type: fleet:json
+```
+
+### Splunk via Firehose (alternative)
+
+You can also send logs to Splunk indirectly through Amazon Kinesis Data Firehose:
+
+1. Follow [Splunk's instructions](https://docs.splunk.com/Documentation/AddOns/latest/Firehose/ConfigureFirehose) to prepare Splunk for Firehose data.
 
 2. Follow these [AWS instructions](https://docs.aws.amazon.com/firehose/latest/dev/create-destination.html#create-destination-splunk) on how to enable Firehose to forward directly to Splunk.
 
@@ -84,7 +90,7 @@ resource "aws_kinesis_firehose_delivery_stream" "test_stream" {
 }
 ```
 
-For the latest configuration go to HashiCorp's Terraform docs [here](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/kinesis_firehose_delivery_stream#splunk-destination).
+For the latest configuration go to [HashiCorp's Terraform docs](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/kinesis_firehose_delivery_stream#splunk-destination).
 
 ## Amazon Kinesis Data Streams
 

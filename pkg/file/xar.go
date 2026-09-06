@@ -29,10 +29,13 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	"golang.org/x/net/html/charset"
 )
 
 const (
@@ -269,6 +272,7 @@ func decodeXARTOCData(r io.Reader, hdr xarHeader) (xmlXar, error) {
 	// decode the TOC data (in XML inside the zlib-compressed data)
 	decoder := xml.NewDecoder(zr)
 	decoder.Strict = false
+	decoder.CharsetReader = charset.NewReaderLabel
 	if err := decoder.Decode(&root); err != nil {
 		return root, fmt.Errorf("decode xar xml: %w", err)
 	}
@@ -325,6 +329,14 @@ var knownBadNames = map[string]struct{}{
 	"MacFULL":            {},
 	"SU_TITLE":           {},
 }
+
+var idTranslations = map[string]string{
+	"com.sentinelone.sentinel-agent": "com.sentinelone.SentinelAgent",
+	// This is present in Privileges.pkg/PackageInfo, however, current logic doesn't parse PackageInfo files if Distribution file is present
+	"corp.sap.privileges.pkg": "corp.sap.privileges",
+}
+
+var rxMicrosoftAutoUpdateBundleID = regexp.MustCompile(`^com\.microsoft\.autoupdate\d+$`)
 
 // getDistributionInfo gets the name, bundle identifier and version of a PKG distribution file
 func getDistributionInfo(d *distributionXML) (name string, identifier string, version string, packageIDs []string) {
@@ -389,7 +401,11 @@ func getDistributionInfo(d *distributionXML) (name string, identifier string, ve
 			identifier = bundle.ID
 			name = strings.TrimSuffix(base, ".app")
 			appVersion = bundle.CFBundleShortVersionString
-			break
+
+			// if the found bundle is microsoft auto-update, keep looking for a better match
+			if !rxMicrosoftAutoUpdateBundleID.MatchString(identifier) {
+				break
+			}
 		}
 	}
 
@@ -457,10 +473,19 @@ func getDistributionInfo(d *distributionXML) (name string, identifier string, ve
 		}
 	}
 
+	if newID, ok := idTranslations[identifier]; ok {
+		identifier = newID
+	}
+
 	// if package IDs are still empty, use the identifier as the package ID
 	if len(packageIDs) == 0 && identifier != "" {
 		packageIDs = append(packageIDs, identifier)
 	}
+
+	// Sorting package IDs to ensure consistent order
+	// Ex: the uninstall_pkg.sh uses this slice and we want it to
+	// remain consistent/deterministic across generations
+	sort.Strings(packageIDs)
 
 	// for the name, try to use the title and fallback to the bundle
 	// identifier
@@ -507,6 +532,9 @@ func getDistributionInfo(d *distributionXML) (name string, identifier string, ve
 		for _, pkgRef := range d.PkgRefs {
 			if pkgRef.Version != "" {
 				version = pkgRef.Version
+				if version != "0" {
+					break
+				}
 			}
 		}
 	}
@@ -532,21 +560,32 @@ func parsePackageInfoFile(rawXML []byte) (*InstallerMetadata, error) {
 // getPackageInfo gets the name, bundle identifier and version of a PKG top level PackageInfo file
 func getPackageInfo(p *packageInfoXML) (name string, identifier string, version string, packageIDs []string) {
 	packageIDSet := make(map[string]struct{}, 1)
+	var foundMetadata bool
+
 	for _, bundle := range p.Bundles {
+		// Keep track of all bundle identifiers
+		bundleID := fleet.Preprocess(bundle.ID)
+		if bundleID != "" {
+			packageIDSet[bundleID] = struct{}{}
+		}
+
 		installPath := bundle.Path
 		if p.InstallLocation != "" {
 			installPath = filepath.Join(p.InstallLocation, installPath)
 		}
 		installPath = strings.TrimPrefix(installPath, "/")
 		installPath = strings.TrimPrefix(installPath, "./")
-		if base, isValid := isValidAppFilePath(installPath); isValid {
+		base, isValid := isValidAppFilePath(installPath)
+		if isValid && !foundMetadata {
 			identifier = fleet.Preprocess(bundle.ID)
 			name = base
 			version = fleet.Preprocess(bundle.CFBundleShortVersionString)
 		}
-		bundleID := fleet.Preprocess(bundle.ID)
-		if bundleID != "" {
-			packageIDSet[bundleID] = struct{}{}
+
+		// Stop updating metadata if we found a bundle that
+		// matches the bundle identifier in pkg-info
+		if identifier == p.Identifier {
+			foundMetadata = true
 		}
 	}
 
@@ -565,6 +604,12 @@ func getPackageInfo(p *packageInfoXML) (name string, identifier string, version 
 		identifier = fleet.Preprocess(p.Identifier)
 	}
 
+	// if we didn't find a name and the install path looks like a .app, try using that
+	if name == "" && strings.HasSuffix(p.InstallLocation, ".app") {
+		pathParts := strings.Split(p.InstallLocation, "/")
+		name = strings.TrimSuffix(pathParts[len(pathParts)-1], ".app")
+	}
+
 	// if we didn't find a name, grab the name from the identifier
 	if name == "" {
 		idParts := strings.Split(identifier, ".")
@@ -573,10 +618,17 @@ func getPackageInfo(p *packageInfoXML) (name string, identifier string, version 
 		}
 	}
 
+	name = strings.TrimSuffix(name, ".app")
+
 	// if we didn't find package IDs, use the identifier as the package ID
 	if len(packageIDs) == 0 && identifier != "" {
 		packageIDs = append(packageIDs, identifier)
 	}
+
+	// Sorting package IDs to ensure consistent order
+	// Ex: the uninstall_pkg.sh uses this slice and we want it to
+	// remain consistent/deterministic across generations
+	sort.Strings(packageIDs)
 
 	return name, identifier, version, packageIDs
 }
@@ -590,8 +642,11 @@ func isValidAppFilePath(input string) (string, bool) {
 		return file, true
 	}
 
-	if strings.HasSuffix(file, ".app") {
-		if dir == "Applications/" {
+	// ignore nested .app files, we want to make sure the .app file is
+	// in the Applications directory and not nested somewhere else
+	// See https://github.com/fleetdm/fleet/issues/38356#issuecomment-3935530961
+	if strings.HasSuffix(file, ".app") && !strings.Contains(dir, ".app/") {
+		if strings.HasPrefix(dir, "Applications/") && strings.HasSuffix(dir, "/") {
 			return file, true
 		}
 	}

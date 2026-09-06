@@ -2,9 +2,6 @@
   margin-top: $pad-large;
   position: relative;
 
-  .data-table__wrapper {
-    overflow-x: auto;
-  }
   .tab-nav .table-container__header {
     display: none;
   }
@@ -42,6 +39,8 @@
           .id__cell {
             padding: 0;
             width: 40px;
+            display: flex;
+            align-items: center;
           }
 
           .vulnerabilities__cell {

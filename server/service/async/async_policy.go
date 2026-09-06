@@ -13,6 +13,9 @@ import (
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	redigo "github.com/gomodule/redigo/redis"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -25,11 +28,16 @@ const (
 // redis list will be LTRIM'd if there are more policy IDs than this.
 var maxRedisPolicyResultsPerHost = 1000
 
-func (t *Task) RecordPolicyQueryExecutions(ctx context.Context, host *fleet.Host, results map[uint]*bool, ts time.Time, deferred bool) error {
+// RecordPolicyQueryExecutions records the incoming policy results for the host.
+// Under synchronous processing it returns the host's stale policy IDs (see
+// fleet.Datastore.RecordPolicyQueryExecutions); under async processing the
+// results are buffered in Redis and cannot be compared against stored rows
+// yet, so it always returns nil stale policy IDs.
+func (t *Task) RecordPolicyQueryExecutions(ctx context.Context, host *fleet.Host, results map[uint]*bool, ts time.Time, deferred bool, newlyPassingPolicyIDs []uint) ([]uint, error) {
 	cfg := t.taskConfigs[config.AsyncTaskPolicyMembership]
 	if !cfg.Enabled {
 		host.PolicyUpdatedAt = ts
-		return t.datastore.RecordPolicyQueryExecutions(ctx, host, results, ts, deferred)
+		return t.datastore.RecordPolicyQueryExecutions(ctx, host, results, ts, deferred, newlyPassingPolicyIDs)
 	}
 
 	keyList := fmt.Sprintf(policyPassHostKey, host.ID)
@@ -103,11 +111,11 @@ func (t *Task) RecordPolicyQueryExecutions(ctx context.Context, host *fleet.Host
 	conn := t.pool.Get()
 	defer conn.Close()
 	if err := redis.BindConn(t.pool, conn, keyList, keyTs); err != nil {
-		return ctxerr.Wrap(ctx, err, "bind redis connection")
+		return nil, ctxerr.Wrap(ctx, err, "bind redis connection")
 	}
 
 	if _, err := script.Do(conn, args...); err != nil {
-		return ctxerr.Wrap(ctx, err, "run redis script")
+		return nil, ctxerr.Wrap(ctx, err, "run redis script")
 	}
 
 	// Storing the host id in the set of active host IDs for policy membership
@@ -115,12 +123,24 @@ func (t *Task) RecordPolicyQueryExecutions(ctx context.Context, host *fleet.Host
 	// live on the same node as the host's keys. At the same time, purge any
 	// entry in the set that is older than now - TTL.
 	if _, err := storePurgeActiveHostID(t.pool, policyPassHostIDsKey, host.ID, ts, ts.Add(-ttl)); err != nil {
-		return ctxerr.Wrap(ctx, err, "store active host id")
+		return nil, ctxerr.Wrap(ctx, err, "store active host id")
 	}
-	return nil
+	return nil, nil
 }
 
 func (t *Task) collectPolicyQueryExecutions(ctx context.Context, ds fleet.Datastore, pool fleet.RedisPool, stats *collectorExecStats) error {
+	// Create a root span for this async collection task if OTEL is enabled
+	if t.otelEnabled {
+		tracer := otel.Tracer("async")
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "async.collect_policy_query_executions",
+			trace.WithAttributes(
+				attribute.String("async.task", "policy_membership"),
+			),
+		)
+		defer span.End()
+	}
+
 	cfg := t.taskConfigs[config.AsyncTaskPolicyMembership]
 
 	hosts, err := loadActiveHostIDs(pool, policyPassHostIDsKey, cfg.RedisScanKeysCount)

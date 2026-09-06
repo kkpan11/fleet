@@ -1,16 +1,17 @@
-import React, { useContext, useEffect, useState } from "react";
+import React, { useContext, useEffect, useState, useCallback } from "react";
+import { InjectedRouter } from "react-router";
 import { AxiosError, AxiosResponse } from "axios";
 import { useQuery } from "react-query";
 import { ErrorBoundary } from "react-error-boundary";
 import { isBefore } from "date-fns";
 
+import PATHS from "router/paths";
 import page_titles from "router/page_titles";
 import TableProvider from "context/table";
 import QueryProvider from "context/query";
 import PolicyProvider from "context/policy";
-import NotificationProvider from "context/notification";
 import { AppContext } from "context/app";
-import { authToken, clearToken } from "utilities/local";
+import authToken from "utilities/auth_token";
 import useDeepEffect from "hooks/useDeepEffect";
 import { QueryParams } from "utilities/url";
 import { DEFAULT_USE_QUERY_OPTIONS } from "utilities/constants";
@@ -18,7 +19,7 @@ import usersAPI from "services/entities/users";
 import configAPI from "services/entities/config";
 import hostCountAPI from "services/entities/host_count";
 import mdmAppleBMAPI, {
-  IGetAbmTokensResponse,
+  IGetAbTokensResponse,
 } from "services/entities/mdm_apple_bm";
 import mdmAppleAPI, {
   IGetVppTokensResponse,
@@ -31,11 +32,14 @@ import Fleet403 from "pages/errors/Fleet403";
 import Fleet404 from "pages/errors/Fleet404";
 // @ts-ignore
 import Fleet500 from "pages/errors/Fleet500";
+import ErrorPageLayout from "layouts/ErrorPageLayout";
 
 import Spinner from "components/Spinner";
+import ToastNotification from "components/ToastNotification";
 
 interface IAppProps {
   children: JSX.Element;
+  router: InjectedRouter;
   location?: {
     pathname: string;
     search: string;
@@ -51,7 +55,7 @@ interface RecordWithRenewDate {
 const GUARANTEED_PAST_DATE = "2000-01-01T01:00:00Z";
 
 // TODO: add tests for this function
-const getEarliestExpiry = (records: RecordWithRenewDate[]): string => {
+export const getEarliestExpiry = (records: RecordWithRenewDate[]): string => {
   const earliest = records.reduce((acc, record) => {
     const renewDate = new Date(record.renew_date);
     return isBefore(acc, renewDate) ? acc : renewDate;
@@ -69,7 +73,7 @@ const getEarliestExpiry = (records: RecordWithRenewDate[]): string => {
 
 const baseClass = "app";
 
-const App = ({ children, location }: IAppProps): JSX.Element => {
+const App = ({ children, location, router }: IAppProps): JSX.Element => {
   const {
     config,
     currentUser,
@@ -88,6 +92,7 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
     setVppExpiry,
     setSandboxExpiry,
     setNoSandboxHosts,
+    isPremiumTier,
   } = useContext(AppContext);
 
   const [isLoading, setIsLoading] = useState(false);
@@ -98,34 +103,55 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
   useQuery(["android_enterprise"], () => mdmAndroidAPI.getAndroidEnterprise(), {
     ...DEFAULT_USE_QUERY_OPTIONS,
     retry: false,
-    enabled:
-      false && // TODO: reenable when the BE is completed
-      !!isGlobalAdmin &&
-      !!config?.mdm.android_enabled_and_configured &&
-      config?.android_enabled, // TODO: remove android feature flag
+    enabled: !!isGlobalAdmin && !!config?.mdm.android_enabled_and_configured,
     onSuccess: () => {
       setAndroidEnterpriseDeleted(false);
     },
-    onError: () => {
-      setAndroidEnterpriseDeleted(true);
+    onError: (error: AxiosError) => {
+      // Only set androidEnterpriseDeleted for 404 errors (actual deletion)
+      // Don't set it for 403 errors (credential/permission issues)
+      // Check both error.response?.status and error.status for different error formats
+      const statusCode = error.response?.status || error.status;
+      if (statusCode === 404) {
+        setAndroidEnterpriseDeleted(true);
+      } else {
+        setAndroidEnterpriseDeleted(false);
+      }
     },
   });
 
-  // Get the ABM tokens
-  useQuery<IGetAbmTokensResponse, AxiosError>(
-    ["abm_tokens"],
+  // Get the Apple Business (AB) tokens
+  useQuery<IGetAbTokensResponse, AxiosError>(
+    ["ab_tokens"],
     () => mdmAppleBMAPI.getTokens(),
     {
       ...DEFAULT_USE_QUERY_OPTIONS,
-      enabled: !!isGlobalAdmin && !!config?.mdm.enabled_and_configured,
-      onSuccess: ({ abm_tokens }) => {
-        abm_tokens.length &&
+      enabled:
+        !!isGlobalAdmin &&
+        !!config?.mdm.enabled_and_configured &&
+        !!isPremiumTier,
+      onSuccess: ({ ab_tokens }) => {
+        // Always update the context, even when the list is empty (e.g., the
+        // last token was deleted) -- otherwise stale expiry/banner state from
+        // a previous non-empty response would linger indefinitely.
+        if (ab_tokens.length === 0) {
           setABMExpiry({
-            earliestExpiry: getEarliestExpiry(abm_tokens),
-            needsAbmTermsRenewal: abm_tokens.some(
-              (token) => token.terms_expired
-            ),
+            earliestExpiry: "",
+            needsAbmTermsRenewal: false,
+            hasInvalidABMToken: false,
+            invalidAbmTokenOrgNames: [],
           });
+          return;
+        }
+
+        setABMExpiry({
+          earliestExpiry: getEarliestExpiry(ab_tokens),
+          needsAbmTermsRenewal: ab_tokens.some((token) => token.terms_expired),
+          hasInvalidABMToken: ab_tokens.some((token) => token.token_invalid),
+          invalidAbmTokenOrgNames: ab_tokens
+            .filter((token) => token.token_invalid)
+            .map((token) => token.org_name),
+        });
       },
       // TODO: Do we need to catch and check for a 400 status code? The old
       // API behaved this way when the token is already expired or invalid.
@@ -134,6 +160,8 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
           setABMExpiry({
             earliestExpiry: GUARANTEED_PAST_DATE,
             needsAbmTermsRenewal: true, // TODO: if order of precedence for banners changes, we may need to upate this
+            hasInvalidABMToken: false,
+            invalidAbmTokenOrgNames: [],
           });
         }
       },
@@ -155,14 +183,17 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
     () => mdmAppleAPI.getVppTokens(),
     {
       ...DEFAULT_USE_QUERY_OPTIONS,
-      enabled: !!isGlobalAdmin && !!config?.mdm.enabled_and_configured,
+      enabled:
+        !!isGlobalAdmin &&
+        !!config?.mdm.enabled_and_configured &&
+        !!isPremiumTier,
       onSuccess: ({ vpp_tokens }) => {
         vpp_tokens.length && setVppExpiry(getEarliestExpiry(vpp_tokens));
       },
     }
   );
 
-  const fetchConfig = async () => {
+  const fetchConfig = useCallback(async () => {
     try {
       const configResponse = await configAPI.loadAll();
       if (configResponse.sandbox_enabled) {
@@ -180,9 +211,9 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
       setIsLoading(false);
     }
     return true;
-  };
+  }, [setConfig, setSandboxExpiry, setNoSandboxHosts]);
 
-  const fetchCurrentUser = async () => {
+  const fetchCurrentUser = useCallback(async () => {
     try {
       const { user, available_teams, settings } = await usersAPI.me();
       setCurrentUser(user);
@@ -202,34 +233,40 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
       ) {
         return true;
       }
-      clearToken();
+      authToken.remove();
       // if this is not the device user page,
       // redirect to login
       if (!location?.pathname.includes("/device/")) {
-        window.location.href = "/login";
+        window.location.href = PATHS.LOGIN;
       }
     }
     return true;
-  };
+  }, [
+    location?.pathname,
+    setCurrentUser,
+    setAvailableTeams,
+    setUserSettings,
+    fetchConfig,
+  ]);
 
   useEffect(() => {
-    if (authToken() && !location?.pathname.includes("/device/")) {
+    if (authToken.get() && !location?.pathname.includes("/device/")) {
       fetchCurrentUser();
     }
-  }, [location?.pathname]);
+  }, [location?.pathname, fetchCurrentUser]);
 
   // Updates title that shows up on browser tabs
   useEffect(() => {
     // Also applies title to subpaths such as settings/organization/webaddress
     // TODO - handle different kinds of paths from PATHS - string, function w/params
     const curTitle = page_titles.find((item) =>
-      location?.pathname.includes(item.path)
+      location?.pathname.startsWith(item.path)
     );
 
     if (curTitle && curTitle.title) {
       document.title = curTitle.title;
     }
-  }, [location, config]);
+  }, [location?.pathname, config]);
 
   useDeepEffect(() => {
     const canGetEnrollSecret =
@@ -248,7 +285,6 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
         setEnrollSecret(spec.secrets);
       } catch (error) {
         console.error(error);
-        return false;
       }
     };
 
@@ -259,20 +295,25 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
 
   // "any" is used on purpose. We are using Axios but this
   // function expects a native React Error type, which is incompatible.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const renderErrorOverlay = ({ error }: any) => {
     // @ts-ignore
     console.error(error);
 
     const overlayError = error as AxiosResponse;
+
+    let errorPage = <Fleet500 />;
     if (overlayError.status === 403 || overlayError.status === 402) {
-      return <Fleet403 />;
+      errorPage = <Fleet403 />;
+    } else if (overlayError.status === 404) {
+      errorPage = <Fleet404 />;
     }
 
-    if (overlayError.status === 404) {
-      return <Fleet404 />;
-    }
-
-    return <Fleet500 />;
+    return (
+      <ErrorPageLayout router={router} location={location}>
+        {errorPage}
+      </ErrorPageLayout>
+    );
   };
 
   return isLoading ? (
@@ -281,14 +322,16 @@ const App = ({ children, location }: IAppProps): JSX.Element => {
     <TableProvider>
       <QueryProvider>
         <PolicyProvider>
-          <NotificationProvider>
-            <ErrorBoundary
-              fallbackRender={renderErrorOverlay}
-              resetKeys={[location?.pathname]}
-            >
-              <div className={baseClass}>{children}</div>
-            </ErrorBoundary>
-          </NotificationProvider>
+          {/* Sonner toaster — single global mount; renders toasts
+          dispatched from `notify.*` anywhere in the app. Outside the
+          ErrorBoundary so toasts survive page-level error overlays. */}
+          <ToastNotification />
+          <ErrorBoundary
+            fallbackRender={renderErrorOverlay}
+            resetKeys={[location?.pathname]}
+          >
+            <div className={baseClass}>{children}</div>
+          </ErrorBoundary>
         </PolicyProvider>
       </QueryProvider>
     </TableProvider>

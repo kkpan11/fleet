@@ -62,20 +62,44 @@ module.exports = {
       '/announcements',// « article category page
       '/deploy',// « article category page
       '/podcasts',// « article category page
+      '/whitepapers',// « article category page
+      '/webinars',// « article category page
+      '/newsletters',// « article category page
+      '/industry-news',// « article category page
       // Product category pages:
       '/orchestration',
       '/device-management',
       '/software-management',
-      '/meetups',
+      '/infrastructure-as-code',
+      '/endpoint-governance',
+      '/ai',
       // Other stuff:
       // > Note: /handbook overview page is already included amongst the markdown pages
       // > Note: Same for /docs
       '/transparency',// « default transparency link, pointed at by Fleet Desktop
-      '/queries',// « overview page (all subpages are dynamic)
+      '/reports',// « overview page (all subpages are dynamic)
       '/policies',// « overview page (all subpages are dynamic)
       '/tables',// « overview page (all subpages are dynamic)
-      '/app-library',// « overview page (all subpages are dynamic)
+      '/software-catalog',// « overview page (all subpages are dynamic)
       '/reports/state-of-device-management',// « 2021 research
+      '/mdm-commands',// « overview page (all subpages are dynamic)
+      '/scripts',// « overview page (all subpages are dynamic)
+      '/os-settings',
+      '/fast-track',
+      '/meetups',
+      '/customers',
+      '/gitops-workshop',
+      '/download',
+
+      // Landing pages:
+      '/lp/patch-faster',
+      '/lp/replace-jamf',
+      '/lp/autonomous-endpoint-management',
+      '/lp/apple-mdm',
+      '/lp/on-premise',
+      '/lp/open-source',
+      '/lp/windows-mdm',
+      '/lp/android-mdm',
       // FUTURE: Do something smarter to get hand-coded HTML pages from routes.js, like how rebuild-cloud-sdk works, to avoid this manual duplication.
       // See also https://github.com/sailshq/sailsjs.com/blob/b53c6e6a90c9afdf89e5cae00b9c9dd3f391b0e7/api/helpers/get-pages-for-sitemap.js#L27
     ];
@@ -90,7 +114,7 @@ module.exports = {
     let queries = _.where(sails.config.builtStaticContent.queries, {kind: 'query'});
     let policies = _.where(sails.config.builtStaticContent.policies, {kind: 'policy'});
     for (let query of queries) {
-      sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/queries/${query.slug}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
+      sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/reports/${query.slug}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
     }//∞
     for (let query of vitals) {
       sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/vitals/${query.slug}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
@@ -109,7 +133,13 @@ module.exports = {
     //  ║ ║ ║ ╠═╣║╣ ╠╦╝   ║║╚╦╝║║║╠═╣║║║║║    ╠═╝╠═╣║ ╦║╣ ╚═╗
     //  ╚═╝ ╩ ╩ ╩╚═╝╩╚═  ═╩╝ ╩ ╝╚╝╩ ╩╩ ╩╩╚═╝  ╩  ╩ ╩╚═╝╚═╝╚═╝
     for (let appPage of sails.config.builtStaticContent.appLibrary) {
-      sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/app-library/${appPage.identifier}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
+      sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/software-catalog/${appPage.identifier}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
+    }//∞
+    for (let script of sails.config.builtStaticContent.scripts) {
+      sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/scripts/${script.slug}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
+    }//∞
+    for (let command of sails.config.builtStaticContent.mdmCommands) {
+      sitemapXml +=`<url><loc>${_.escape(sails.config.custom.baseUrl+`/mdm-commands/${command.slug}`)}</loc></url>`;// note we omit lastmod for some sitemap entries. This is ok, to mix w/ other entries that do have lastmod. Why? See https://docs.google.com/document/d/1SbpSlyZVXWXVA_xRTaYbgs3750jn252oXyMFLEQxMeU/edit
     }//∞
     // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     sitemapXml += '</urlset>';

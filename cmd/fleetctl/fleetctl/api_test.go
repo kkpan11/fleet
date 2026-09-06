@@ -42,7 +42,8 @@ func TestRunApiCommand(t *testing.T) {
       "team_id": null,
       "name": "get_my_device_page.sh",
       "created_at": "%s",
-      "updated_at": "%s"
+      "updated_at": "%s",
+      "fleet_id": null
     }
   ]
 }
@@ -54,6 +55,39 @@ func TestRunApiCommand(t *testing.T) {
     "has_previous_results": false
   },
   "scripts": []
+}
+`
+
+	expectedNewPolicy := `{
+  "policy": {
+    "id": 0,
+    "name": "Test Policy",
+    "query": "%s",
+    "critical": false,
+    "description": "",
+    "author_id": 1,
+    "author_name": "",
+    "author_email": "",
+    "team_id": null,
+    "resolution": "",
+    "platform": "darwin,windows,linux,chrome",
+    "calendar_events_enabled": false,
+    "conditional_access_enabled": false,
+    "type": "dynamic",
+    "continuous_automations_enabled": false,
+    "patch_when_closed": false,
+    "created_at": "0001-01-01T00:00:00Z",
+    "updated_at": "0001-01-01T00:00:00Z",
+    "passing_host_count": 0,
+    "failing_host_count": 0,
+    "host_count_updated_at": null,
+    "fleet_id": null
+  }
+}
+`
+
+	expectedNewScript := `{
+  "script_id": 1
 }
 `
 
@@ -105,13 +139,68 @@ func TestRunApiCommand(t *testing.T) {
 			args:         []string{"vresion"},
 			expectErrMsg: "Got non 2XX return of 404",
 		},
+		{
+			name:         "flags after args",
+			args:         []string{"scripts", "-F", "team_id=1"},
+			expectErrMsg: "extra arguments: -F team_id=1",
+		},
+		{
+			name: "create policy",
+			args: []string{
+				"-X", "POST",
+				"-F", "name=Test Policy",
+				"-F", "query=<testdata/test-policy-query.sql",
+				"-F", "platform=darwin,windows,linux,chrome",
+				"-F", "critical=false",
+				"-F", "description=",
+				"-F", "resolution=",
+				"/api/latest/fleet/policies",
+			},
+			expectOutput: fmt.Sprintf(
+				expectedNewPolicy,
+				"SELECT 1;"),
+		},
+		{
+			name: "create policy, missing input file",
+			args: []string{
+				"-X", "POST",
+				"-F", "name=Test Policy",
+				"-F", "query=<testdata/does-not-exist.sql",
+				"-F", "platform=darwin,windows,linux,chrome",
+				"-F", "critical=false",
+				"-F", "description=",
+				"-F", "resolution=",
+				"/api/latest/fleet/policies",
+			},
+			expectOutput: fmt.Sprintf(
+				expectedNewPolicy,
+				"<testdata/does-not-exist.sql"),
+		},
+		{
+			name: "upload script",
+			args: []string{
+				"-X", "POST",
+				"-F", "script=@testdata/testscript.sh",
+				"-F", "team_id=0",
+				"/api/latest/fleet/scripts",
+			},
+			expectOutput: expectedNewScript,
+		},
+		{
+			name: "args after uri",
+			args: []string{
+				"/api/latest/fleet/foo",
+				"-X", "DELETE",
+			},
+			expectErrMsg: "Ensure any flags are before the URL",
+		},
 	}
 
 	setupDS := func(t *testing.T, c testCase) {
 		ds.ListScriptsFunc = func(ctx context.Context, teamID *uint, opt fleet.ListOptions) ([]*fleet.Script, *fleet.PaginationMetadata, error) {
 			if teamID == nil {
 				ret := []*fleet.Script{
-					&fleet.Script{
+					{
 						ID:        23,
 						Name:      "get_my_device_page.sh",
 						CreatedAt: created_at,
@@ -132,7 +221,7 @@ func TestRunApiCommand(t *testing.T) {
 
 			args = append(args, c.args...)
 
-			b, err := RunAppNoChecks(args)
+			b, err := runAppNoChecks(args)
 			if c.expectErrMsg != "" {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), c.expectErrMsg)
@@ -149,5 +238,4 @@ func TestRunApiCommand(t *testing.T) {
 			}
 		})
 	}
-
 }

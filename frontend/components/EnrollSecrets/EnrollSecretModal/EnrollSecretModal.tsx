@@ -3,14 +3,15 @@ import React from "react";
 import { ITeam } from "interfaces/team";
 import { IEnrollSecret } from "interfaces/enroll_secret";
 
+import EmptyState from "components/EmptyState";
 import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
-import Icon from "components/Icon/Icon";
 import EnrollSecretTable from "../EnrollSecretTable";
 
 interface IEnrollSecretModal {
-  selectedTeam: number;
+  selectedTeamId: number;
+  primoMode: boolean;
   onReturnToApp: () => void;
   teams: ITeam[];
   toggleSecretEditorModal: () => void;
@@ -25,29 +26,23 @@ const baseClass = "enroll-secret-modal";
 
 const EnrollSecretModal = ({
   onReturnToApp,
-  selectedTeam,
+  selectedTeamId,
+  primoMode,
   teams,
   toggleSecretEditorModal,
   toggleDeleteSecretModal,
   setSelectedSecret,
   globalSecrets,
 }: IEnrollSecretModal): JSX.Element => {
-  const renderTeam = () => {
-    if (typeof selectedTeam === "string") {
-      selectedTeam = parseInt(selectedTeam, 10);
-    }
-
-    if (selectedTeam <= 0) {
-      return { name: "No team", secrets: globalSecrets }; // TODO: Should "No team" be "Fleet" for free tier?
-    }
-    return teams.find((team) => team.id === selectedTeam);
-  };
+  const teamInfo =
+    selectedTeamId <= 0
+      ? { name: "Unassigned", secrets: globalSecrets }
+      : teams.find((team) => team.id === selectedTeamId);
 
   const addNewSecretClick = () => {
     setSelectedSecret(undefined);
     toggleSecretEditorModal();
   };
-  const team = renderTeam();
   return (
     <Modal
       onExit={onReturnToApp}
@@ -55,34 +50,70 @@ const EnrollSecretModal = ({
       title="Manage enroll secrets"
       className={baseClass}
     >
-      <div className={`${baseClass} form`}>
-        {team?.secrets?.length ? (
-          <>
-            <div className={`${baseClass}__description`}>
-              Use these secret(s) to enroll hosts to <b>{renderTeam()?.name}</b>
-              :
-            </div>
-            <EnrollSecretTable
-              secrets={team?.secrets}
-              toggleSecretEditorModal={toggleSecretEditorModal}
-              toggleDeleteSecretModal={toggleDeleteSecretModal}
-              setSelectedSecret={setSelectedSecret}
+      {teamInfo?.secrets?.length ? (
+        <div className={`${baseClass} form`}>
+          <div className={`${baseClass}__description`}>
+            Use these secret(s) to enroll hosts
+            {primoMode || teamInfo?.name === "Unassigned" ? (
+              ""
+            ) : (
+              <>
+                {" "}
+                to <b>{teamInfo?.name}</b>
+              </>
+            )}
+            .
+          </div>
+          <EnrollSecretTable
+            secrets={teamInfo?.secrets}
+            toggleSecretEditorModal={toggleSecretEditorModal}
+            toggleDeleteSecretModal={toggleDeleteSecretModal}
+            setSelectedSecret={setSelectedSecret}
+          />
+        </div>
+      ) : (
+        <EmptyState
+          variant="list"
+          header="You have no enroll secrets"
+          info={
+            <>
+              Add secret(s) to enroll hosts
+              {primoMode || teamInfo?.name === "Unassigned" ? (
+                ""
+              ) : (
+                <>
+                  {" "}
+                  to <b>{teamInfo?.name}</b>
+                </>
+              )}
+              .
+            </>
+          }
+          primaryButton={
+            <GitOpsModeTooltipWrapper
+              entityType="secrets"
+              position="right"
+              tipOffset={8}
+              renderChildren={(disableChildren) => (
+                <Button
+                  disabled={disableChildren}
+                  onClick={addNewSecretClick}
+                  className={`${baseClass}__add-secret-btn`}
+                  variant="secondary"
+                  icon="plus"
+                >
+                  Add secret
+                </Button>
+              )}
             />
-          </>
-        ) : (
-          <>
-            <div className={`${baseClass}__description`}>
-              <p>
-                <b>You have no enroll secrets.</b>
-              </p>
-              <p>
-                Add secret(s) to enroll hosts to <b>{renderTeam()?.name}</b>.
-              </p>
-            </div>
-          </>
-        )}
-        <div className={`${baseClass}__add-secret`}>
+          }
+        />
+      )}
+      <div className="modal-cta-wrap">
+        <Button onClick={onReturnToApp}>Done</Button>
+        {!!teamInfo?.secrets?.length && (
           <GitOpsModeTooltipWrapper
+            entityType="secrets"
             position="right"
             tipOffset={8}
             renderChildren={(disableChildren) => (
@@ -90,17 +121,14 @@ const EnrollSecretModal = ({
                 disabled={disableChildren}
                 onClick={addNewSecretClick}
                 className={`${baseClass}__add-secret-btn`}
-                variant="text-icon"
-                iconStroke
+                variant="secondary"
+                icon="plus"
               >
-                Add secret <Icon name="plus" />
+                Add secret
               </Button>
             )}
           />
-        </div>
-        <div className="modal-cta-wrap">
-          <Button onClick={onReturnToApp}>Done</Button>
-        </div>
+        )}
       </div>
     </Modal>
   );

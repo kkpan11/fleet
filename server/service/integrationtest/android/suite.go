@@ -1,49 +1,61 @@
 package android
 
 import (
+	"log/slog"
 	"os"
 	"testing"
 
+	"github.com/fleetdm/fleet/v4/server/config"
+	"github.com/fleetdm/fleet/v4/server/datastore/mysql/mysqltest"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	android_mock "github.com/fleetdm/fleet/v4/server/mdm/android/mock"
 	android_service "github.com/fleetdm/fleet/v4/server/mdm/android/service"
+	"github.com/fleetdm/fleet/v4/server/platform/endpointer"
 	"github.com/fleetdm/fleet/v4/server/service"
 	"github.com/fleetdm/fleet/v4/server/service/integrationtest"
-	"github.com/fleetdm/fleet/v4/server/service/middleware/endpoint_utils"
-	"github.com/go-kit/log"
+	"github.com/fleetdm/fleet/v4/server/service/svctest"
 	"github.com/stretchr/testify/require"
 )
 
 type Suite struct {
 	integrationtest.BaseSuite
-	AndroidProxy *android_mock.Proxy
+	AndroidProxy *android_mock.Client
 }
 
 func SetUpSuite(t *testing.T, uniqueTestName string) *Suite {
 	ds, redisPool, fleetCfg, fleetSvc, ctx := integrationtest.SetUpMySQLAndRedisAndService(t, uniqueTestName)
-	logger := log.NewLogfmtLogger(os.Stdout)
-	proxy := android_mock.Proxy{}
+	slogLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	proxy := android_mock.Client{}
 	proxy.InitCommonMocks()
-	androidSvc, err := android_service.NewServiceWithProxy(
-		logger,
+	androidSvc, err := android_service.NewServiceWithClient(
+		slogLogger,
 		ds,
 		&proxy,
-		fleetSvc,
+		"test-private-key",
+		ds,
+		fleetSvc.NewActivity,
+		config.AndroidAgentConfig{
+			Package:       "com.fleetdm.agent",
+			SigningSHA256: "abc123def456",
+		},
 	)
 	require.NoError(t, err)
-	users, server := service.RunServerForTestsWithServiceWithDS(t, ctx, ds, fleetSvc, &service.TestServerOpts{
+	androidSvc.(*android_service.Service).AllowLocalhostServerURL = true
+	dbConns := mysqltest.TestDBConnections(t, ds)
+	users, server := svctest.RunServerForTestsWithServiceWithDS(t, ctx, ds, fleetSvc, &service.TestServerOpts{
 		License: &fleet.LicenseInfo{
 			Tier: fleet.TierFree,
 		},
 		FleetConfig:   &fleetCfg,
 		Pool:          redisPool,
-		Logger:        logger,
-		FeatureRoutes: []endpoint_utils.HandlerRoutesFunc{android_service.GetRoutes(fleetSvc, androidSvc)},
+		Logger:        slogLogger,
+		FeatureRoutes: []endpointer.HandlerRoutesFunc{android_service.GetRoutes(fleetSvc, androidSvc)},
+		DBConns:       dbConns,
 	})
 
 	s := &Suite{
 		BaseSuite: integrationtest.BaseSuite{
-			Logger:   logger,
+			Logger:   slogLogger,
 			DS:       ds,
 			FleetCfg: fleetCfg,
 			Users:    users,

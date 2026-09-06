@@ -1,20 +1,20 @@
 package preview
 
 import (
-	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/fleetdm/fleet/v4/cmd/fleetctl/fleetctl"
+	"github.com/fleetdm/fleet/v4/cmd/fleetctl/fleetctl/fleetctltest"
 	"github.com/fleetdm/fleet/v4/pkg/nettest"
 	"github.com/stretchr/testify/require"
 )
 
 func TestPreviewFailsOnInvalidLicenseKey(t *testing.T) {
-	_, err := fleetctl.RunAppNoChecks([]string{"preview", "--license-key", "0xDEADBEEF"})
+	_, err := fleetctltest.RunAppNoChecks([]string{"preview", "--license-key", "0xDEADBEEF"})
 	require.ErrorContains(t, err, "--license-key")
 }
 
@@ -27,41 +27,46 @@ func TestIntegrationsPreview(t *testing.T) {
 	t.Log("config path: ", configPath)
 
 	t.Cleanup(func() {
-		require.Equal(t, "", fleetctl.RunAppForTest(t, []string{"preview", "--config", configPath, "stop"}))
+		require.Empty(t, fleetctltest.RunAppForTest(t, []string{"preview", "--config", configPath, "stop"}))
 	})
 
-	var output *bytes.Buffer
+	fleetTag := os.Getenv("FLEET_PREVIEW_TAG")
+	if fleetTag == "" {
+		fleetTag = "main"
+	}
+
 	require.NoError(t, nettest.RunWithNetRetry(t, func() error {
-		var err error
-		output, err = fleetctl.RunAppNoChecks([]string{
+		_, err := fleetctltest.RunAppNoChecks([]string{
 			"preview",
 			"--config", configPath,
 			"--preview-config-path", filepath.Join(gitRootPath(t), "tools", "osquery", "in-a-box"),
-			"--tag", "main",
+			"--tag", fleetTag,
 			"--disable-open-browser",
 		})
 		return err
 	}))
 
-	queriesRe := regexp.MustCompile(`applied ([0-9]+) queries`)
-	policiesRe := regexp.MustCompile(`applied ([0-9]+) policies`)
-	require.True(t, queriesRe.MatchString(output.String()))
-	require.True(t, policiesRe.MatchString(output.String()))
-
 	// run some sanity checks on the preview environment
 
-	// standard queries must have been loaded
-	queries := fleetctl.RunAppForTest(t, []string{"get", "queries", "--config", configPath, "--json"})
-	n := strings.Count(queries, `"kind":"query"`)
-	require.Greater(t, n, 10)
-
 	// app configuration must disable analytics
-	appConf := fleetctl.RunAppForTest(t, []string{"get", "config", "--include-server-config", "--config", configPath, "--yaml"})
+	appConf := fleetctltest.RunAppForTest(t, []string{"get", "config", "--include-server-config", "--config", configPath, "--yaml"})
 	ok := strings.Contains(appConf, `enable_analytics: false`)
 	require.True(t, ok, appConf)
 
 	// software inventory must be enabled
 	ok = strings.Contains(appConf, `enable_software_inventory: true`)
+	require.True(t, ok, appConf)
+
+	// Regression guard:
+	// preview used to apply its config patch via the deprecated `host_settings`
+	// key, which wholesale-replaced the Features struct and silently zeroed the
+	// historical_data sub-keys. Applying via `features` merges field-by-field
+	// and preserves them.
+	ok = strings.Contains(appConf, `uptime: true`)
+	require.True(t, ok, appConf)
+	ok = strings.Contains(appConf, `vulnerabilities: true`)
+	require.True(t, ok, appConf)
+	ok = strings.Contains(appConf, `enable_host_users: true`)
 	require.True(t, ok, appConf)
 
 	// current instance checks must be on

@@ -3,34 +3,55 @@ import { IConfig, ILicense, IMdmConfig } from "interfaces/config";
 const DEFAULT_CONFIG_MDM_MOCK: IMdmConfig = {
   apple_server_url: "",
   enable_disk_encryption: false,
+  enable_recovery_lock_password: false,
+  windows_require_bitlocker_pin: false,
+  enable_turn_on_windows_mdm_manually: false,
   windows_enabled_and_configured: true,
+  windows_entra_tenant_ids: [],
+  windows_entra_client_ids: [],
+  microsoft_graph_credential_invalid: false,
   apple_bm_default_team: "Apples",
   apple_bm_enabled_and_configured: true,
   apple_bm_terms_expired: false,
   enabled_and_configured: true,
   android_enabled_and_configured: false,
+  apple_require_hardware_attestation: false,
   macos_updates: {
     minimum_version: "",
     deadline: "",
+    deadline_days: null,
   },
   ios_updates: {
     minimum_version: "",
     deadline: "",
+    deadline_days: null,
   },
   ipados_updates: {
     minimum_version: "",
     deadline: "",
+    deadline_days: null,
   },
-  macos_settings: {
-    custom_settings: null,
+  apple_settings: {
+    configuration_profiles: null,
     enable_disk_encryption: false,
+    enable_escrow_disk_encryption_key: false,
   },
-  macos_setup: {
-    bootstrap_package: "",
-    manual_agent_install: false,
+  windows_settings: {
+    enable_disk_encryption: false,
+    require_bitlocker_pin: false,
+  },
+  linux_settings: {
+    enable_escrow_disk_encryption_key: false,
+  },
+  setup_experience: {
+    macos_bootstrap_package: "",
+    macos_manual_agent_install: false,
     enable_end_user_authentication: false,
-    macos_setup_assistant: null,
-    enable_release_device_manually: false,
+    apple_setup_assistant: null,
+    apple_enable_release_device_manually: false,
+    require_all_software_macos: false,
+    require_all_software_windows: false,
+    lock_end_user_info: false,
   },
   macos_migration: {
     enable: false,
@@ -63,12 +84,10 @@ export const DEFAULT_LICENSE_MOCK: ILicense = {
   device_count: 4,
   note: "",
   organization: "",
-  managed_cloud: true,
   allow_disable_telemetry: false,
 };
 
 const DEFAULT_CONFIG_MOCK: IConfig = {
-  android_enabled: false, // TODO: feature flag, remove when feature releases.
   org_info: {
     org_name: "fleet",
     org_logo_url: "",
@@ -114,6 +133,10 @@ const DEFAULT_CONFIG_MOCK: IConfig = {
   conditional_access: {
     microsoft_entra_tenant_id: "123",
     microsoft_entra_connection_configured: true,
+    okta_idp_id: "",
+    okta_assertion_consumer_service_url: "",
+    okta_audience_uri: "",
+    okta_certificate: "",
   },
   host_expiry_settings: {
     host_expiry_enabled: false,
@@ -122,6 +145,7 @@ const DEFAULT_CONFIG_MOCK: IConfig = {
   activity_expiry_settings: {
     activity_expiry_enabled: true,
     activity_expiry_window: 90,
+    preserve_host_activities_on_reenrollment: false,
   },
   agent_options: "",
   license: DEFAULT_LICENSE_MOCK,
@@ -152,7 +176,7 @@ const DEFAULT_CONFIG_MOCK: IConfig = {
     jira: [],
     zendesk: [],
     google_calendar: [],
-    ndes_scep_proxy: null,
+    google_workspace: [],
   },
   logging: {
     debug: false,
@@ -201,16 +225,32 @@ const DEFAULT_CONFIG_MOCK: IConfig = {
   features: {
     enable_host_users: true,
     enable_software_inventory: true,
+    enable_conditional_access: true,
+    enable_conditional_access_bypass: true,
+    historical_data: {
+      uptime: true,
+      vulnerabilities: true,
+    },
   },
-  fleet_desktop: { transparency_url: "https://fleetdm.com/transparency" },
+  fleet_desktop: {
+    transparency_url: "https://fleetdm.com/transparency",
+    alternative_browser_host: "",
+    sso_enabled: false,
+  },
   mdm: createMockMdmConfig(),
   gitops: {
     gitops_mode_enabled: false,
     repository_url: "",
+    exceptions: {
+      labels: false,
+      software: false,
+      secrets: true,
+    },
   },
+  max_software_package_size: 10 * 1024 * 1024 * 1024,
 };
 
-const createMockConfig = (overrides?: Partial<IConfig>): IConfig => {
+export const createMockConfig = (overrides?: Partial<IConfig>): IConfig => {
   return { ...DEFAULT_CONFIG_MOCK, ...overrides };
 };
 

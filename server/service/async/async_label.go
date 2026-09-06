@@ -10,6 +10,9 @@ import (
 	"github.com/fleetdm/fleet/v4/server/datastore/redis"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	redigo "github.com/gomodule/redigo/redis"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -48,20 +51,29 @@ func (t *Task) RecordLabelQueryExecutions(ctx context.Context, host *fleet.Host,
 	// KEYS[2]: keyTs  (labelMembershipReportedKey)
 	// ARGV[1]: timestamp for "reported at"
 	// ARGV[2]: ttl for both keys
-	// ARGV[3..]: the arguments to ZADD to keySet
+	// ARGV[3..]: the arguments to ZADD to keySet (may be empty if every label
+	// query errored this run)
 	script := redigo.NewScript(2, `
-    redis.call('ZADD', KEYS[1], unpack(ARGV, 3))
-    redis.call('EXPIRE', KEYS[1], ARGV[2])
+    if #ARGV > 2 then
+      redis.call('ZADD', KEYS[1], unpack(ARGV, 3))
+      redis.call('EXPIRE', KEYS[1], ARGV[2])
+    end
     redis.call('SET', KEYS[2], ARGV[1])
     return redis.call('EXPIRE', KEYS[2], ARGV[2])
   `)
 
-	// convert results to ZADD arguments, store as -1 for delete, +1 for insert
+	// convert results to ZADD arguments, store as -1 for delete, +1 for insert.
+	// A nil result means the label query errored (e.g. extension socket
+	// unavailable) rather than returning a definitive 0 rows, so it is skipped
+	// entirely to leave existing membership untouched.
 	args := make(redigo.Args, 0, 4+(len(results)*2))
 	args = args.Add(keySet, keyTs, ts.Unix(), int(ttl.Seconds()))
 	for k, v := range results {
+		if v == nil {
+			continue
+		}
 		score := -1
-		if v != nil && *v {
+		if *v {
 			score = 1
 		}
 		args = args.Add(score, k)
@@ -88,6 +100,18 @@ func (t *Task) RecordLabelQueryExecutions(ctx context.Context, host *fleet.Host,
 }
 
 func (t *Task) collectLabelQueryExecutions(ctx context.Context, ds fleet.Datastore, pool fleet.RedisPool, stats *collectorExecStats) error {
+	// Create a root span for this async collection task if OTEL is enabled
+	if t.otelEnabled {
+		tracer := otel.Tracer("async")
+		var span trace.Span
+		ctx, span = tracer.Start(ctx, "async.collect_label_query_executions",
+			trace.WithAttributes(
+				attribute.String("async.task", "label_membership"),
+			),
+		)
+		defer span.End()
+	}
+
 	cfg := t.taskConfigs[config.AsyncTaskLabelMembership]
 
 	hosts, err := loadActiveHostIDs(pool, labelMembershipActiveHostIDsKey, cfg.RedisScanKeysCount)

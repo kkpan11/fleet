@@ -1,0 +1,118 @@
+name: Test Fleet Maintained Apps - Windows (PR Only)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ee/maintained-apps/inputs/**
+      - ee/maintained-apps/outputs/**
+      - cmd/maintained-apps/validate/**
+      - .github/workflows/test-fma-windows-pr-only.yml
+      - .github/workflows/test-fma-windows-validate.yml
+      - .github/scripts/partition-fma-apps.sh
+      - .github/scripts/detect-new-fmas-in-pr.sh
+      - .github/scripts/filter-apps-json.sh
+  workflow_dispatch: # Manual trigger
+    inputs:
+      log_level:
+        description: "Log level (debug, info, warn, error)"
+        required: false
+        default: "info"
+        type: choice
+        options:
+          - debug
+          - info
+          - warn
+          - error
+
+permissions:
+  contents: read
+
+jobs:
+  # Detect which apps changed and partition them by installer architecture on a
+  # cheap Linux runner. The (much more expensive) Windows runners below only
+  # spin up when there are Windows apps to validate, and each app is routed to
+  # a runner whose native architecture matches its installer: arm64 apps to
+  # windows-11-arm, x64/x86/neutral apps to the x64 runner. Apps marked
+  # requires_client_os always go to windows-11-arm (the x64 runner is Windows
+  # Server). Large PRs are split into shards that validate in parallel.
+  detect-changed-apps:
+    runs-on: ubuntu-latest
+    outputs:
+      has_windows_apps: ${{ steps.partition.outputs.has_apps }}
+      matrix: ${{ steps.partition.outputs.matrix }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout Fleet
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # Need full history to compare with base branch
+          persist-credentials: false
+
+      - name: Detect changed apps
+        id: detect-changed
+        env:
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref || github.base_ref || 'main' }}
+        run: |
+          # fetch-depth 0 normally brings in the base branch already; fetch it
+          # explicitly as a fallback so origin/$GITHUB_BASE_REF exists.
+          git fetch origin "$GITHUB_BASE_REF" || true
+          bash .github/scripts/detect-new-fmas-in-pr.sh
+
+      - name: Partition Windows apps by architecture
+        id: partition
+        env:
+          CHANGED_APPS: ${{ steps.detect-changed.outputs.CHANGED_APPS }}
+        run: |
+          bash .github/scripts/partition-fma-apps.sh windows "${CHANGED_APPS:-[]}" 25
+
+  validate:
+    needs: detect-changed-apps
+    if: needs.detect-changed-apps.outputs.has_windows_apps == 'true'
+    name: ${{ matrix.name }}
+    strategy:
+      # Don't cancel the other architecture's validation if one fails.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect-changed-apps.outputs.matrix) }}
+    uses: ./.github/workflows/test-fma-windows-validate.yml
+    permissions:
+      contents: read
+    with:
+      runner: ${{ matrix.runner }}
+      slugs: ${{ matrix.slugs }}
+      log_level: ${{ github.event.inputs.log_level || 'info' }}
+
+  # Stable-named summary check (matches the old single-job name) so PR gating
+  # doesn't depend on the dynamic per-architecture/per-shard matrix job names.
+  test-fma-pr-only:
+    needs: [detect-changed-apps, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Check validation results
+        env:
+          DETECT_RESULT: ${{ needs.detect-changed-apps.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        run: |
+          echo "detect-changed-apps: $DETECT_RESULT"
+          echo "validate: $VALIDATE_RESULT"
+          if [ "$DETECT_RESULT" != "success" ]; then
+            echo "Detecting changed apps failed"
+            exit 1
+          fi
+          # validate is skipped when the PR changes no Windows apps.
+          if [ "$VALIDATE_RESULT" != "success" ] && [ "$VALIDATE_RESULT" != "skipped" ]; then
+            echo "Validation failed"
+            exit 1
+          fi
+          echo "All Windows FMA validations passed"

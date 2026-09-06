@@ -3,7 +3,6 @@ package fleetctl
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/fleetdm/fleet/v4/cmd/fleetctl/fleetctl/testing_utils"
 	"github.com/fleetdm/fleet/v4/server/fleet"
@@ -14,9 +13,12 @@ func TestDeleteLabel(t *testing.T) {
 	_, ds := testing_utils.RunServerWithMockedDS(t)
 
 	var deletedLabel string
-	ds.DeleteLabelFunc = func(ctx context.Context, name string) error {
+	ds.DeleteLabelFunc = func(ctx context.Context, name string, filter fleet.TeamFilter) error {
 		deletedLabel = name
 		return nil
+	}
+	ds.LabelByNameFunc = func(ctx context.Context, name string, filter fleet.TeamFilter) (*fleet.Label, error) {
+		return &fleet.Label{Name: name}, nil
 	}
 
 	name := writeTmpYml(t, `---
@@ -29,7 +31,7 @@ spec:
     - darwin
 `)
 
-	assert.Equal(t, "", RunAppForTest(t, []string{"delete", "-f", name}))
+	assert.Empty(t, runAppForTest(t, []string{"delete", "-f", name}))
 	assert.True(t, ds.DeleteLabelFuncInvoked)
 	assert.Equal(t, "pending_updates", deletedLabel)
 }
@@ -54,12 +56,6 @@ func TestDeletePack(t *testing.T) {
 			Disabled:    false,
 		}, true, nil
 	}
-	ds.NewActivityFunc = func(
-		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
-	) error {
-		return nil
-	}
-
 	name := writeTmpYml(t, `---
 apiVersion: v1
 kind: pack
@@ -73,7 +69,7 @@ spec:
     labels: null
 `)
 
-	assert.Equal(t, "", RunAppForTest(t, []string{"delete", "-f", name}))
+	assert.Empty(t, runAppForTest(t, []string{"delete", "-f", name}))
 	assert.True(t, ds.DeletePackFuncInvoked)
 	assert.Equal(t, "pack1", deletedPack)
 }
@@ -99,12 +95,6 @@ func TestDeleteQuery(t *testing.T) {
 			ObserverCanRun: false,
 		}, nil
 	}
-	ds.NewActivityFunc = func(
-		ctx context.Context, user *fleet.User, activity fleet.ActivityDetails, details []byte, createdAt time.Time,
-	) error {
-		return nil
-	}
-
 	name := writeTmpYml(t, `---
 apiVersion: v1
 kind: query
@@ -114,7 +104,7 @@ spec:
   query: select 1;
 `)
 
-	assert.Equal(t, "", RunAppForTest(t, []string{"delete", "-f", name}))
+	assert.Empty(t, runAppForTest(t, []string{"delete", "-f", name}))
 	assert.True(t, ds.DeleteQueryFuncInvoked)
 	assert.Equal(t, "query1", deletedQuery)
 }

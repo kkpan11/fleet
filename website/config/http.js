@@ -59,6 +59,12 @@ module.exports.http = {
           // If an error occurs while parsing an incoming request body, we'll return a badRequest response if error.statusCode is between 400-500
           if (_.isNumber(err.statusCode) && err.statusCode >= 400 && err.statusCode < 500) {
             return res.status(400).send(err.message);
+          // If an error occurs and this was a request going to a static asset, return a 403 response.
+          } else if(req.url.match(sails.LOOKS_LIKE_ASSET_RX)) {
+            return res.status(403).send();
+          } else if(err && _.isString(err.message) && err.message.startsWith('EUNFNTEX')) {
+          // If Skipper throws an EUNFNTEX error (a plaintext error thrown when a client never finishes streaming its request body), return a 408 (request timeout) response.
+            return res.status(408).send();
           } else {
             sails.log.error('Sending 500 ("Server Error") response: \n', err);
             return res.status(500).send();
@@ -68,11 +74,14 @@ module.exports.http = {
       return middlewareFn;
     })(),
 
-    // Note: this middleware function will run for every HTTP request, but will only handle errors thrown by the serve-static middleware if a user requests an invalid byte range of a static asset.
+    // Note: this middleware function will run for every HTTP request, but will only handle errors thrown by the serve-static middleware if a user requests an invalid byte range of a static asset, or sends a request with an invalid 'If-Match' header value.
     middlewareErrorHandler: function(err, req, res, next) {
       // If this is a 'RangeNotSatisfiableError' error, respond with a 416 status code.
       if (err.message === 'Range Not Satisfiable') {
         return res.status(416).send();
+      // If this is a 'PreconditionFailedError' error, respond with a 412 status code.
+      } else if(err.message === 'Precondition Failed') {
+        return res.status(412).send();
       } else {
         return next(err);
       }

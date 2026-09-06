@@ -2,6 +2,11 @@
 
 This is meant to be a helpful checklist of 'events' or 'transactions' to help catch edge cases sooner rather than later while designing or testing new features or bugs.  Please feel free to add more if any are missing.
 
+## fleetd and Fleet Desktop
+- Fleet Free and Fleet Premium
+- Windows/Mac/Linux, including supported Linux distros (at least one each of RPM-based and DEB-based)
+- If there's a new SwiftDialog version, test the new Mac setup and MDM migration flow and verify that there's no regressions.
+
 ## User
 
 - Create user
@@ -9,19 +14,21 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 - Update user permissions
 - API-only user
 
-## Team
+## Fleet
 
-- Create team
-- Remove team
-- No team
-- All teams
-- Transfer host into this team
-- Transfer host out of this team
+- Create fleet
+- Remove fleet
+- Unassigned
+- All fleets
+- Transfer host to this fleet
+- Transfer host from this fleet
 
 ## MDM
 
-- Turn MDM on
-- Turn MDM off
+- Turn Android, Windows or Apple MDM on
+- Turn multiple MDM on
+- Turn Android, Windows or Apple MDM off
+- Turn all MDM off
 - Enable disk encryption
 - Disable disk encryption
 - Add ABM token
@@ -44,11 +51,11 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 
 ## Software
 
-- Add software to team
+- Add software to fleet
   - FMA
   - VPP
   - custom package
-- Remove software from team
+- Remove software from a fleet
 - Edit software (scripts / binary)
 - Add script
 - Run script
@@ -57,6 +64,10 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 - Vulnerability scans
 - Automatic software install
 - Label-scoped software install
+- Host software
+  - Actions: Install, uninstall, update software
+  - Statuses
+  - Activities (host upcoming, host past, global)
 
 ## Policy
 
@@ -65,13 +76,13 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 - Add install automation
 - Add Calendar automation
 
-## Query
+## Report
 
-- Add query
-- Remove query
-- Edit query
-- Live query
-- Saved query results
+- Add report
+- Remove report
+- Edit report
+- Live report
+- Saved report results
 
 ## Labels
 
@@ -81,7 +92,7 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 - Remove Manual label
 - Add host to an existing label
 - Remove a host from a label
-- Label selecion (policy / profile / software)
+- Label selection (policy / profile / software)
   - Include all
   - Include any
   - Exclude all
@@ -104,6 +115,7 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 
 ## Integrations
 
+- New 3rd party integrations or changes should be load tested to see if we need to throttle calls to the 3rd party
 - Jira
 - Zendesk
 - Webhooks
@@ -114,6 +126,45 @@ This is meant to be a helpful checklist of 'events' or 'transactions' to help ca
 - DB primary / replica
 - Async ingestion of policies
 
+## Tables
+
+- Pagination (client side vs. server side)
+- Filters: sort column, direction, search, dropdowns, advanced
+- URL query parameters (source of truth) vs. self-contained parameters
+- Empty states
+  - Cell empty states
+  - Whole table empty states (e.g. true empty, search empty, etc)
+- Loading/Error states
+
+## GitOps mode
+
+- Disable certain actions with Gitops mode tooltip
+- Copy changes
+
+## Forms
+
+- Error states (conditions, clientside vs. server side, location of error message, trigger onBlur/onChange/onSubmit)
+- Disabled states (conditions, on button, on form fields)
+- Dynamic views (show/hide buttons, dynamic help text, edge case views)
+- Views that load data have an empty state defined.
+
+## Responsiveness and low-width browsers
+- Long database names rendered in the UI e.g. fleet names, scripts, software titles...
+- Wide tables with many columns or wide columns (horizontal scroll vs. old, bad pattern of hiding columns)
+- Page load expectations (how long should it take for a page to load with x number of items in the API response)
+- Cron run time expectations (what is an acceptable change in amount of time it takes for a scheduled cron to complete)
+
+## Actionable components (e.g. buttons, links, form fields, navigation)
+- Keyboard accessibility
+- States: Default, Hover (with mouse), Active (when clicked), Focus (keyboard highlight)
+
+## User permissions
+- Premium vs. Free. Premium-only API endpoints and parameters return an easy to understand error message if you're using Fleet Free
+- Global user (Admin, Maintainer, Observer, Observer+, API only)
+- Fleet-level user (Admin, Maintainer, Observer, Observer+, API only)
+
+## Retries
+- Operations with retries have defined limits (time, number of attempts, etc.) to avoid infinite loops and unbounded retrying
 
 <meta name="pageOrderInSection" value="3300">
 <meta name="description" value="A helpful checklist of 'events' or 'transactions' to think about while designing or testing new features or bugs.">

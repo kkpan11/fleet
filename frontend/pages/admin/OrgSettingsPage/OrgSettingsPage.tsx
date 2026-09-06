@@ -7,9 +7,9 @@ import { IConfig } from "interfaces/config";
 import { IApiError } from "interfaces/errors";
 import configAPI from "services/entities/config";
 import { AppContext } from "context/app";
-import { NotificationContext } from "context/notification";
 import deepDifference from "utilities/deep_difference";
 import Spinner from "components/Spinner";
+import { notify } from "components/ToastNotification";
 import paths from "router/paths";
 
 import SideNav from "../components/SideNav";
@@ -36,7 +36,6 @@ const OrgSettingsPage = ({ params, router }: IOrgSettingsPageProps) => {
     // redirect to Integrations page in sandbox mode
     router.push(paths.ADMIN_INTEGRATIONS);
   }
-  const { renderFlash } = useContext(NotificationContext);
   const handlePageError = useErrorHandler();
 
   const {
@@ -51,7 +50,7 @@ const OrgSettingsPage = ({ params, router }: IOrgSettingsPageProps) => {
   });
 
   const onFormSubmit = useCallback(
-    (formUpdates: DeepPartial<IConfig>) => {
+    async (formUpdates: DeepPartial<IConfig>) => {
       if (!appConfig) {
         return false;
       }
@@ -62,49 +61,47 @@ const OrgSettingsPage = ({ params, router }: IOrgSettingsPageProps) => {
       // send all formUpdates.agent_options because diff overrides all agent options
       diff.agent_options = formUpdates.agent_options;
 
-      configAPI
-        .update(diff)
-        .then(() => {
-          renderFlash("success", "Successfully updated settings.");
-          refetchConfig();
-        })
-        .catch((response: { data: IApiError }) => {
-          if (
-            response?.data.errors[0].reason.includes("could not dial smtp host")
-          ) {
-            renderFlash(
-              "error",
-              "Could not connect to SMTP server. Please try again."
-            );
-          } else if (response?.data.errors) {
-            const reason = response?.data.errors[0].reason;
-            const agentOptionsInvalid =
-              reason.includes("unsupported key provided") ||
-              reason.includes("invalid value type");
-            const isAgentOptionsError =
-              agentOptionsInvalid ||
-              reason.includes("script_execution_timeout' value exceeds limit.");
-            renderFlash(
-              "error",
-              <>
-                Couldn&apos;t update{" "}
-                {isAgentOptionsError ? "agent options" : "settings"}: {reason}
-                {agentOptionsInvalid && (
-                  <>
-                    <br />
-                    If you&apos;re not using the latest osquery, use the
-                    fleetctl apply --force command to override validation.
-                  </>
-                )}
-              </>
-            );
-          }
-        })
-        .finally(() => {
-          setIsUpdatingSettings(false);
-        });
+      try {
+        await configAPI.update(diff);
+        notify.success("Successfully updated settings.");
+        refetchConfig();
+        return true;
+      } catch (response) {
+        const resp = response as undefined | { data: IApiError };
+
+        if (resp?.data.errors[0].reason.includes("could not dial smtp host")) {
+          notify.error("Could not connect to SMTP server. Please try again.", {
+            response,
+          });
+        } else if (resp?.data.errors) {
+          const reason = resp?.data.errors[0].reason;
+          const agentOptionsInvalid =
+            reason.includes("unsupported key provided") ||
+            reason.includes("invalid value type");
+          const isAgentOptionsError =
+            agentOptionsInvalid ||
+            reason.includes("script_execution_timeout' value exceeds limit.");
+          notify.error(
+            <>
+              Couldn&apos;t update{" "}
+              {isAgentOptionsError ? "agent options" : "settings"}: {reason}
+              {agentOptionsInvalid && (
+                <>
+                  <br />
+                  If you&apos;re not using the latest osquery, use the fleetctl
+                  apply --force command to override validation.
+                </>
+              )}
+            </>,
+            { response }
+          );
+        }
+        return false;
+      } finally {
+        setIsUpdatingSettings(false);
+      }
     },
-    [appConfig, refetchConfig, renderFlash]
+    [appConfig, refetchConfig]
   );
 
   // filter out non-premium options
@@ -139,6 +136,7 @@ const OrgSettingsPage = ({ params, router }: IOrgSettingsPageProps) => {
               handleSubmit={onFormSubmit}
               isUpdatingSettings={isUpdatingSettings}
               isPremiumTier={isPremiumTier}
+              router={router}
             />
           ) : (
             <Spinner />

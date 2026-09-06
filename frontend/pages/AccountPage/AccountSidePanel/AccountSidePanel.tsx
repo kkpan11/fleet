@@ -1,22 +1,30 @@
 import React, { useContext, useEffect, useState } from "react";
 
 import { IUser } from "interfaces/user";
-import { IVersionData } from "interfaces/version";
+import { IVersionResponse } from "interfaces/version";
 
 import { AppContext } from "context/app";
 
 import versionAPI from "services/entities/version";
 
 import Avatar from "components/Avatar";
+import DataSet from "components/DataSet";
 import Button from "components/buttons/Button";
+import CustomLink from "components/CustomLink";
+import Radio from "components/forms/fields/Radio";
 import { HumanTimeDiffWithDateTip } from "components/HumanTimeDiffWithDateTip";
 
 import {
   generateRole,
+  generateRoleGroups,
   generateTeam,
-  greyCell,
+  generateTeamNames,
   readableDate,
+  ROLE_VARIOUS,
+  tooltipTextWithLineBreaks,
 } from "utilities/helpers";
+import TooltipWrapper from "components/TooltipWrapper";
+import { getThemeMode, setThemeMode, ThemeMode } from "utilities/theme";
 
 interface IAccountSidePanelProps {
   currentUser: IUser;
@@ -32,7 +40,16 @@ const AccountSidePanel = ({
   onGetApiToken,
 }: IAccountSidePanelProps): JSX.Element => {
   const { isPremiumTier, config } = useContext(AppContext);
-  const [versionData, setVersionData] = useState<IVersionData>();
+  const [versionData, setVersionData] = useState<IVersionResponse>();
+  const [themeMode, setThemeModeState] = useState<ThemeMode>(() =>
+    getThemeMode()
+  );
+
+  const onThemeSelect = (value: string) => {
+    const mode = value as ThemeMode;
+    setThemeModeState(mode);
+    setThemeMode(mode);
+  };
 
   useEffect(() => {
     const getVersionData = async () => {
@@ -41,11 +58,25 @@ const AccountSidePanel = ({
         setVersionData(data);
       } catch (response) {
         console.error(response);
-        return false;
       }
     };
 
     getVersionData();
+  }, []);
+
+  // Keep the radio selection in sync when the theme is changed elsewhere
+  // (command palette "Toggle dark mode", OS media query when on system).
+  // utilities/theme dispatches `fleet-theme-change` on every applied
+  // change — re-read the mode rather than trusting `detail.dark`, since
+  // dark/light alone can't disambiguate "Dark" from "System (dark)".
+  useEffect(() => {
+    const onThemeChange = () => {
+      setThemeModeState(getThemeMode());
+    };
+    window.addEventListener("fleet-theme-change", onThemeChange);
+    return () => {
+      window.removeEventListener("fleet-theme-change", onThemeChange);
+    };
   }, []);
 
   const {
@@ -58,6 +89,9 @@ const AccountSidePanel = ({
   const roleText = generateRole(teams, globalRole);
   const teamsText = generateTeam(teams, globalRole);
 
+  const teamNames = generateTeamNames(teams);
+  const roleGroups = generateRoleGroups(teams);
+
   const lastUpdatedAt = updatedAt && (
     <HumanTimeDiffWithDateTip timeString={updatedAt} />
   );
@@ -66,59 +100,111 @@ const AccountSidePanel = ({
     <div className={baseClass}>
       <div className={`${baseClass}__change-avatar`}>
         <Avatar user={currentUser} className={`${baseClass}__avatar`} />
-        <a
-          href="https://en.gravatar.com/emails/"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Change photo at Gravatar
-        </a>
+        <CustomLink
+          url="https://en.gravatar.com/emails/"
+          text="Change photo at Gravatar"
+          newTab
+        />
+      </div>
+      <div
+        className={`${baseClass}__theme-picker`}
+        role="radiogroup"
+        aria-label="Theme"
+      >
+        <div className={`${baseClass}__theme-picker-label`}>Theme</div>
+        <Radio
+          id="theme-system"
+          name="theme"
+          value="system"
+          label="System"
+          checked={themeMode === "system"}
+          onChange={onThemeSelect}
+        />
+        <Radio
+          id="theme-light"
+          name="theme"
+          value="light"
+          label="Light"
+          checked={themeMode === "light"}
+          onChange={onThemeSelect}
+        />
+        <Radio
+          id="theme-dark"
+          name="theme"
+          value="dark"
+          label="Dark"
+          checked={themeMode === "dark"}
+          onChange={onThemeSelect}
+        />
       </div>
       {isPremiumTier && (
-        <div className={`${baseClass}__more-info-detail`}>
-          <p className={`${baseClass}__header`}>Teams</p>
-          <p
-            className={`${baseClass}__description ${baseClass}__teams ${greyCell(
+        <DataSet
+          title="Fleets"
+          value={
+            teamNames.length > 1 ? (
+              <TooltipWrapper
+                tipContent={tooltipTextWithLineBreaks(teamNames)}
+                underline={false}
+                showArrow
+                position="top"
+                tipOffset={10}
+                fixedPositionStrategy
+              >
+                {teamsText}
+              </TooltipWrapper>
+            ) : (
               teamsText
-            )}`}
-          >
-            {teamsText}
-          </p>
-        </div>
+            )
+          }
+        />
       )}
-      <div className={`${baseClass}__more-info-detail`}>
-        <p className={`${baseClass}__header`}>Role</p>
-        <p
-          className={`${baseClass}__description ${baseClass}__role ${greyCell(
+      <DataSet
+        title="Role"
+        value={
+          roleText === ROLE_VARIOUS ? (
+            <TooltipWrapper
+              tipContent={roleGroups.map(({ role, names }) => (
+                <span key={role}>
+                  <b>{role}:</b> {names.join(", ")}
+                  <br />
+                </span>
+              ))}
+              underline={false}
+              showArrow
+              position="top"
+              tipOffset={10}
+              fixedPositionStrategy
+            >
+              {roleText}
+            </TooltipWrapper>
+          ) : (
             roleText
-          )}`}
-        >
-          {roleText}
-        </p>
-      </div>
+          )
+        }
+      />
       {isPremiumTier && config && (
-        <div className={`${baseClass}__more-info-detail`}>
-          <p className={`${baseClass}__header`}>License expiration date</p>
-          <p
-            className={`${baseClass}__description ${baseClass}__license-expiration`}
-          >
-            {readableDate(config.license.expiration)}
-          </p>
-        </div>
+        <DataSet
+          title="License expiration date"
+          value={readableDate(config.license.expiration)}
+        />
       )}
-      <div className={`${baseClass}__more-info-detail`}>
-        <p className={`${baseClass}__header`}>Password</p>
-      </div>
-      <Button
-        onClick={onChangePassword}
-        disabled={ssoEnabled}
-        className={`${baseClass}__button`}
-      >
-        Change password
-      </Button>
-      <p className={`${baseClass}__last-updated`}>
-        Last changed: {lastUpdatedAt}
-      </p>
+      <DataSet
+        title="Password"
+        value={
+          <div className={`${baseClass}__password-info`}>
+            <Button
+              onClick={onChangePassword}
+              disabled={ssoEnabled}
+              className={`${baseClass}__button`}
+            >
+              Change password
+            </Button>
+            <div className={`${baseClass}__last-updated`}>
+              Last changed: {lastUpdatedAt}
+            </div>
+          </div>
+        }
+      />
       <Button onClick={onGetApiToken} className={`${baseClass}__button`}>
         Get API token
       </Button>
@@ -126,13 +212,11 @@ const AccountSidePanel = ({
         className={`${baseClass}__version`}
       >{`Fleet ${versionData?.version} • Go ${versionData?.go_version}`}</span>
       <span className={`${baseClass}__privacy-policy`}>
-        <a
-          href="https://fleetdm.com/legal/privacy"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Privacy policy
-        </a>
+        <CustomLink
+          url="https://fleetdm.com/legal/privacy"
+          text="Privacy policy"
+          newTab
+        />
       </span>
     </div>
   );

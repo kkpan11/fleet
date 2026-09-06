@@ -50,9 +50,15 @@ interface IDataTableProps {
   isAllPagesSelected: boolean; // TODO: make dependent on showMarkAllPages
   toggleAllPagesSelected?: any; // TODO: an event type and make it dependent on showMarkAllPages
   resultsTitle?: string;
+  totalCount?: number;
   defaultPageSize: number;
   defaultPageIndex?: number;
   defaultSelectedRows?: Record<string, boolean>;
+  /** Default: true (same as useTable default)
+   *  False prevents unnecessary page resets when a column ordering changes
+   *  e.g. when clicking on an action that modifies the data
+   */
+  autoResetPage?: boolean;
   primarySelectAction?: IActionButtonProps;
   secondarySelectActions?: IActionButtonProps[];
   isClientSidePagination?: boolean;
@@ -62,7 +68,7 @@ interface IDataTableProps {
   searchQuery?: string;
   searchQueryColumn?: string;
   selectedDropdownFilter?: string;
-  /** Set to true to persist the row selections across table data filters */
+  /** Set to true to persist row selection across client-side filters and pagination */
   persistSelectedRows?: boolean;
   /** Set to `true` to not display the footer section of the table */
   hideFooter?: boolean;
@@ -75,6 +81,11 @@ interface IDataTableProps {
   renderPagination?: () => JSX.Element | null;
   setExportRows?: (rows: Row[]) => void;
   onClearSelection?: () => void;
+  suppressHeaderActions?: boolean;
+  /** Optional override for react-table's row ID derivation.
+   *  Note: avoid index-only row IDs in server-side paginated or selectable tables,
+   *  as IDs would collide across pages. */
+  getRowId?: (row: any, index: number) => string;
 }
 
 interface IHeaderGroup extends HeaderGroup {
@@ -99,9 +110,11 @@ const DataTable = ({
   isAllPagesSelected,
   toggleAllPagesSelected,
   resultsTitle = "results",
+  totalCount,
   defaultPageSize,
   defaultPageIndex,
   defaultSelectedRows = {},
+  autoResetPage = true,
   primarySelectAction,
   secondarySelectActions,
   isClientSidePagination,
@@ -120,6 +133,8 @@ const DataTable = ({
   renderPagination,
   setExportRows,
   onClearSelection = noop,
+  suppressHeaderActions,
+  getRowId: getRowIdProp,
 }: IDataTableProps): JSX.Element => {
   // used to track the initial mount of the component.
   const isInitialRender = useRef(true);
@@ -138,6 +153,12 @@ const DataTable = ({
   const initialSortBy = useMemo(() => {
     return [{ id: sortHeader, desc: sortDirection === "desc" }];
   }, [sortHeader, sortDirection]);
+
+  // Decide the page index value to pass to useTable
+  const controlledPageIndex =
+    isClientSidePagination && !!onClientSidePaginationChange
+      ? defaultPageIndex ?? 0
+      : undefined; // undefined lets react-table manage internally (Keeps internal mode working)
 
   const {
     headerGroups,
@@ -166,16 +187,30 @@ const DataTable = ({
     {
       columns,
       data,
+      // Use a stable row ID when available (row.id), otherwise fall back to the index-based ID (default of react-table)
+      getRowId:
+        getRowIdProp ??
+        ((row: any, index: number) =>
+          row && row.id != null ? String(row.id) : String(index)),
       initialState: {
         sortBy: initialSortBy,
         pageIndex: defaultPageIndex,
         selectedRowIds: defaultSelectedRows,
       },
+      // For onClientSidePaginationChange (URL-controlled mode) we inject pageIndex, otherwise leave undefined so it's internal
+      // NOTE: This specifically prevents quick flicker of incorrect page data for clientside pagination with
+      // external source of truth (URL bar) such as the self-service page when searching or changing categories
+      // TODO: Figure out flickering on self-service page internal sort buttons
+      state:
+        controlledPageIndex !== undefined
+          ? { pageIndex: controlledPageIndex }
+          : undefined,
       disableMultiSort: true,
       disableSortRemove: true,
       manualSortBy,
-      // Resets row selection on (server-side) pagination
-      autoResetSelectedRows: true,
+      autoResetPage,
+      // Resets row selection on pagination
+      autoResetSelectedRows: !persistSelectedRows,
       // Expands the enumerated `filterTypes` for react-table
       // (see https://github.com/TanStack/react-table/blob/alpha/packages/react-table/src/filterTypes.ts)
       // with custom `filterTypes` defined for this `useTable` instance
@@ -232,6 +267,11 @@ const DataTable = ({
             b: { values: Record<string, unknown[]> },
             id: string
           ) => sort.hostPolicyStatus(a.values[id], b.values[id]),
+          version: (
+            a: { values: Record<string, unknown> },
+            b: { values: Record<string, unknown> },
+            id: string
+          ) => sort.versionAsc(a.values[id], b.values[id]),
         }),
         []
       ),
@@ -301,10 +341,20 @@ const DataTable = ({
     }
   }, [selectedDropdownFilter]);
 
+  // track previous sort state
+  const prevSort = useRef<{ id?: string; desc?: boolean }>({
+    id: undefined,
+    desc: undefined, // desc as in descending
+  });
+
   // This is used to listen for changes to sort. If there is a change
   // Then the sortHandler change is fired.
   useEffect(() => {
     const column = sortBy[0];
+    const prev = prevSort.current;
+    const newId = column?.id;
+    const newDesc = column?.desc;
+
     if (column !== undefined) {
       if (
         column.id !== sortHeader ||
@@ -315,10 +365,43 @@ const DataTable = ({
     } else {
       onSort(undefined);
     }
-    if (isClientSidePagination) {
-      gotoPage(0); // Return to page 0 after changing sort clientside
+
+    // Only reset to page 0 if sort column/direction actually changes
+    // Prevents unnecessary page resets when a column ordering changes
+    // e.g. when clicking on an action that modifies the data
+    const hasSortChanged =
+      (!prev && (newId || newDesc !== undefined)) ||
+      (prev && (prev.id !== newId || prev.desc !== newDesc));
+
+    if (isClientSidePagination && hasSortChanged) {
+      gotoPage(0); // Just this, no defaultPageIndex/etc!
     }
-  }, [sortBy, sortHeader, onSort, sortDirection]);
+    prevSort.current = column
+      ? { id: newId, desc: newDesc }
+      : { id: undefined, desc: undefined };
+  }, [sortBy, sortHeader, onSort, sortDirection, isClientSidePagination]);
+
+  /** For onClientSidePaginationChange only:
+   * Prevents bug where URL page + table page mismatch
+   * Whenever defaultPageIndex (the value from props, e.g. queryParams.page) changes,
+   * ensure we call gotoPage so react-table reflects the correct visible page.
+   */
+  useEffect(() => {
+    if (
+      isClientSidePagination &&
+      !!onClientSidePaginationChange &&
+      typeof defaultPageIndex === "number" &&
+      pageIndex !== defaultPageIndex
+    ) {
+      gotoPage(defaultPageIndex);
+    }
+  }, [
+    isClientSidePagination,
+    onClientSidePaginationChange,
+    defaultPageIndex,
+    gotoPage,
+    pageIndex,
+  ]);
 
   useEffect(() => {
     if (isAllPagesSelected) {
@@ -376,8 +459,10 @@ const DataTable = ({
     return (
       <p>
         <span>
-          {selectedCount}
-          {isAllPagesSelected && "+"}
+          {isAllPagesSelected && totalCount !== undefined
+            ? totalCount
+            : selectedCount}
+          {isAllPagesSelected && totalCount === undefined && "+"}
         </span>{" "}
         selected
       </p>
@@ -451,6 +536,55 @@ const DataTable = ({
     "is-observer": isOnlyObserver,
   });
 
+  const renderHeaderWithActions = () => (
+    <thead className="active-selection">
+      <tr {...headerGroups[0].getHeaderGroupProps()}>
+        <th
+          className="active-selection__checkbox"
+          {...headerGroups[0].headers[0].getHeaderProps(
+            headerGroups[0].headers[0].getSortByToggleProps({
+              title: null,
+            })
+          )}
+        >
+          {headerGroups[0].headers[0].render("Header")}
+        </th>
+        <th className="active-selection__container">
+          <div className="active-selection__inner">
+            {renderSelectedCount()}
+            <div className="active-selection__inner-left">
+              {secondarySelectActions && renderSecondarySelectActions()}
+            </div>
+            <div className="active-selection__inner-right">
+              {primarySelectAction && renderPrimarySelectAction()}
+            </div>
+            {toggleAllPagesSelected && renderAreAllSelected()}
+            {shouldRenderToggleAllPages && (
+              <Button onClick={onToggleAllPagesClick} variant="link">
+                <>Select all matching {resultsTitle}</>
+              </Button>
+            )}
+            <Button onClick={onClearSelectionClick} variant="link">
+              Clear selection
+            </Button>
+          </div>
+        </th>
+      </tr>
+    </thead>
+  );
+
+  const shouldShowFooter =
+    // footer is not explicitly hidden
+    !hideFooter &&
+    // and any of:
+
+    // table is client-side paginated with more than 1 page of rows
+    ((isClientSidePagination && (canNextPage || canPreviousPage)) ||
+      // table's pagination is externally controlled
+      renderPagination?.() != null ||
+      // there is help text and at least 1 row of data
+      (renderTableHelpText?.() != null && !!rows?.length));
+
   return (
     <div className={baseClass}>
       {isLoading && (
@@ -458,48 +592,15 @@ const DataTable = ({
           <Spinner />
         </div>
       )}
-      <div className="data-table data-table__wrapper">
+      <div
+        className={classnames("data-table", "data-table__wrapper", {
+          "data-table__wrapper--no-rows": !rows.length,
+        })}
+      >
         <table className={tableStyles}>
-          {Object.keys(selectedRowIds).length !== 0 && (
-            <thead className="active-selection">
-              <tr {...headerGroups[0].getHeaderGroupProps()}>
-                <th
-                  className="active-selection__checkbox"
-                  {...headerGroups[0].headers[0].getHeaderProps(
-                    headerGroups[0].headers[0].getSortByToggleProps({
-                      title: null,
-                    })
-                  )}
-                >
-                  {headerGroups[0].headers[0].render("Header")}
-                </th>
-                <th className="active-selection__container">
-                  <div className="active-selection__inner">
-                    {renderSelectedCount()}
-                    <div className="active-selection__inner-left">
-                      {secondarySelectActions && renderSecondarySelectActions()}
-                    </div>
-                    <div className="active-selection__inner-right">
-                      {primarySelectAction && renderPrimarySelectAction()}
-                    </div>
-                    {toggleAllPagesSelected && renderAreAllSelected()}
-                    {shouldRenderToggleAllPages && (
-                      <Button
-                        onClick={onToggleAllPagesClick}
-                        variant="text-link"
-                        className="light-text"
-                      >
-                        <>Select all matching {resultsTitle}</>
-                      </Button>
-                    )}
-                    <Button onClick={onClearSelectionClick} variant="text-link">
-                      Clear selection
-                    </Button>
-                  </div>
-                </th>
-              </tr>
-            </thead>
-          )}
+          {!suppressHeaderActions &&
+            Object.keys(selectedRowIds).length !== 0 &&
+            renderHeaderWithActions()}
           <thead>
             {headerGroups.map((headerGroup) => (
               <tr {...headerGroup.getHeaderGroupProps()}>
@@ -507,11 +608,24 @@ const DataTable = ({
                   return (
                     <th
                       className={column.id ? `${column.id}__header` : ""}
-                      {...column.getHeaderProps(
-                        column.getSortByToggleProps({ title: null })
-                      )}
+                      {...column.getHeaderProps()}
                     >
-                      {renderColumnHeader(column)}
+                      {column.canSort ? (
+                        <Button
+                          variant="unstyled"
+                          {...column.getSortByToggleProps({ title: null })}
+                          aria-label={`Sort by ${column.Header} ${
+                            column.isSortedDesc ? "descending" : "ascending"
+                          }`}
+                          tabIndex={0}
+                          className="sortable-header"
+                        >
+                          {renderColumnHeader(column)}
+                          {/* add arrow/icon as needed */}
+                        </Button>
+                      ) : (
+                        renderColumnHeader(column)
+                      )}
                     </th>
                   );
                 })}
@@ -583,7 +697,7 @@ const DataTable = ({
           </tbody>
         </table>
       </div>
-      {!hideFooter && (
+      {shouldShowFooter && (
         <div className={`${baseClass}__footer`}>
           {renderTableHelpText && !!rows?.length && (
             <div className={`${baseClass}__table-help-text`}>
@@ -595,16 +709,16 @@ const DataTable = ({
               disablePrev={!canPreviousPage}
               disableNext={!canNextPage}
               onPrevPage={() => {
-                toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
-                onClientSidePaginationChange &&
-                  onClientSidePaginationChange(pageIndex - 1);
-                previousPage();
+                !persistSelectedRows && toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
+                onClientSidePaginationChange
+                  ? onClientSidePaginationChange(pageIndex - 1)
+                  : previousPage();
               }}
               onNextPage={() => {
-                toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
-                onClientSidePaginationChange &&
-                  onClientSidePaginationChange(pageIndex + 1);
-                nextPage();
+                !persistSelectedRows && toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
+                onClientSidePaginationChange
+                  ? onClientSidePaginationChange(pageIndex + 1)
+                  : nextPage();
               }}
               hidePagination={!canPreviousPage && !canNextPage}
             />

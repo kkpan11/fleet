@@ -1,0 +1,11 @@
+{
+  "name": "DockFix",
+  "unique_identifier": "dk.FIrstForm.DockFix",
+  "token": "dockfix",
+  "installer_format": "dmg",
+  "slug": "dockfix/darwin",
+  "default_categories": [
+    "Productivity"
+  ],
+  "frozen": true
+}

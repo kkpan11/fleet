@@ -2,7 +2,7 @@ package service
 
 import (
 	"context"
-	"html/template"
+	"errors"
 	"strings"
 
 	"github.com/fleetdm/fleet/v4/server"
@@ -12,7 +12,6 @@ import (
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mail"
-	"github.com/fleetdm/fleet/v4/server/service/middleware/endpoint_utils"
 )
 
 func (svc *Service) NewAppConfig(ctx context.Context, p fleet.AppConfig) (*fleet.AppConfig, error) {
@@ -25,12 +24,9 @@ func (svc *Service) NewAppConfig(ctx context.Context, p fleet.AppConfig) (*fleet
 	}
 
 	// Set up a default enroll secret
-	secret := svc.config.Packaging.GlobalEnrollSecret
-	if secret == "" {
-		secret, err = server.GenerateRandomText(fleet.EnrollSecretDefaultLength)
-		if err != nil {
-			return nil, ctxerr.Wrap(ctx, err, "generate enroll secret string")
-		}
+	secret, err := server.GenerateRandomText(fleet.EnrollSecretDefaultLength)
+	if err != nil {
+		return nil, ctxerr.Wrap(ctx, err, "generate enroll secret string")
 	}
 	secrets := []*fleet.EnrollSecret{
 		{
@@ -60,7 +56,7 @@ func (svc *Service) sendTestEmail(ctx context.Context, config *fleet.AppConfig) 
 		Subject: "Hello from Fleet",
 		To:      []string{vc.User.Email},
 		Mailer: &mail.SMTPTestMailer{
-			BaseURL:  template.URL(config.ServerSettings.ServerURL + svc.config.Server.URLPrefix),
+			BaseURL:  emailLinkBaseURL(config.ServerSettings.ServerURL, svc.config.Server.URLPrefix),
 			AssetURL: getAssetURL(),
 		},
 		SMTPSettings: smtpSettings,
@@ -68,7 +64,10 @@ func (svc *Service) sendTestEmail(ctx context.Context, config *fleet.AppConfig) 
 	}
 
 	if err := mail.Test(svc.mailService, testMail); err != nil {
-		return endpoint_utils.MailError{Message: err.Error()}
+		if errors.Is(err, mail.ErrSTARTTLSWithoutSSLTLS) {
+			return mail.ErrSTARTTLSWithoutSSLTLS
+		}
+		return MailError{Message: err.Error()}
 	}
 	return nil
 }
@@ -78,13 +77,18 @@ func cleanupURL(url string) string {
 }
 
 func (svc *Service) License(ctx context.Context) (*fleet.LicenseInfo, error) {
-	if !svc.authz.IsAuthenticatedWith(ctx, authz_ctx.AuthnDeviceToken) {
+	if !svc.authz.IsAuthenticatedWith(ctx, authz_ctx.AuthnDeviceToken) &&
+		!svc.authz.IsAuthenticatedWith(ctx, authz_ctx.AuthnDeviceCertificate) &&
+		!svc.authz.IsAuthenticatedWith(ctx, authz_ctx.AuthnDeviceURL) {
 		if err := svc.authz.Authorize(ctx, &fleet.AppConfig{}, fleet.ActionRead); err != nil {
 			return nil, err
 		}
 	}
 
-	lic, _ := license.FromContext(ctx)
+	licChecker, _ := license.FromContext(ctx)
+	// Type assert to get the concrete type to return.
+	lic, _ := licChecker.(*fleet.LicenseInfo)
+
 	return lic, nil
 }
 
@@ -114,6 +118,7 @@ func (svc *Service) VulnerabilitiesConfig(ctx context.Context) (*fleet.Vulnerabi
 		DisableDataSync:             svc.config.Vulnerabilities.DisableDataSync,
 		RecentVulnerabilityMaxAge:   svc.config.Vulnerabilities.RecentVulnerabilityMaxAge,
 		DisableWinOSVulnerabilities: svc.config.Vulnerabilities.DisableWinOSVulnerabilities,
+		OSVForVulnerabilities:       svc.config.Vulnerabilities.OSVForVulnerabilities,
 	}, nil
 }
 
@@ -213,6 +218,26 @@ func (svc *Service) LoggingConfig(ctx context.Context) (*fleet.Logging, error) {
 					ProxyHost:   conf.KafkaREST.ProxyHost,
 				},
 			}
+		case "nats":
+			*lp.target = fleet.LoggingPlugin{
+				Plugin: "nats",
+				Config: fleet.NatsConfig{
+					StatusSubject: conf.Nats.StatusSubject,
+					ResultSubject: conf.Nats.ResultSubject,
+					AuditSubject:  conf.Nats.AuditSubject,
+					Server:        conf.Nats.Server,
+				},
+			}
+		case "splunk":
+			*lp.target = fleet.LoggingPlugin{
+				Plugin: "splunk",
+				Config: fleet.SplunkConfig{
+					URL:        conf.Splunk.URL,
+					Index:      conf.Splunk.Index,
+					Source:     conf.Splunk.Source,
+					SourceType: conf.Splunk.SourceType,
+				},
+			}
 		default:
 			return nil, ctxerr.Errorf(ctx, "unrecognized logging plugin: %s", lp.plugin)
 		}
@@ -232,8 +257,9 @@ func (svc *Service) EmailConfig(ctx context.Context) (*fleet.EmailConfig, error)
 		email = &fleet.EmailConfig{
 			Backend: conf.Email.EmailBackend,
 			Config: fleet.SESConfig{
-				Region:    conf.SES.Region,
-				SourceARN: conf.SES.SourceArn,
+				Region:       conf.SES.Region,
+				SourceARN:    conf.SES.SourceArn,
+				SenderDomain: conf.SES.SenderDomain,
 			},
 		}
 	default:

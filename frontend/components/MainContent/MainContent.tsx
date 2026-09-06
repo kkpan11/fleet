@@ -5,15 +5,21 @@ import { hasLicenseExpired } from "utilities/helpers";
 import { AppContext } from "context/app";
 
 import AppleBMTermsMessage from "components/MDM/AppleBMTermsMessage";
+import AppleBMTokenInvalidMessage from "components/MDM/AppleBMTokenInvalidMessage";
 import LicenseExpirationBanner from "components/LicenseExpirationBanner";
 import ApplePNCertRenewalMessage from "components/MDM/ApplePNCertRenewalMessage";
 import AppleBMRenewalMessage from "components/MDM/AppleBMRenewalMessage";
 import AndroidEnterpriseDeletedMessage from "components/MDM/AndroidEnterpriseDeletedMessage";
 
 import VppRenewalMessage from "./banners/VppRenewalMessage";
+import MicrosoftGraphCredentialInvalidMessage from "./banners/MicrosoftGraphCredentialInvalidMessage";
+
+export interface IMainContentConfig {
+  renderedBanner: boolean;
+}
 
 interface IMainContentProps {
-  children: ReactNode;
+  children: ReactNode | ((mainContentConfig: IMainContentConfig) => ReactNode);
   /** An optional classname to pass to the main content component.
    * This can be used to apply styles directly onto the main content div
    */
@@ -39,6 +45,8 @@ const MainContent = ({
     isAppleBmExpired,
     isVppExpired,
     needsAbmTermsRenewal,
+    hasInvalidABMToken,
+    invalidAbmTokenOrgNames,
     willAppleBmExpire,
     willApplePnsExpire,
     willVppExpire,
@@ -53,18 +61,25 @@ const MainContent = ({
 
     // the order of these checks is important. This is the priority order
     // for showing banners and only one banner is shown at a time.
-    if (isPremiumTier) {
-      if (isApplePnsExpired || willApplePnsExpire) {
-        banner = <ApplePNCertRenewalMessage expired={isApplePnsExpired} />;
-      } else if (false) {
-        // TODO: remove this when API is ready
+    if (isApplePnsExpired || willApplePnsExpire) {
+      // APNs expiration banner will show for either premium or free tiers
+      // but all other banners are only for premium tiers
+      banner = <ApplePNCertRenewalMessage expired={isApplePnsExpired} />;
+    } else if (isPremiumTier) {
+      if (isAndroidEnterpriseDeleted) {
         banner = <AndroidEnterpriseDeletedMessage />;
       } else if (isAppleBmExpired || willAppleBmExpire) {
         banner = <AppleBMRenewalMessage expired={isAppleBmExpired} />;
       } else if (needsAbmTermsRenewal) {
         banner = <AppleBMTermsMessage />;
+      } else if (hasInvalidABMToken) {
+        banner = (
+          <AppleBMTokenInvalidMessage orgNames={invalidAbmTokenOrgNames} />
+        );
       } else if (isVppExpired || willVppExpire) {
         banner = <VppRenewalMessage expired={isVppExpired} />;
+      } else if (config?.mdm.microsoft_graph_credential_invalid) {
+        banner = <MicrosoftGraphCredentialInvalidMessage />;
       } else if (isFleetLicenseExpired) {
         banner = <LicenseExpirationBanner />;
       }
@@ -80,10 +95,16 @@ const MainContent = ({
 
     return null;
   };
+
+  const appWideBanner = renderAppWideBanner();
+  const mainContentConfig: IMainContentConfig = {
+    renderedBanner: !!appWideBanner,
+  };
+
   return (
     <div className={classes}>
-      {renderAppWideBanner()}
-      {children}
+      {appWideBanner}
+      {typeof children === "function" ? children(mainContentConfig) : children}
     </div>
   );
 };

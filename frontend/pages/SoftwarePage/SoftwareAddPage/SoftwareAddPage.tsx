@@ -9,12 +9,19 @@ import { QueryContext } from "context/query";
 import useToggleSidePanel from "hooks/useToggleSidePanel";
 import { APP_CONTEXT_NO_TEAM_ID } from "interfaces/team";
 
+import SidePanelPage from "components/SidePanelPage";
 import MainContent from "components/MainContent";
-import BackLink from "components/BackLink";
+import BackButton from "components/BackButton";
 import TabNav from "components/TabNav";
 import TabText from "components/TabText";
 import SidePanelContent from "components/SidePanelContent";
 import QuerySidePanel from "components/side_panels/QuerySidePanel";
+import PageDescription from "components/PageDescription";
+
+import {
+  FmaPlatformValue,
+  FmaStatusValue,
+} from "./SoftwareFleetMaintained/FleetMaintainedAppsTable/FmaFilters/FmaFilters";
 
 const baseClass = "software-add-page";
 
@@ -29,7 +36,7 @@ const addSoftwareSubNav: IAddSoftwareSubNavItem[] = [
     pathname: PATHS.SOFTWARE_ADD_FLEET_MAINTAINED,
   },
   {
-    name: "App Store (VPP)",
+    name: "App store",
     pathname: PATHS.SOFTWARE_ADD_APP_STORE,
   },
   {
@@ -46,11 +53,13 @@ const getTabIndex = (path: string): number => {
 };
 
 export interface ISoftwareAddPageQueryParams {
-  team_id?: string;
+  fleet_id?: string;
   query?: string;
   page?: string;
   order_key?: string;
   order_direction?: "asc" | "desc";
+  platform: FmaPlatformValue;
+  status: FmaStatusValue;
 }
 
 interface ISoftwareAddPageProps {
@@ -74,20 +83,20 @@ const SoftwareAddPage = ({
       setSidePanelOpen(false);
       // Only query param to persist between tabs is team id
       const navPath = getPathWithQueryParams(addSoftwareSubNav[i].pathname, {
-        team_id: location.query.team_id,
+        fleet_id: location.query.fleet_id,
       });
       router.replace(navPath);
     },
-    [location.query.team_id, router, setSidePanelOpen]
+    [location.query.fleet_id, router, setSidePanelOpen]
   );
 
-  // Quick exit if no team_id param. This page must have a team id to function
+  // Quick exit if no fleet_id param. This page must have a team id to function
   // correctly. We redirect to the same page with the "No team" context if it
   // is not provieded.
-  if (!location.query.team_id) {
+  if (!location.query.fleet_id) {
     router.replace(
       getPathWithQueryParams(location.pathname, {
-        team_id: APP_CONTEXT_NO_TEAM_ID,
+        fleet_id: APP_CONTEXT_NO_TEAM_ID,
       })
     );
     return null;
@@ -97,20 +106,23 @@ const SoftwareAddPage = ({
     setSelectedOsqueryTable(tableName);
   };
 
-  const backUrl = getPathWithQueryParams(PATHS.SOFTWARE_TITLES, {
-    team_id: location.query.team_id,
+  const backUrl = getPathWithQueryParams(PATHS.SOFTWARE_LIBRARY, {
+    fleet_id: location.query.fleet_id,
   });
 
   return (
-    <>
-      <MainContent className={baseClass}>
-        <>
-          <BackLink
-            text="Back to software"
-            path={backUrl}
-            className={`${baseClass}__back-to-software`}
-          />
+    <SidePanelPage>
+      <>
+        <MainContent className={baseClass}>
+          <div className={`${baseClass}__header-links`}>
+            <BackButton
+              text="Back to software"
+              path={backUrl}
+              className={`${baseClass}__back-to-software`}
+            />
+          </div>
           <h1>Add software</h1>
+          <PageDescription content="Add software to your library. You can add it to self service later." />
           <TabNav>
             <Tabs
               selectedIndex={getTabIndex(location?.pathname || "")}
@@ -127,25 +139,27 @@ const SoftwareAddPage = ({
               </TabList>
             </Tabs>
           </TabNav>
-          {React.cloneElement(children, {
-            router,
-            currentTeamId: parseInt(location.query.team_id, 10),
-            isSidePanelOpen,
-            setSidePanelOpen,
-          })}
-        </>
-      </MainContent>
-      {isSidePanelOpen && (
-        <SidePanelContent>
-          <QuerySidePanel
-            key="query-side-panel"
-            onOsqueryTableSelect={onOsqueryTableSelect}
-            selectedOsqueryTable={selectedOsqueryTable}
-            onClose={() => setSidePanelOpen(false)}
-          />
-        </SidePanelContent>
-      )}
-    </>
+          <div key={location?.pathname} className="tab-nav-routed-content">
+            {React.cloneElement(children, {
+              router,
+              currentTeamId: parseInt(location.query.fleet_id, 10),
+              isSidePanelOpen,
+              setSidePanelOpen,
+            })}
+          </div>
+        </MainContent>
+        {isSidePanelOpen && (
+          <SidePanelContent>
+            <QuerySidePanel
+              key="query-side-panel"
+              onOsqueryTableSelect={onOsqueryTableSelect}
+              selectedOsqueryTable={selectedOsqueryTable}
+              onClose={() => setSidePanelOpen(false)}
+            />
+          </SidePanelContent>
+        )}
+      </>
+    </SidePanelPage>
   );
 };
 

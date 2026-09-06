@@ -1,6 +1,10 @@
 package fleet
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/fleetdm/fleet/v4/ee/pkg/hostidentity/types"
+)
 
 // OrbitConfigNotifications are notifications that the fleet server sends to
 // fleetd (orbit) so that it can run commands or more generally react to this
@@ -30,6 +34,11 @@ type OrbitConfigNotifications struct {
 	// host.IsEligibleForWindowsMDMUnenrollment for the list of conditions).
 	NeedsProgrammaticWindowsMDMUnenrollment bool `json:"needs_programmatic_windows_mdm_unenrollment,omitempty"`
 
+	// WindowsMDMSyncRequest is set to true when the host's Windows MDM enrollment has queued commands awaiting delivery and the device should
+	// start an OMA-DM session now (via deviceenroller) instead of waiting for its next scheduled poll. Only set for hosts whose fleetd
+	// advertises CapabilityWindowsMDMSync. Older fleetd that does not understand this field ignores it.
+	WindowsMDMSyncRequest bool `json:"windows_mdm_sync_request,omitempty"`
+
 	// PendingScriptExecutionIDs lists the IDs of scripts that are pending
 	// execution on that host. The scripts pending execution are those that
 	// haven't received a result yet.
@@ -39,12 +48,21 @@ type OrbitConfigNotifications struct {
 	// enabled and the device should encrypt its disk volumes with BitLocker.
 	EnforceBitLockerEncryption bool `json:"enforce_bitlocker_encryption,omitempty"`
 
+	// EnableBitLockerProtection tells Orbit that the volume is encrypted but its protection is off, and that it should
+	// turn protection back on.
+	EnableBitLockerProtection bool `json:"enable_bitlocker_protection,omitempty"`
+
 	// PendingSoftwareInstallerIDs contains a list of software install_ids queued for installation
 	PendingSoftwareInstallerIDs []string `json:"pending_software_installer_ids,omitempty"`
 
 	// RunSetupExperience indicates whether Orbit should run the Fleet setup experience
 	// during macOS Setup Assistant.
 	RunSetupExperience bool `json:"run_setup_experience,omitempty"`
+
+	// CreateWindowsManagedLocalAccount tells fleetd on Windows to create the hidden managed local admin account and escrow its password.
+	// Set for any Windows MDM host whose fleet has the setting enabled, not only during OOBE, for hosts whose fleetd advertises
+	// CapabilityWindowsManagedLocalAccount, and until the host has escrowed a password for its current enrollment.
+	CreateWindowsManagedLocalAccount bool `json:"create_windows_managed_local_account,omitempty"`
 
 	// RunDiskEncryptionEscrow tells Orbit to prompt the end user to escrow disk
 	// encryption data for Linux platforms where disk encryption is supported,
@@ -63,6 +81,19 @@ type OrbitConfig struct {
 	//
 	// If UpdateChannels is nil it means the server isn't using/setting this feature.
 	UpdateChannels *OrbitUpdateChannels `json:"update_channels,omitempty"`
+	// nil = no opinion (orbit keeps its current level); true/false sets it.
+	DebugLogging *bool `json:"debug_logging,omitempty"`
+	// WebSocketTransport, when set with Enabled=true, directs fleetd to open a
+	// persistent WebSocket to the server as a check-in notification channel
+	// (ADR-0011). Absent (nil) means disabled; old orbit versions ignore it.
+	WebSocketTransport *OrbitWebSocketTransportConfig `json:"websocket_transport,omitempty"`
+}
+
+// OrbitWebSocketTransportConfig is the WebSocket transport directive delivered
+// via the orbit config. A struct rather than a bare bool so future hints
+// (ping interval, backoff tuning) can ride along without breaking old agents.
+type OrbitWebSocketTransportConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 type OrbitConfigReceiver interface {
@@ -94,8 +125,11 @@ type OrbitHostInfo struct {
 	HardwareSerial string
 	// Hostname is the device hostname.
 	Hostname string
-	// Platform is the device's platform as defined by osquery.
+	// Platform is the device's platform as defined by osquery's os_version table.
 	Platform string
+	// PlatformLike is the device's platform_like as defined by osquery's os_version table.
+	// E.g. "debian" for Ubuntu hosts, "rhel" for Fedora hosts.
+	PlatformLike string
 	// OsqueryIdentifier holds the identifier that osqueryd will use in its enrollment.
 	// This is mainly used for scenarios where hosts have duplicate hardware UUID (e.g. VMs)
 	// and a different identifier is used for each host (e.g. osquery's "instance" flag).
@@ -106,6 +140,52 @@ type OrbitHostInfo struct {
 	ComputerName string
 	// HardwareModel is the device's hardware model. For example: Standard PC (Q35 + ICH9, 2009)
 	HardwareModel string
+}
+
+// DatastoreEnrollOrbitConfig holds the configuration for datastore Orbit enrollment
+type DatastoreEnrollOrbitConfig struct {
+	IsMDMEnabled bool
+	HostInfo     OrbitHostInfo
+	OrbitNodeKey string
+	TeamID       *uint
+	IdentityCert *types.HostIdentityCertificate
+}
+
+// DatastoreEnrollOrbitOption is a functional option for configuring datastore Orbit enrollment
+type DatastoreEnrollOrbitOption func(*DatastoreEnrollOrbitConfig)
+
+// WithEnrollOrbitMDMEnabled sets the MDM enabled flag for datastore Orbit enrollment
+func WithEnrollOrbitMDMEnabled(enabled bool) DatastoreEnrollOrbitOption {
+	return func(c *DatastoreEnrollOrbitConfig) {
+		c.IsMDMEnabled = enabled
+	}
+}
+
+// WithEnrollOrbitHostInfo sets the host information for datastore Orbit enrollment
+func WithEnrollOrbitHostInfo(hostInfo OrbitHostInfo) DatastoreEnrollOrbitOption {
+	return func(c *DatastoreEnrollOrbitConfig) {
+		c.HostInfo = hostInfo
+	}
+}
+
+// WithEnrollOrbitNodeKey sets the orbit node key for datastore Orbit enrollment
+func WithEnrollOrbitNodeKey(nodeKey string) DatastoreEnrollOrbitOption {
+	return func(c *DatastoreEnrollOrbitConfig) {
+		c.OrbitNodeKey = nodeKey
+	}
+}
+
+// WithEnrollOrbitTeamID sets the team ID for datastore Orbit enrollment
+func WithEnrollOrbitTeamID(teamID *uint) DatastoreEnrollOrbitOption {
+	return func(c *DatastoreEnrollOrbitConfig) {
+		c.TeamID = teamID
+	}
+}
+
+func WithEnrollOrbitIdentityCert(identityCert *types.HostIdentityCertificate) DatastoreEnrollOrbitOption {
+	return func(c *DatastoreEnrollOrbitConfig) {
+		c.IdentityCert = identityCert
+	}
 }
 
 // ExtensionInfo holds the data of a osquery extension to apply to an Orbit client.
@@ -123,14 +203,20 @@ type ExtensionInfo struct {
 type Extensions map[string]ExtensionInfo
 
 // FilterByHostPlatform filters out extensions that are not targeted for hostPlatform.
-// It supports host platforms reported by osquery and by Go's runtime.GOOS.
-func (es *Extensions) FilterByHostPlatform(hostPlatform string) {
+// It supports host platforms reported by osquery (e.g. x86_64, aarch64, ARM)
+// and by Go's runtime.GOOS (arm64 and amd64).
+func (es *Extensions) FilterByHostPlatform(hostPlatform string, hostCPU string) {
 	switch {
-	case IsLinux(hostPlatform):
+	case IsLinux(hostPlatform) && (hostCPU == "x86_64" || hostCPU == "amd64"):
 		hostPlatform = "linux"
+	case IsLinux(hostPlatform) && (hostCPU == "aarch64" || hostCPU == "arm64"):
+		hostPlatform = "linux-arm64"
 	case hostPlatform == "darwin":
-		// Osquery uses "darwin", whereas the extensions feature uses "macos".
-		hostPlatform = "macos"
+		hostPlatform = "macos" // osquery uses "darwin", whereas the extensions feature uses "macos".
+	case hostPlatform == "windows" && (hostCPU == "x86_64" || hostCPU == "amd64"):
+		hostPlatform = "windows"
+	case hostPlatform == "windows" && (hostCPU == "ARM" || hostCPU == "arm64"):
+		hostPlatform = "windows-arm64"
 	}
 	for extensionName, extensionInfo := range *es {
 		if hostPlatform != extensionInfo.Platform {
@@ -143,4 +229,10 @@ func (es *Extensions) FilterByHostPlatform(hostPlatform string) {
 type OrbitHostDiskEncryptionKeyPayload struct {
 	EncryptionKey []byte `json:"encryption_key"`
 	ClientError   string `json:"client_error"`
+}
+
+// SetupExperienceInitResult is the payload returned when the orbit client manually initiates
+// setup experience for non-darwin platforms.
+type SetupExperienceInitResult struct {
+	Enabled bool `json:"enabled"`
 }

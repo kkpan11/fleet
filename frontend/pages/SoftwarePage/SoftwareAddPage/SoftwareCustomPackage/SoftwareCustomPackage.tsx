@@ -1,22 +1,26 @@
-import React, { useContext, useEffect, useState } from "react";
+import React, { useContext, useState } from "react";
 import { InjectedRouter } from "react-router";
-import { useQuery } from "react-query";
+import { useQuery, useQueryClient } from "react-query";
 
 import PATHS from "router/paths";
-import { DEFAULT_USE_QUERY_OPTIONS } from "utilities/constants";
+import {
+  DEFAULT_USE_QUERY_OPTIONS,
+  LEARN_MORE_ABOUT_BASE_LINK,
+} from "utilities/constants";
 import { getFileDetails, IFileDetails } from "utilities/file/fileUtils";
 import { getPathWithQueryParams, QueryParams } from "utilities/url";
-import softwareAPI, {
-  MAX_FILE_SIZE_BYTES,
-  MAX_FILE_SIZE_MB,
-} from "services/entities/software";
+import softwareAPI from "services/entities/software";
 import labelsAPI, { getCustomLabels } from "services/entities/labels";
 
-import { NotificationContext } from "context/notification";
 import { AppContext } from "context/app";
+import useBlockNavigation from "hooks/useBlockNavigation";
+import useGitOpsMode from "hooks/useGitOpsMode";
 import { ILabelSummary } from "interfaces/label";
 
+import { notify } from "components/ToastNotification";
+import CustomLink from "components/CustomLink";
 import FileProgressModal from "components/FileProgressModal";
+import InfoBanner from "components/InfoBanner";
 import PremiumFeatureMessage from "components/PremiumFeatureMessage";
 import Spinner from "components/Spinner";
 import DataError from "components/DataError";
@@ -28,6 +32,25 @@ import { IPackageFormData } from "pages/SoftwarePage/components/forms/PackageFor
 import { getErrorMessage } from "./helpers";
 
 const baseClass = "software-custom-package";
+
+/** Shared GitOps-mode banner for the custom-package flows. Rendered by this
+ * page (single-package add) and by `PackageForm`'s multi-package Add modal. */
+export const GitOpsCustomPackageBanner = () => (
+  <InfoBanner
+    icon="info-outline"
+    iconColor="ui-fleet-black-50"
+    borderRadius="medium"
+  >
+    Add custom packages in GitOps mode so Fleet can host your software. After
+    adding, copy its SHA-256 hash into your YAML so the next GitOps workflow
+    doesn&apos;t delete it.{" "}
+    <CustomLink
+      url={`${LEARN_MORE_ABOUT_BASE_LINK}/yaml-software`}
+      text="YAML docs"
+      newTab
+    />
+  </InfoBanner>
+);
 
 interface ISoftwarePackageProps {
   currentTeamId: number;
@@ -42,15 +65,19 @@ const SoftwareCustomPackage = ({
   isSidePanelOpen,
   setSidePanelOpen,
 }: ISoftwarePackageProps) => {
-  const { renderFlash } = useContext(NotificationContext);
-  const { isPremiumTier, config } = useContext(AppContext);
-  const gitOpsModeEnabled = config?.gitops.gitops_mode_enabled;
+  const { isPremiumTier } = useContext(AppContext);
+  const queryClient = useQueryClient();
+  const { gitOpsModeEnabled } = useGitOpsMode("software");
 
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadDetails, setUploadDetails] = useState<IFileDetails | null>(null);
   const [
     showPreviewEndUserExperience,
     setShowPreviewEndUserExperience,
+  ] = useState(false);
+  const [
+    isIpadOrIphoneSoftwareSource,
+    setIsIpadOrIphoneSoftwareSource,
   ] = useState(false);
 
   const {
@@ -59,60 +86,35 @@ const SoftwareCustomPackage = ({
     isError: isErrorLabels,
   } = useQuery<ILabelSummary[], Error>(
     ["custom_labels"],
-    () => labelsAPI.summary().then((res) => getCustomLabels(res.labels)),
+    () =>
+      labelsAPI
+        .summary(currentTeamId)
+        .then((res) => getCustomLabels(res.labels)),
     {
       ...DEFAULT_USE_QUERY_OPTIONS,
       enabled: isPremiumTier,
     }
   );
 
-  useEffect(() => {
-    const beforeUnloadHandler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      // Next line with e.returnValue is included for legacy support
-      // e.g.Chrome / Edge < 119
-      e.returnValue = true;
-    };
+  // Block tab close / hard navigation while an upload is in flight.
+  useBlockNavigation(!!uploadDetails);
 
-    // set up event listener to prevent user from leaving page while uploading
-    if (uploadDetails) {
-      addEventListener("beforeunload", beforeUnloadHandler);
-    } else {
-      removeEventListener("beforeunload", beforeUnloadHandler);
-    }
-
-    // clean up event listener and timeout on component unmount
-    return () => {
-      removeEventListener("beforeunload", beforeUnloadHandler);
-    };
-  }, [uploadDetails]);
-
-  const onClickPreviewEndUserExperience = () => {
+  const onClickPreviewEndUserExperience = (isIosOrIpadosApp = false) => {
     setShowPreviewEndUserExperience(!showPreviewEndUserExperience);
+    setIsIpadOrIphoneSoftwareSource(isIosOrIpadosApp);
   };
 
   const onCancel = () => {
     router.push(
-      getPathWithQueryParams(PATHS.SOFTWARE_TITLES, {
-        team_id: currentTeamId,
+      getPathWithQueryParams(PATHS.SOFTWARE_LIBRARY, {
+        fleet_id: currentTeamId,
       })
     );
   };
 
   const onSubmit = async (formData: IPackageFormData) => {
     if (!formData.software) {
-      renderFlash(
-        "error",
-        `Couldn't add. Please refresh the page and try again.`
-      );
-      return;
-    }
-
-    if (formData.software && formData.software.size > MAX_FILE_SIZE_BYTES) {
-      renderFlash(
-        "error",
-        `Couldn't add. The maximum file size is ${MAX_FILE_SIZE_MB} MB.`
-      );
+      notify.error(`Couldn't add. Please refresh the page and try again.`);
       return;
     }
 
@@ -135,8 +137,7 @@ const SoftwareCustomPackage = ({
       });
 
       if (!gitOpsModeEnabled) {
-        renderFlash(
-          "success",
+        notify.success(
           <>
             <b>{formData.software?.name}</b> successfully added.
             {formData.selfService
@@ -146,9 +147,15 @@ const SoftwareCustomPackage = ({
         );
       }
 
+      queryClient.invalidateQueries({
+        queryKey: [{ scope: "software-titles" }],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [{ scope: "software-library" }],
+      });
+
       const newQueryParams: QueryParams = {
-        team_id: currentTeamId,
-        gitops_yaml: gitOpsModeEnabled ? "true" : undefined,
+        fleet_id: currentTeamId,
       };
       router.push(
         getPathWithQueryParams(
@@ -157,7 +164,9 @@ const SoftwareCustomPackage = ({
         )
       );
     } catch (e) {
-      renderFlash("error", getErrorMessage(e));
+      notify.error(getErrorMessage(e, formData.software?.name), {
+        response: e,
+      });
     }
     setUploadDetails(null);
   };
@@ -173,6 +182,7 @@ const SoftwareCustomPackage = ({
 
     return (
       <>
+        {gitOpsModeEnabled && <GitOpsCustomPackageBanner />}
         <PackageForm
           labels={labels || []}
           showSchemaButton={!isSidePanelOpen}
@@ -191,6 +201,8 @@ const SoftwareCustomPackage = ({
         {showPreviewEndUserExperience && (
           <CategoriesEndUserExperienceModal
             onCancel={onClickPreviewEndUserExperience}
+            teamId={currentTeamId}
+            isIosOrIpadosApp={isIpadOrIphoneSoftwareSource}
           />
         )}
       </>

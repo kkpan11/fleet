@@ -8,6 +8,7 @@ parasails.registerPage('basic-article', {
     subtopics: [],
     lastScrollTop: 0,
     scrollDistance: 0,
+    isIpadOS: false,
   },
 
   //  ╦  ╦╔═╗╔═╗╔═╗╦ ╦╔═╗╦  ╔═╗
@@ -17,6 +18,10 @@ parasails.registerPage('basic-article', {
     //…
   },
   mounted: async function() {
+    // Set a flag to determine whether or not this is an ipad. (Used to show/hide an embeded PDF)
+    if(navigator.maxTouchPoints > 1 && bowser.mac) {
+      this.isIpadOS = true;
+    }
     this.subtopics = (() => {
       let subtopics = $('[purpose="article-content"]').find('h2.markdown-heading').map((_, el) => el);
       subtopics = $.makeArray(subtopics).map((subheading) => {
@@ -61,6 +66,34 @@ parasails.registerPage('basic-article', {
         }
       });
     }
+    // https://github.com/sailshq/sailsjs.com/blob/7a74d4901dcc1e63080b502492b03fc971d3d3b2/assets/js/functions/sails-website-actions.js#L177-L239
+    (function highlightThatSyntax(){
+      $('pre code').each((i, block) => {
+        window.hljs.highlightElement(block);
+      });
+
+      // Make sure the <pre> tags whose code isn't being highlighted
+      // has that nice muted look we like.
+      $('.nohighlight').each(function() {
+        var $codeBlock = $(this);
+        $codeBlock.closest('pre').addClass('muted');
+      });
+      // Also make sure the 'usage' (and 'usage-*') code blocks have special styles.
+      $('.usage,.usage-exec').each(function() {
+        var $codeBlock = $(this);
+        $codeBlock.closest('pre').addClass('usage-wrapper');
+      });
+
+      // Now let's make the `function` keywords blue like in sublime.
+      $('.hljs-keyword').each(function() {
+        var $highlightedKeyword = $(this);
+        if($highlightedKeyword.text() === 'function') {
+          $highlightedKeyword.removeClass('hljs-keyword');
+          $highlightedKeyword.addClass('hljs-function-keyword');
+        }
+      });
+    })();
+
     // Add an event listener to add a class to the right sidebar when the header is hidden.
     window.addEventListener('scroll', this.handleScrollingInArticle);
 
@@ -70,11 +103,36 @@ parasails.registerPage('basic-article', {
         apiKey: this.algoliaPublicKey,
         indexName: 'fleetdm',
         container: '#docsearch-query',
-        placeholder: 'Search',
+        placeholder: 'Search articles',
         debug: false,
         clickAnalytics: true,
         searchParameters: {
-          facetFilters: ['section:docs']
+          facetFilters: ['section:articles']
+        },
+        translations: {
+          button: {
+            buttonText: 'Search articles',
+            buttonAriaLabel: 'Search articles',
+          },
+        },
+      });
+      // For mobile search
+      docsearch({
+        appId: 'NZXAYZXDGH',
+        apiKey: this.algoliaPublicKey,
+        indexName: 'fleetdm',
+        container: '#mobile-docsearch',
+        placeholder: 'Search articles',
+        debug: false,
+        clickAnalytics: true,
+        searchParameters: {
+          facetFilters: ['section:articles']
+        },
+        translations: {
+          button: {
+            buttonText: 'Search articles',
+            buttonAriaLabel: 'Search articles',
+          },
         },
       });
     }

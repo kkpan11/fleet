@@ -8,21 +8,28 @@ import (
 	"strings"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
-	"github.com/fleetdm/fleet/v4/server/datastore/mysql/common_mysql"
 	"github.com/fleetdm/fleet/v4/server/mdm/nanomdm/mdm"
+	common_mysql "github.com/fleetdm/fleet/v4/server/platform/mysql"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/micromdm/nanolib/log"
 )
 
 func enqueue(ctx context.Context, tx sqlx.ExtContext, ids []string, cmd *mdm.CommandWithSubtype) error {
 	if len(ids) < 1 {
 		return errors.New("no id(s) supplied to queue command to")
 	}
+	var nameArg sql.NullString
+	if cmd.Name != "" {
+		name := cmd.Name
+		if runes := []rune(name); len(runes) > 255 {
+			name = string(runes[:255])
+		}
+		nameArg = sql.NullString{String: name, Valid: true}
+	}
 	_, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO nano_commands (command_uuid, request_type, command, subtype) VALUES (?, ?, ?, ?)`,
-		cmd.CommandUUID, cmd.Command.Command.RequestType, cmd.Raw, cmd.Subtype,
+		`INSERT INTO nano_commands (command_uuid, request_type, command, subtype, name) VALUES (?, ?, ?, ?, ?)`,
+		cmd.CommandUUID, cmd.Command.Command.RequestType, cmd.Raw, cmd.Subtype, nameArg,
 	)
 	if err != nil {
 		return err
@@ -53,22 +60,14 @@ func enqueue(ctx context.Context, tx sqlx.ExtContext, ids []string, cmd *mdm.Com
 	return nil
 }
 
-type loggerWrapper struct {
-	logger log.Logger
-}
-
-func (l loggerWrapper) Log(keyvals ...interface{}) error {
-	l.logger.Info(keyvals...)
-	return nil
-}
-
 func (m *MySQLStorage) EnqueueCommand(ctx context.Context, ids []string, cmd *mdm.CommandWithSubtype) (map[string]error,
-	error) {
+	error,
+) {
 	// We need to retry because this transaction may deadlock with updates to nano_enrollment.last_seen_at
 	// Deadlock seen in 2024/12/12 loadtest: https://docs.google.com/document/d/1-Q6qFTd7CDm-lh7MVRgpNlNNJijk6JZ4KO49R1fp80U
 	err := common_mysql.WithRetryTxx(ctx, sqlx.NewDb(m.db, ""), func(tx sqlx.ExtContext) error {
 		return enqueue(ctx, tx, ids, cmd)
-	}, loggerWrapper{m.logger})
+	}, m.logger)
 	return nil, err
 }
 
@@ -270,11 +269,12 @@ func (m *MySQLStorage) BulkDeleteHostUserCommandsWithoutResults(ctx context.Cont
 	}
 	return common_mysql.WithRetryTxx(ctx, sqlx.NewDb(m.db, ""), func(tx sqlx.ExtContext) error {
 		return m.bulkDeleteHostUserCommandsWithoutResults(ctx, tx, commandToIDs)
-	}, loggerWrapper{m.logger})
+	}, m.logger)
 }
 
 func (m *MySQLStorage) bulkDeleteHostUserCommandsWithoutResults(ctx context.Context, tx sqlx.ExtContext,
-	commandToIDs map[string][]string) error {
+	commandToIDs map[string][]string,
+) error {
 	stmt := `
 DELETE
     eq
@@ -283,7 +283,7 @@ FROM
 	LEFT JOIN nano_command_results AS cr
 		ON cr.command_uuid = eq.command_uuid AND cr.id = eq.id
 WHERE
-	cr.command_uuid IS NULL AND eq.command_uuid = ? AND eq.id IN (?);`
+	(cr.command_uuid IS NULL OR cr.status = 'NotNow') AND eq.command_uuid = ? AND eq.id IN (?);`
 
 	// We process each commandUUID one at a time, in batches of hostUserIDs.
 	// This is because the number of hostUserIDs can be large, and number of unique commands is normally small.

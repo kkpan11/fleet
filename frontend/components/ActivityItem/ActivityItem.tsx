@@ -1,5 +1,4 @@
 import React from "react";
-import ReactTooltip from "react-tooltip";
 import classnames from "classnames";
 
 import {
@@ -8,35 +7,25 @@ import {
   IHostPastActivity,
   IHostUpcomingActivity,
 } from "interfaces/activity";
-import {
-  addGravatarUrlToResource,
-  internationalTimeFormat,
-} from "utilities/helpers";
-import { DEFAULT_GRAVATAR_LINK } from "utilities/constants";
+import { addGravatarUrlToResource } from "utilities/helpers";
 
-import Avatar from "components/Avatar";
+import FeedListItem from "components/FeedListItem";
 
-import { COLORS } from "styles/var/colors";
-import { dateAgo } from "utilities/date_format";
-import Button from "components/buttons/Button";
-import Icon from "components/Icon";
 import { noop } from "lodash";
 
 const baseClass = "activity-item";
-
-const generateActivityId = (
-  activity: IActivity | IHostPastActivity | IHostUpcomingActivity
-) => {
-  if ("id" in activity) {
-    return `activity-${activity.id}`;
-  }
-  return `activity-${activity.uuid}`;
-};
 
 export interface IShowActivityDetailsData {
   type: string;
   details?: IActivityDetails;
   created_at?: string;
+  /** Display name of the user who triggered the activity. Empty / undefined
+   *  for Fleet-initiated activities. */
+  actor_full_name?: string;
+  /** True when no user triggered the activity (policy, auto-update, setup
+   *  experience, etc.). Used by the install-details modal to render the
+   *  actor-driven failure copy ("Fleet failed to install …"). */
+  fleet_initiated?: boolean;
 }
 
 /**
@@ -90,7 +79,7 @@ const ActivityItem = ({
   activity,
   children,
   className,
-  isSoloActivity,
+  isSoloActivity = false,
   hideShowDetails = false,
   hideCancel = false,
   disableCancel = false,
@@ -100,20 +89,17 @@ const ActivityItem = ({
   const { actor_email } = activity;
   const { gravatar_url } = actor_email
     ? addGravatarUrlToResource({ email: actor_email })
-    : { gravatar_url: DEFAULT_GRAVATAR_LINK };
+    : { gravatar_url: undefined };
 
   // wrapped just in case the date string does not parse correctly
-  let activityCreatedAt: Date | null = null;
+  let activityCreatedAt: Date;
   try {
     activityCreatedAt = new Date(activity.created_at);
   } catch (e) {
-    activityCreatedAt = null;
+    activityCreatedAt = new Date();
   }
 
-  const classNames = classnames(baseClass, className, {
-    [`${baseClass}__solo-activity`]: isSoloActivity,
-    [`${baseClass}__no-details`]: hideShowDetails,
-  });
+  const classNames = classnames(baseClass, className);
 
   const onShowActivityDetails = (e: React.MouseEvent<HTMLButtonElement>) => {
     // added this stopPropagation as there is some weirdness around the event
@@ -123,6 +109,8 @@ const ActivityItem = ({
       type: activity.type,
       details: activity.details,
       created_at: activity.created_at,
+      actor_full_name: activity.actor_full_name,
+      fleet_initiated: activity.fleet_initiated,
     });
   };
 
@@ -131,78 +119,22 @@ const ActivityItem = ({
     onCancel();
   };
 
-  const tooltipId = generateActivityId(activity);
-
   return (
-    <div className={classNames}>
-      <div className={`${baseClass}__avatar-wrapper`}>
-        <div className={`${baseClass}__avatar-upper-dash`} />
-        <Avatar
-          className={`${baseClass}__avatar-image`}
-          user={{ gravatar_url }}
-          size="small"
-          hasWhiteBackground
-          useFleetAvatar={activity.fleet_initiated}
-        />
-        <div className={`${baseClass}__avatar-lower-dash`} />
-      </div>
-      <button
-        disabled={hideShowDetails}
-        className={`${baseClass}__details-wrapper`}
-        onClick={onShowActivityDetails}
-      >
-        <div className="activity-details">
-          <span className={`${baseClass}__details-topline`}>
-            <span>{children}</span>
-          </span>
-          <br />
-          <span
-            className={`${baseClass}__details-bottomline`}
-            data-tip
-            data-for={tooltipId}
-          >
-            {activityCreatedAt && dateAgo(activityCreatedAt)}
-          </span>
-          {activityCreatedAt && (
-            <ReactTooltip
-              className="date-tooltip"
-              place="top"
-              type="dark"
-              effect="solid"
-              id={tooltipId}
-              backgroundColor={COLORS["tooltip-bg"]}
-            >
-              {internationalTimeFormat(activityCreatedAt)}
-            </ReactTooltip>
-          )}
-        </div>
-        <div className={`${baseClass}__details-actions`}>
-          {!hideShowDetails && (
-            <Button
-              className={`${baseClass}__action-button`}
-              variant="icon"
-              onClick={onShowActivityDetails}
-            >
-              <Icon name="info-outline" />
-            </Button>
-          )}
-          {!hideCancel && (
-            <Button
-              className={`${baseClass}__action-button`}
-              variant="icon"
-              onClick={onCancelActivity}
-              disabled={disableCancel}
-            >
-              <Icon
-                name="close"
-                color="ui-fleet-black-75"
-                className={`${baseClass}__close-icon`}
-              />
-            </Button>
-          )}
-        </div>
-      </button>
-    </div>
+    <FeedListItem
+      useFleetAvatar={activity.fleet_initiated}
+      useAPIOnlyAvatar={activity.actor_api_only}
+      createdAt={activityCreatedAt}
+      gravatarURL={gravatar_url}
+      allowShowDetails={!hideShowDetails}
+      allowCancel={!hideCancel}
+      disableCancel={disableCancel}
+      isSoloItem={isSoloActivity}
+      onClickFeedItem={onShowActivityDetails}
+      onClickCancel={onCancelActivity}
+      className={classNames}
+    >
+      {children}
+    </FeedListItem>
   );
 };
 

@@ -1,4 +1,6 @@
-.software-card {
+.host-software-section {
+  @include vertical-page-tab-panel-layout;
+
   .table-container {
     .stackable-header {
       min-width: initial; // Fix card overflow on low widths
@@ -18,6 +20,26 @@
   }
 
   .host-software-table {
+    // When the macOS /Applications dropdown is shown, lay the controls out as
+    // search (left) ... dropdown, filters button (right). The dropdown and
+    // filters render in that DOM order; the search is rendered last by
+    // TableContainer, so pull it to the front of the flex row. Keep the search
+    // a fixed size at the start of the line rather than stretching, and push
+    // the dropdown + filters button to the end of the line.
+    &--with-applications-filter {
+      .top-shift-header {
+        .table-container__search {
+          order: -1;
+          flex: 0 0 auto;
+          width: auto;
+        }
+
+        .host-software-table__software-filter {
+          margin-left: auto;
+        }
+      }
+    }
+
     &__software-filter {
       min-width: 240px;
       width: 240px; // Override .form-field 100%
@@ -39,91 +61,16 @@
     .data-table-block {
       .data-table__table {
         thead {
-          .name__header {
-            display: table-cell;
-            width: auto;
-          }
-          .status__header {
-            display: table-cell;
-            width: auto;
-          }
-          .Version__header {
-            display: table-cell;
-            width: auto;
-          }
-          .source__header {
-            display: table-cell;
-          }
           .Vulnerabilities__header {
             display: table-cell;
             max-width: px-to-rem(140);
           }
-          // this is called `id` only due to typing concerns in the table config – it is for the
-          // "Actions" column
-          .id__header {
-            width: px-to-rem(72);
-          }
-          @media (max-width: ($break-xl - 1)) {
-            .source__header {
-              display: none;
-              width: 0;
-            }
-          }
-          @media (max-width: ($break-lg - 1)) {
-            .status__header {
-              display: none;
-              width: 0;
-            }
-          }
         }
         tbody {
-          tr {
-            .name__cell {
-              display: table-cell;
-              width: auto;
-            }
-            .status__cell {
-              display: table-cell;
-              width: auto;
-            }
-            .Version__cell {
-              display: table-cell;
-              width: auto;
-            }
-            .source__cell {
-              display: table-cell;
-            }
-            .Vulnerabilities__cell {
-              display: table-cell;
-            }
-            @media (max-width: ($break-xl - 1)) {
-              .source__cell {
-                display: none;
-                width: 0;
-              }
-            }
-            @media (max-width: ($break-lg - 1)) {
-              .status__cell {
-                display: none;
-                width: 0;
-              }
-            }
-
-            // Very little real estate at 768px
-            @media (max-width: ($break-sm - 1)) {
-              .name__cell {
-                .software-name {
-                  max-width: 190px;
-                }
-              }
-
-              .Version__cell {
-                .text-cell {
-                  max-width: 95px;
-                }
-              }
-            }
+          .name__cell {
+            max-width: 250px;
           }
+
         }
       }
 

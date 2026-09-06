@@ -66,7 +66,7 @@ const BootstrapPackageIndicator = ({
           ) : (
             <Button
               onClick={onClick}
-              variant="text-link"
+              variant="subdued"
               className={`${baseClass}__button`}
             >
               {displayData.displayText}

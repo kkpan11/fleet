@@ -6,7 +6,7 @@ import scriptsAPI, { IScriptResultResponse } from "services/entities/scripts";
 import Modal from "components/Modal";
 import Button from "components/buttons/Button";
 import TooltipWrapper from "components/TooltipWrapper";
-import Icon from "components/Icon";
+import IconStatusMessage from "components/IconStatusMessage";
 import Textarea from "components/Textarea";
 import DataError from "components/DataError/DataError";
 import Spinner from "components/Spinner/Spinner";
@@ -27,39 +27,35 @@ const ScriptContent = ({ content }: IScriptContentProps) => {
 };
 
 const StatusMessageRunning = () => (
-  <div className={`${baseClass}__status-message`}>
-    <p>
-      <Icon name="pending-outline" />
-      Script is running or will run when the host comes online.
-    </p>
-  </div>
+  <IconStatusMessage
+    className={`${baseClass}__status-message`}
+    iconName="pending-outline"
+    message="Script is running or will run when the host comes online."
+  />
 );
 
 const StatusMessageSuccess = () => (
-  <div className={`${baseClass}__status-message`}>
-    <p>
-      <Icon name="success-outline" />
-      Exit code: 0 (Script ran successfully.)
-    </p>
-  </div>
+  <IconStatusMessage
+    className={`${baseClass}__status-message`}
+    iconName="success-outline"
+    message="Exit code: 0 (Script ran successfully.)"
+  />
 );
 
 const StatusMessageFailed = ({ exitCode }: { exitCode: number }) => (
-  <div className={`${baseClass}__status-message`}>
-    <p>
-      <Icon name="error-outline" />
-      Exit code: {exitCode} (Script failed.)
-    </p>{" "}
-  </div>
+  <IconStatusMessage
+    className={`${baseClass}__status-message`}
+    iconName="error-outline"
+    message={`Exit code: ${exitCode} (Script failed.)`}
+  />
 );
 
 const StatusMessageError = ({ message }: { message: React.ReactNode }) => (
-  <div className={`${baseClass}__status-message`}>
-    <p>
-      <Icon name="error-outline" />
-      Error: {message}
-    </p>
-  </div>
+  <IconStatusMessage
+    className={`${baseClass}__status-message`}
+    iconName="error-outline"
+    message={<>Error: {message}</>}
+  />
 );
 
 interface IStatusMessageProps {
@@ -126,28 +122,37 @@ const ScriptOutput = ({
   output,
   hostname,
   wasAdHoc = false,
-}: IScriptOutputProps) => (
-  <div className={`${baseClass}__script-result`}>
-    <Textarea
-      label={
-        <>
-          The{" "}
-          <TooltipWrapper
-            tipContent="Fleet records the last 10,000 characters to prevent downtime."
-            tooltipClass={`${baseClass}__output-tooltip`}
-            isDelayed
-          >
-            output recorded
-          </TooltipWrapper>{" "}
-          when <b>{hostname}</b> ran the script{wasAdHoc && " above"}:
-        </>
-      }
-      variant="code"
-    >
-      {output}
-    </Textarea>
-  </div>
-);
+}: IScriptOutputProps) => {
+  const content =
+    output.trim().length === 0 ? (
+      <span>
+        No output captured when <b>{hostname}</b> ran the script
+        {wasAdHoc && " above"}.
+      </span>
+    ) : (
+      <Textarea
+        label={
+          <>
+            The{" "}
+            <TooltipWrapper
+              tipContent="Fleet records the last 10,000 characters to prevent downtime."
+              tooltipClass={`${baseClass}__output-tooltip`}
+              delayInMs={500}
+            >
+              output recorded
+            </TooltipWrapper>{" "}
+            when <b>{hostname}</b> ran the script{wasAdHoc && " above"}:
+          </>
+        }
+        variant="code"
+      >
+        {output}
+      </Textarea>
+    );
+
+  return <div className={`${baseClass}__script-result`}>{content}</div>;
+};
+
 interface IRunScriptDetailsModalProps {
   scriptExecutionId: string;
   onCancel: () => void;
@@ -234,7 +239,7 @@ const RunScriptDetailsModal = ({
   const renderFooter = () => (
     <ModalFooter
       isTopScrolling={isTopScrolling}
-      primaryButtons={<Button onClick={onCancel}>Done</Button>}
+      primaryButtons={<Button onClick={onCancel}>Close</Button>}
     />
   );
   return (
@@ -245,10 +250,8 @@ const RunScriptDetailsModal = ({
       className={baseClass}
       isHidden={isHidden}
     >
-      <>
-        {renderContent()}
-        {renderFooter()}
-      </>
+      {renderContent()}
+      {renderFooter()}
     </Modal>
   );
 };

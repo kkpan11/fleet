@@ -5,11 +5,12 @@ import { AxiosError } from "axios";
 
 import paths from "router/paths";
 import { AppContext } from "context/app";
-import { NotificationContext } from "context/notification";
+import { notify } from "components/ToastNotification";
 import { RoutingContext } from "context/routing";
 import { ISSOSettings } from "interfaces/ssoSettings";
 import { ILoginUserData } from "interfaces/user";
 import local from "utilities/local";
+import authToken from "utilities/auth_token";
 import configAPI from "services/entities/config";
 import sessionsAPI, { ISSOSettingsResponse } from "services/entities/sessions";
 import formatErrorResponse from "utilities/format_error_response";
@@ -56,7 +57,6 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
     setCurrentUser,
     setCurrentTeam,
   } = useContext(AppContext);
-  const { renderFlash } = useContext(NotificationContext);
   const { redirectLocation } = useContext(RoutingContext);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -103,12 +103,11 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
     }
   }, [availableTeams, config, currentUser, redirectLocation, router]);
 
-  // TODO: Fix this. If renderFlash is added as a dependency it causes infinite re-renders.
   useEffect(() => {
     let status = new URLSearchParams(location.search).get("status");
     status = status && statusMessages[status as keyof IStatusMessages];
     if (status) {
-      renderFlash("error", status);
+      notify.error(status);
     }
   }, [location?.search]);
 
@@ -119,9 +118,12 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
 
       try {
         const response = await sessionsAPI.login(formData);
-        const { user, available_teams, token } = response;
+        const { user, available_teams, token, token_expires_at } = response;
 
-        local.setItem("auth_token", token);
+        const expiresAt = token_expires_at
+          ? new Date(token_expires_at)
+          : undefined;
+        authToken.save(token, expiresAt);
 
         setCurrentUser(user);
         setAvailableTeams(user, available_teams);
@@ -185,7 +187,6 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
       };
       const errorObject = formatErrorResponse(ssoError);
       setErrors(errorObject);
-      return false;
     }
   }, [redirectLocation]);
 
@@ -194,7 +195,7 @@ const LoginPage = ({ router, location }: ILoginPageProps) => {
   }
 
   return (
-    <AuthenticationFormWrapper>
+    <AuthenticationFormWrapper header="Welcome to Fleet">
       <LoginForm
         handleSubmit={onSubmit}
         baseError={errors.base}

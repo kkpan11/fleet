@@ -1,6 +1,10 @@
-import React, { useState } from "react";
+import React, { useCallback } from "react";
 import { useQuery } from "react-query";
 import { AxiosError } from "axios";
+import { Tab, TabList, TabPanel, Tabs } from "react-tabs";
+
+import PATHS from "router/paths";
+import { getPathWithQueryParams } from "utilities/url";
 
 import mdmAPI, {
   IGetSetupExperienceSoftwareResponse,
@@ -8,19 +12,31 @@ import mdmAPI, {
 import configAPI from "services/entities/config";
 import teamsAPI, { ILoadTeamResponse } from "services/entities/teams";
 import { ISoftwareTitle } from "interfaces/software";
-import { DEFAULT_USE_QUERY_OPTIONS } from "utilities/constants";
+import {
+  DEFAULT_USE_QUERY_OPTIONS,
+  LEARN_MORE_ABOUT_BASE_LINK,
+} from "utilities/constants";
 import { IConfig } from "interfaces/config";
 import { API_NO_TEAM_ID, ITeamConfig } from "interfaces/team";
+import {
+  isSetupExperiencePlatform,
+  SetupExperiencePlatform,
+} from "interfaces/platform";
 
 import SectionHeader from "components/SectionHeader";
+import PageDescription from "components/PageDescription";
 import DataError from "components/DataError";
 import Spinner from "components/Spinner";
+import TabNav from "components/TabNav";
+import TabText from "components/TabText";
+import EmptyState from "components/EmptyState";
+import Button from "components/buttons/Button";
+import CustomLink from "components/CustomLink";
 
-import InstallSoftwarePreview from "./components/InstallSoftwarePreview";
-import AddInstallSoftware from "./components/AddInstallSoftware";
-import SelectSoftwareModal from "./components/SelectSoftwareModal";
+import InstallSoftwareForm from "./components/InstallSoftwareForm";
 import SetupExperienceContentContainer from "../../components/SetupExperienceContentContainer";
-import { getManualAgentInstallSetting } from "../BootstrapPackage/BootstrapPackage";
+import { ISetupExperienceCardProps } from "../../SetupExperienceNavItems";
+import getManualAgentInstallSetting from "../../helpers";
 
 const baseClass = "install-software";
 
@@ -28,16 +44,34 @@ const baseClass = "install-software";
 // available for install so we can correctly display the selected count.
 const PER_PAGE_SIZE = 3000;
 
-interface IInstallSoftwareProps {
-  currentTeamId: number;
+export const PLATFORM_BY_INDEX: SetupExperiencePlatform[] = [
+  "macos",
+  "windows",
+  "linux",
+  "ios",
+  "ipados",
+  "android",
+];
+export interface InstallSoftwareLocation {
+  pathname: string;
+  query: {
+    fleet_id?: string;
+  };
 }
 
-const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
-  const [showSelectSoftwareModal, setShowSelectSoftwareModal] = useState(false);
+const InstallSoftware = ({
+  currentTeamId,
+  router,
+  urlPlatformParam,
+}: ISetupExperienceCardProps) => {
+  const isValidPlatform = isSetupExperiencePlatform(urlPlatformParam);
+
+  // all uses of selectedPlatform are gated by above boolean
+  const selectedPlatform = urlPlatformParam as SetupExperiencePlatform;
 
   const {
     data: softwareTitles,
-    isLoading,
+    isLoading: isLoadingSoftwareTitles,
     isError,
     refetch: refetchSoftwareTitles,
   } = useQuery<
@@ -45,15 +79,17 @@ const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
     AxiosError,
     ISoftwareTitle[] | null
   >(
-    ["install-software", currentTeamId],
+    ["install-software", currentTeamId, selectedPlatform],
     () =>
       mdmAPI.getSetupExperienceSoftware({
-        team_id: currentTeamId,
+        platform: selectedPlatform,
+        fleet_id: currentTeamId,
         per_page: PER_PAGE_SIZE,
       }),
     {
       ...DEFAULT_USE_QUERY_OPTIONS,
       select: (res) => res.software_titles,
+      enabled: isValidPlatform,
     }
   );
 
@@ -62,7 +98,7 @@ const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
     Error
   >(["config", currentTeamId], () => configAPI.loadAll(), {
     ...DEFAULT_USE_QUERY_OPTIONS,
-    enabled: currentTeamId === API_NO_TEAM_ID,
+    enabled: isValidPlatform,
   });
 
   const { data: teamConfig, isLoading: isLoadingTeamConfig } = useQuery<
@@ -71,14 +107,29 @@ const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
     ITeamConfig
   >(["team", currentTeamId], () => teamsAPI.load(currentTeamId), {
     ...DEFAULT_USE_QUERY_OPTIONS,
-    enabled: currentTeamId !== API_NO_TEAM_ID,
-    select: (res) => res.team,
+    enabled: isValidPlatform && currentTeamId !== API_NO_TEAM_ID,
+    select: (res) => res.fleet,
   });
 
-  const onSave = async () => {
-    setShowSelectSoftwareModal(false);
-    refetchSoftwareTitles();
-  };
+  const handleTabChange = useCallback(
+    (index: number) => {
+      const newPlatform = PLATFORM_BY_INDEX[index];
+      router.push(
+        getPathWithQueryParams(PATHS.CONTROLS_INSTALL_SOFTWARE(newPlatform), {
+          fleet_id: currentTeamId,
+        })
+      );
+    },
+    [router]
+  );
+
+  if (!isValidPlatform) {
+    router.replace(
+      getPathWithQueryParams(PATHS.CONTROLS_INSTALL_SOFTWARE("macos"), {
+        fleet_id: currentTeamId,
+      })
+    );
+  }
 
   const hasManualAgentInstall = getManualAgentInstallSetting(
     currentTeamId,
@@ -86,8 +137,13 @@ const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
     teamConfig
   );
 
-  const renderContent = () => {
-    if (isLoading || isLoadingGlobalConfig || isLoadingTeamConfig) {
+  const isAndroidMdmEnabled = globalConfig?.mdm.android_enabled_and_configured;
+  const isWindowsMdmEnabled = globalConfig?.mdm.windows_enabled_and_configured;
+
+  const isLoadingConfig = isLoadingGlobalConfig || isLoadingTeamConfig;
+
+  const renderTabContent = (platform: SetupExperiencePlatform) => {
+    if (isLoadingSoftwareTitles) {
       return <Spinner />;
     }
 
@@ -96,16 +152,60 @@ const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
     }
 
     if (softwareTitles || softwareTitles === null) {
-      return (
-        <SetupExperienceContentContainer>
-          <AddInstallSoftware
-            currentTeamId={currentTeamId}
-            hasManualAgentInstall={hasManualAgentInstall}
-            softwareTitles={softwareTitles}
-            onAddSoftware={() => setShowSelectSoftwareModal(true)}
-          />
-          <InstallSoftwarePreview />
-        </SetupExperienceContentContainer>
+      const appleMdmAndAbmEnabled =
+        globalConfig?.mdm.enabled_and_configured &&
+        globalConfig?.mdm.apple_bm_enabled_and_configured;
+      const turnOnAppleMdm =
+        (platform === "macos" || platform === "ios" || platform === "ipados") &&
+        !appleMdmAndAbmEnabled;
+
+      const turnOnAndroidMdm = platform === "android" && !isAndroidMdmEnabled;
+
+      // Only Apple and Android setup experience require MDM. Windows admins can
+      // pre-stage setup-experience software without MDM, but the
+      // require_all_software_windows option does require Windows MDM to be on
+      // (gated at the checkbox level inside InstallSoftwareForm).
+      const turnOnMdm = turnOnAppleMdm || turnOnAndroidMdm;
+
+      return turnOnMdm ? (
+        <EmptyState
+          header={
+            platform === "android"
+              ? "Turn on Android MDM"
+              : "Additional configuration required"
+          }
+          info={
+            platform === "android"
+              ? "Turn on MDM to install software during setup experience."
+              : "Turn on MDM and automatic enrollment to install software during setup experience."
+          }
+          primaryButton={
+            <Button onClick={() => router.push(PATHS.ADMIN_INTEGRATIONS_MDM)}>
+              Turn on
+            </Button>
+          }
+        />
+      ) : (
+        <InstallSoftwareForm
+          currentTeamId={currentTeamId}
+          hasManualAgentInstall={hasManualAgentInstall}
+          softwareTitles={softwareTitles}
+          platform={platform}
+          savedRequireAllSoftwareMacOS={
+            currentTeamId
+              ? teamConfig?.mdm?.setup_experience?.require_all_software_macos
+              : globalConfig?.mdm?.setup_experience?.require_all_software_macos
+          }
+          savedRequireAllSoftwareWindows={
+            currentTeamId
+              ? teamConfig?.mdm?.setup_experience?.require_all_software_windows
+              : globalConfig?.mdm?.setup_experience
+                  ?.require_all_software_windows
+          }
+          isWindowsMdmEnabled={!!isWindowsMdmEnabled}
+          router={router}
+          refetchSoftwareTitles={refetchSoftwareTitles}
+        />
       );
     }
 
@@ -114,16 +214,64 @@ const InstallSoftware = ({ currentTeamId }: IInstallSoftwareProps) => {
 
   return (
     <section className={baseClass}>
-      <SectionHeader title="Install software" />
-      <>{renderContent()}</>
-      {showSelectSoftwareModal && softwareTitles && (
-        <SelectSoftwareModal
-          currentTeamId={currentTeamId}
-          softwareTitles={softwareTitles}
-          onSave={onSave}
-          onExit={() => setShowSelectSoftwareModal(false)}
-        />
-      )}
+      <SectionHeader
+        title="Install software"
+        details={
+          <CustomLink
+            newTab
+            url={`${LEARN_MORE_ABOUT_BASE_LINK}/setup-experience/install-software`}
+            text="Preview end user experience"
+          />
+        }
+      />
+      <PageDescription
+        variant="right-panel"
+        content={
+          selectedPlatform === "macos"
+            ? "Install software on hosts that automatically enroll to Fleet."
+            : "Install software on hosts that enroll to Fleet."
+        }
+      />
+      <SetupExperienceContentContainer>
+        {isLoadingConfig ? (
+          <Spinner />
+        ) : (
+          <TabNav secondary>
+            <Tabs
+              selectedIndex={PLATFORM_BY_INDEX.indexOf(selectedPlatform)}
+              onSelect={handleTabChange}
+            >
+              <TabList>
+                <Tab>
+                  <TabText>macOS</TabText>
+                </Tab>
+                <Tab>
+                  <TabText>Windows</TabText>
+                </Tab>
+                <Tab>
+                  <TabText>Linux</TabText>
+                </Tab>
+                <Tab>
+                  <TabText>iOS</TabText>
+                </Tab>
+                <Tab>
+                  <TabText>iPadOS</TabText>
+                </Tab>
+                <Tab>
+                  <TabText>Android</TabText>
+                </Tab>
+              </TabList>
+              {PLATFORM_BY_INDEX.map((platform) => {
+                return (
+                  <TabPanel key={platform}>
+                    {renderTabContent(platform)}
+                  </TabPanel>
+                );
+              })}
+            </Tabs>
+          </TabNav>
+        )}
+      </SetupExperienceContentContainer>
     </section>
   );
 };

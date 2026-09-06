@@ -6,34 +6,26 @@ import React, {
   useEffect,
 } from "react";
 import { format } from "date-fns";
-import {
-  useQuery,
-  RefetchOptions,
-  RefetchQueryFilters,
-  QueryObserverResult,
-} from "react-query";
+import { useQuery } from "react-query";
 import FileSaver from "file-saver";
 
 import { AppContext } from "context/app";
-import { NotificationContext } from "context/notification";
-import scriptAPI, { IHostScriptsResponse } from "services/entities/scripts";
+import scriptAPI from "services/entities/scripts";
 import { IHostScript } from "interfaces/script";
-import { IApiError, getErrorReason } from "interfaces/errors";
 
+import { notify } from "components/ToastNotification";
 import Modal from "components/Modal";
 import ModalFooter from "components/ModalFooter";
 import Button from "components/buttons/Button";
 import Spinner from "components/Spinner";
-import Icon from "components/Icon";
 import Textarea from "components/Textarea";
-import CustomLink from "components/CustomLink";
 import DataError from "components/DataError";
-import paths from "router/paths";
 import ActionsDropdown from "components/ActionsDropdown";
 import { generateActionDropdownOptions } from "pages/hosts/details/HostDetailsPage/modals/RunScriptModal/ScriptsTableConfig";
 import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
-import { getPathWithQueryParams } from "utilities/url";
 import { IPaginatedListScript } from "pages/hosts/ManageHostsPage/components/RunScriptBatchPaginatedList/RunScriptBatchPaginatedList";
+
+import RunScriptHelpText from "./RunScriptHelpText";
 
 const baseClass = "script-details-modal";
 
@@ -43,16 +35,15 @@ type PartialOrFullHostScript =
 
 interface IScriptDetailsModalProps {
   onCancel: () => void;
+  /** optional onClose to allow both "go back" behavior and "close" behavior depending on context */
+  onClose?: () => void;
   onDelete?: () => void;
   runScriptHelpText?: boolean;
   showHostScriptActions?: boolean;
-  setRunScriptRequested?: (value: boolean) => void;
-  hostId?: number | null;
+  onClickRun?: (script: IHostScript) => void;
   hostTeamId?: number | null;
-  refetchHostScripts?: <TPageData>(
-    options?: (RefetchOptions & RefetchQueryFilters<TPageData>) | undefined
-  ) => Promise<QueryObserverResult<IHostScriptsResponse, IApiError>>;
-  selectedScriptDetails?: PartialOrFullHostScript | IPaginatedListScript;
+  selectedScriptId?: number;
+  selectedScriptDetails?: PartialOrFullHostScript | IPaginatedListScript | null;
   selectedScriptContent?: string;
   isLoadingScriptContent?: boolean;
   isScriptContentError?: Error | null;
@@ -65,13 +56,13 @@ interface IScriptDetailsModalProps {
 
 const ScriptDetailsModal = ({
   onCancel,
+  onClose,
   onDelete,
+  onClickRun,
   runScriptHelpText = false,
   showHostScriptActions = false,
-  setRunScriptRequested,
-  hostId,
   hostTeamId,
-  refetchHostScripts,
+  selectedScriptId,
   selectedScriptDetails,
   selectedScriptContent,
   isLoadingScriptContent,
@@ -93,12 +84,30 @@ const ScriptDetailsModal = ({
     }
   };
 
-  const { currentUser } = useContext(AppContext);
-  const { renderFlash } = useContext(NotificationContext);
+  const {
+    currentUser,
+    isGlobalAdmin,
+    isAnyTeamAdmin,
+    isGlobalMaintainer,
+    isAnyTeamMaintainer,
+    isTeamTechnician,
+    isGlobalTechnician,
+  } = useContext(AppContext);
+
+  const isTechnician = !!isTeamTechnician || !!isGlobalTechnician;
+
+  const canRunScripts = !!(
+    isGlobalAdmin ||
+    isAnyTeamAdmin ||
+    isGlobalMaintainer ||
+    isAnyTeamMaintainer
+  );
 
   // handle multiple possibilities for `selectedScriptDetails`
   let scriptId: number | null = null;
-  if (selectedScriptDetails) {
+  if (selectedScriptId) {
+    scriptId = selectedScriptId;
+  } else if (selectedScriptDetails) {
     if ("script_id" in selectedScriptDetails) {
       scriptId = selectedScriptDetails.script_id;
     } else if ("id" in selectedScriptDetails) {
@@ -110,7 +119,7 @@ const ScriptDetailsModal = ({
     data: scriptContent,
     error: isSelectedScriptContentError,
     isLoading: isLoadingSelectedScriptContent,
-  } = useQuery<any, Error>(
+  } = useQuery<string, Error>(
     ["scriptContent", scriptId],
     () =>
       scriptId
@@ -132,7 +141,7 @@ const ScriptDetailsModal = ({
 
   const getScriptContent = async () => {
     try {
-      const content = selectedScriptContent || scriptContent;
+      const content = selectedScriptContent || scriptContent || "";
       const formatDate = format(new Date(), "yyyy-MM-dd");
       const filename = `${formatDate} ${
         selectedScriptDetails?.name || "Script details"
@@ -140,7 +149,7 @@ const ScriptDetailsModal = ({
       const file = new File([content], filename);
       FileSaver.saveAs(file);
     } catch {
-      renderFlash("error", "Couldn’t Download. Please try again.");
+      notify.error("Couldn’t download. Please try again.");
     }
   };
 
@@ -157,57 +166,29 @@ const ScriptDetailsModal = ({
 
   const onSelectMoreActions = useCallback(
     async (action: string, script: IHostScript) => {
-      if (hostId && !!setRunScriptRequested && !!refetchHostScripts) {
-        switch (action) {
-          case "showRunDetails": {
-            if (script.last_execution?.execution_id) {
-              onClickRunDetails &&
-                onClickRunDetails(script.last_execution?.execution_id);
-            }
-            break;
+      switch (action) {
+        case "showRunDetails": {
+          if (script.last_execution?.execution_id) {
+            onClickRunDetails &&
+              onClickRunDetails(script.last_execution?.execution_id);
           }
-          case "run": {
-            try {
-              setRunScriptRequested && setRunScriptRequested(true);
-              await scriptAPI.runScript({
-                host_id: hostId,
-                script_id: script.script_id,
-              });
-              renderFlash(
-                "success",
-                "Script is running or will run when the host comes online."
-              );
-              refetchHostScripts();
-
-              onCancel(); // Running a script returns to previous state
-            } catch (e) {
-              renderFlash("error", getErrorReason(e));
-              setRunScriptRequested(false);
-            }
-            break;
-          }
-          default: // do nothing
+          break;
         }
+        case "run": {
+          // should always be present if these actions are visible
+          onClickRun && onClickRun(script);
+          break;
+        }
+        default: // do nothing
       }
     },
-    [
-      hostId,
-      onClickRunDetails,
-      setRunScriptRequested,
-      refetchHostScripts,
-      renderFlash,
-      onCancel,
-    ]
+    [onClickRunDetails, onClickRun]
   );
 
   const shouldShowFooter =
     !isLoadingScriptContent && selectedScriptDetails !== undefined;
 
   const renderFooter = () => {
-    if (!shouldShowFooter) {
-      return null;
-    }
-
     return (
       <ModalFooter
         isTopScrolling={isTopScrolling}
@@ -216,22 +197,22 @@ const ScriptDetailsModal = ({
             <>
               <Button
                 className={`${baseClass}__action-button`}
-                variant="icon"
+                variant="subdued"
                 onClick={() => onClickDownload()}
-              >
-                <Icon name="download" />
-              </Button>
+                icon="download"
+                ariaLabel="Download script"
+              />
               <GitOpsModeTooltipWrapper
                 position="bottom"
                 renderChildren={(disableChildren) => (
                   <Button
                     disabled={disableChildren}
                     className={`${baseClass}__action-button`}
-                    variant="icon"
+                    variant="subdued"
                     onClick={onDelete}
-                  >
-                    <Icon name="trash" color="ui-fleet-black-75" />
-                  </Button>
+                    icon="trash"
+                    ariaLabel="Delete script"
+                  />
                 )}
               />
             </>
@@ -258,10 +239,11 @@ const ScriptDetailsModal = ({
                       selectedScriptDetails as IHostScript
                     )}
                     menuPlacement="top"
+                    variant="subdued"
                   />
                 </div>
               )}
-              <Button onClick={onCancel}>Done</Button>
+              <Button onClick={onCancel}>Close</Button>
             </>
           )
         }
@@ -287,26 +269,12 @@ const ScriptDetailsModal = ({
           {scriptContent}
         </Textarea>
         {runScriptHelpText && (
-          <div className="form-field__help-text">
-            To run this script on a host, go to the{" "}
-            <CustomLink
-              text="Hosts"
-              url={getPathWithQueryParams(paths.MANAGE_HOSTS, {
-                team_id: teamIdForApi,
-              })}
-            />{" "}
-            page and select a host.
-            <br />
-            To run the script across multiple hosts, add a policy automation on
-            the{" "}
-            <CustomLink
-              text="Policies"
-              url={getPathWithQueryParams(paths.MANAGE_POLICIES, {
-                team_id: teamIdForApi,
-              })}
-            />{" "}
-            page.
-          </div>
+          <RunScriptHelpText
+            className="form-field__help-text"
+            isTechnician={isTechnician}
+            canRunScripts={canRunScripts}
+            teamId={teamIdForApi}
+          />
         )}
       </div>
     );
@@ -317,13 +285,11 @@ const ScriptDetailsModal = ({
       className={baseClass}
       title={selectedScriptDetails?.name || "Script details"}
       width="large"
-      onExit={onCancel}
+      onExit={onClose ?? onCancel}
       isHidden={isHidden}
     >
-      <>
-        {renderContent()}
-        {shouldShowFooter ? renderFooter() : undefined}
-      </>
+      {renderContent()}
+      {shouldShowFooter && renderFooter()}
     </Modal>
   );
 };

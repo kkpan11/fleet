@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { Link } from "react-router";
+import { browserHistory } from "react-router";
 
+import Card from "components/Card";
 import Button from "components/buttons/Button";
-import Icon from "components/Icon";
+import AutomationsButton from "components/buttons/AutomationsButton";
+import classnames from "classnames";
 
 interface IInfoCardProps {
   title: string;
   titleDetail?: JSX.Element | string | null;
   description?: JSX.Element | string;
   actionUrl?: string;
-  children: React.ReactChild | React.ReactChild[];
+  children: React.ReactNode;
   action?:
     | {
         type: "link";
@@ -20,9 +22,14 @@ interface IInfoCardProps {
         type: "button";
         text: string;
         onClick?: () => void;
+      }
+    | {
+        type: "automations";
+        onClick?: () => void;
       };
   total_host_count?: number;
   showTitle?: boolean;
+  className?: string;
 }
 
 const baseClass = "dashboard-info-card";
@@ -36,6 +43,7 @@ const useInfoCard = ({
   action,
   total_host_count,
   showTitle = true,
+  className,
 }: IInfoCardProps): JSX.Element => {
   const [actionLink, setActionURL] = useState<string | null>(
     defaultActionUrl || null
@@ -55,11 +63,22 @@ const useInfoCard = ({
 
   const renderAction = () => {
     if (action) {
+      if (action.type === "automations") {
+        return (
+          <AutomationsButton
+            className={`${baseClass}__action-button`}
+            size="small"
+            onClick={action.onClick}
+          />
+        );
+      }
+
       if (action.type === "button") {
         return (
           <Button
             className={`${baseClass}__action-button`}
-            variant="text-link"
+            variant="secondary"
+            size="small"
             onClick={action.onClick}
           >
             <>
@@ -73,13 +92,21 @@ const useInfoCard = ({
 
       const linkTo = actionLink || action.to;
       if (linkTo) {
+        const onClick = (): void => {
+          browserHistory.push(linkTo);
+        };
+
         return (
-          <Link to={linkTo} className={`${baseClass}__action-button`}>
+          <Button
+            variant="secondary"
+            onClick={onClick}
+            className={`${baseClass}__action-button`}
+            size="small"
+          >
             <span className={`${baseClass}__action-button-text`}>
               {action.text}
             </span>
-            <Icon name="arrow-internal-link" color="core-fleet-blue" />
-          </Link>
+          </Button>
         );
       }
     }
@@ -98,10 +125,12 @@ const useInfoCard = ({
     return child;
   });
 
+  const classNames = classnames(baseClass, className);
+
   return (
-    <div className={baseClass}>
+    <Card className={classNames} paddingSize="xlarge" borderRadiusSize="large">
       {showTitle && (
-        <>
+        <div>
           <div className={`${baseClass}__section-title-cta`}>
             <div className={`${baseClass}__section-title-group`}>
               <div className={`${baseClass}__section-title`}>
@@ -118,13 +147,15 @@ const useInfoCard = ({
             </div>
             {renderAction()}
           </div>
-          <div className={`${baseClass}__section-description`}>
-            {description}
-          </div>
-        </>
+          {description && (
+            <div className={`${baseClass}__section-description`}>
+              {description}
+            </div>
+          )}
+        </div>
       )}
       {clonedChildren}
-    </div>
+    </Card>
   );
 };
 

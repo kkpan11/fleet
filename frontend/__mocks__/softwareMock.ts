@@ -9,6 +9,7 @@ import {
   IAppStoreApp,
   IFleetMaintainedApp,
   IFleetMaintainedAppDetails,
+  ISoftwareInstallResult,
 } from "interfaces/software";
 import {
   ISoftwareTitlesResponse,
@@ -17,7 +18,9 @@ import {
   ISoftwareVersionResponse,
 } from "services/entities/software";
 import { IOSVersionsResponse } from "../services/entities/operating_systems";
+import { IGetSetupExperienceSoftwareResponse } from "../services/entities/mdm";
 import { IOperatingSystemVersion } from "../interfaces/operating_system";
+import { createMockListEntitiesResponseCommon } from "./commonMock";
 
 const DEFAULT_SOFTWARE_MOCK: ISoftware = {
   hosts_count: 1,
@@ -29,6 +32,7 @@ const DEFAULT_SOFTWARE_MOCK: ISoftware = {
   vulnerabilities: null,
   last_opened_at: null,
   bundle_identifier: "com.app.mock",
+  icon_url: null,
 };
 
 export const createMockSoftware = (
@@ -69,10 +73,11 @@ export const createMockSoftwareVulnerability = (
 const DEFAULT_SOFTWARE_VERSION_MOCK: ISoftwareVersion = {
   id: 1,
   name: "test.app",
+  display_name: "Test App",
   version: "1.2.3",
   bundle_identifier: "com.test.Desktop",
   source: "apps",
-  browser: "chrome",
+  extension_for: "chrome",
   release: "1",
   vendor: "test_vendor",
   arch: "x86_64",
@@ -111,6 +116,7 @@ const DEFAULT_OS_VERSION_MOCK = {
   platform: "darwin",
   hosts_count: 42,
   generated_cpes: [],
+  kernels: [],
   vulnerabilities: [],
 };
 
@@ -141,7 +147,7 @@ export const createMockOSVersionsResponse = (
 
 const DEFAULT_APP_STORE_APP_MOCK: IAppStoreApp = {
   name: "test app",
-  app_store_id: 1,
+  app_store_id: "1",
   created_at: "2020-01-01T00:00:00.000Z",
   platform: "darwin",
   icon_url: "https://via.placeholder.com/512",
@@ -153,6 +159,7 @@ const DEFAULT_APP_STORE_APP_MOCK: IAppStoreApp = {
     failed: 3,
   },
   labels_include_any: null,
+  labels_include_all: null,
   labels_exclude_any: null,
 };
 
@@ -160,10 +167,64 @@ export const createMockAppStoreApp = (overrides?: Partial<IAppStoreApp>) => {
   return { ...DEFAULT_APP_STORE_APP_MOCK, ...overrides };
 };
 
+const DEFAULT_APP_STORE_APP_ANDROID_MOCK: IAppStoreApp = {
+  name: "test app",
+  display_name: "Test App",
+  app_store_id: "com.test.app",
+  created_at: "2020-01-01T00:00:00.000Z",
+  platform: "android",
+  icon_url: "https://via.placeholder.com/512",
+  latest_version: "1.2.3",
+  self_service: true,
+  status: {
+    installed: 1,
+    pending: 2,
+    failed: 3,
+  },
+  categories: null,
+  labels_include_any: null,
+  labels_exclude_any: null,
+  labels_include_all: null,
+  configuration: '{ workProfileWidgets: "WORK_PROFILE_WIDGETS_ALLOWED" }',
+};
+
+export const createMockAppStoreAppAndroid = (
+  overrides?: Partial<IAppStoreApp>
+) => {
+  return { ...DEFAULT_APP_STORE_APP_ANDROID_MOCK, ...overrides };
+};
+
+const DEFAULT_APP_STORE_APP_IOS_MOCK: IAppStoreApp = {
+  name: "Zoom",
+  display_name: "Zoom Workplace",
+  app_store_id: "546505307",
+  created_at: "2020-01-01T00:00:00.000Z",
+  platform: "ios",
+  icon_url: "https://via.placeholder.com/512",
+  latest_version: "6.4.0",
+  self_service: true,
+  status: {
+    installed: 1,
+    pending: 2,
+    failed: 3,
+  },
+  categories: null,
+  labels_include_any: null,
+  labels_exclude_any: null,
+  labels_include_all: null,
+  configuration: "<dict>\n\t<key>ForceLoginWithSSO</key>\n\t<true/>\n</dict>",
+};
+
+export const createMockAppStoreAppIos = (overrides?: Partial<IAppStoreApp>) => {
+  return { ...DEFAULT_APP_STORE_APP_IOS_MOCK, ...overrides };
+};
+
 const DEFAULT_SOFTWARE_TITLE_DETAILS_MOCK: ISoftwareTitleDetails = {
   id: 1,
   name: "test.app",
+  icon_url: null,
   software_package: null,
+  packages: null,
   app_store_app: null,
   source: "apps",
   hosts_count: 1,
@@ -200,6 +261,7 @@ export const createMockSoftwareVersionResponse = (
 };
 
 const DEFAULT_SOFTWARE_PACKAGE_MOCK: ISoftwarePackage = {
+  installer_id: 1,
   name: "TestPackage-1.2.3.pkg",
   title_id: 2,
   version: "1.2.3",
@@ -211,6 +273,7 @@ const DEFAULT_SOFTWARE_PACKAGE_MOCK: ISoftwarePackage = {
     "sudo /Applications/Falcon.app/Contents/Resources/falconctl license abc123",
   self_service: false,
   icon_url: null,
+  display_name: "",
   status: {
     installed: 1,
     pending_install: 2,
@@ -219,12 +282,12 @@ const DEFAULT_SOFTWARE_PACKAGE_MOCK: ISoftwarePackage = {
     failed_uninstall: 1,
   },
   automatic_install_policies: [],
-  last_install: null,
-  last_uninstall: null,
   url: "https://fakeurl.testpackageurlforfalconapp.fake/test/package",
   hash_sha256: "abcd1234",
   labels_include_any: null,
+  labels_include_all: null,
   labels_exclude_any: null,
+  install_during_setup: undefined,
 };
 
 export const createMockSoftwarePackage = (
@@ -233,15 +296,50 @@ export const createMockSoftwarePackage = (
   return { ...DEFAULT_SOFTWARE_PACKAGE_MOCK, ...overrides };
 };
 
+const DEFAULT_SOFTWARE_PACKAGE_IOS_MOCK: ISoftwarePackage = {
+  installer_id: 2,
+  name: "MyApp-2.0.0.ipa",
+  title_id: 10,
+  version: "2.0.0",
+  uploaded_at: "2020-01-01T00:00:00.000Z",
+  install_script: "",
+  uninstall_script: "",
+  self_service: false,
+  icon_url: null,
+  display_name: "My iOS App",
+  status: {
+    installed: 1,
+    pending_install: 0,
+    failed_install: 0,
+    pending_uninstall: 0,
+    failed_uninstall: 0,
+  },
+  automatic_install_policies: [],
+  url: "",
+  labels_include_any: null,
+  labels_include_all: null,
+  labels_exclude_any: null,
+  configuration:
+    "<dict>\n\t<key>ServerURL</key>\n\t<string>https://example.com</string>\n</dict>",
+};
+
+export const createMockSoftwarePackageIos = (
+  overrides?: Partial<ISoftwarePackage>
+) => {
+  return { ...DEFAULT_SOFTWARE_PACKAGE_IOS_MOCK, ...overrides };
+};
+
 const DEFAULT_SOFTWARE_TITLE_MOCK: ISoftwareTitle = {
   id: 1,
   name: "mock software 1.app",
+  icon_url: null,
   versions_count: 1,
   source: "apps",
   hosts_count: 1,
-  browser: "chrome",
+  extension_for: "",
   versions: [createMockSoftwareTitleVersion()],
   software_package: createMockSoftwarePackage(),
+  packages: null,
   app_store_app: null,
 };
 
@@ -275,6 +373,7 @@ const DEFAULT_FLEET_MAINTAINED_APPS_MOCK: IFleetMaintainedApp = {
   name: "test app",
   version: "1.2.3",
   platform: "darwin",
+  slug: "test-app/darwin",
 };
 
 export const createMockFleetMaintainedApp = (
@@ -296,6 +395,8 @@ const DEFAULT_FLEET_MAINTAINED_APP_DETAILS_MOCK: IFleetMaintainedAppDetails = {
   post_install_script: 'echo "Installed"',
   uninstall_script:
     "#!/bin/sh\n\n# Fleet extracts and saves package IDs\npkg_ids=$PACKAGE_ID",
+  automatic_install_query:
+    "SELECT 1 FROM apps WHERE bundle_identifier = 'com.example.test-app';",
   slug: "applications/test-app",
   url: "http://www.testurl1234abcd.com/testapp",
   categories: ["Browsers"],
@@ -305,4 +406,42 @@ export const createMockFleetMaintainedAppDetails = (
   overrides?: Partial<IFleetMaintainedAppDetails>
 ) => {
   return { ...DEFAULT_FLEET_MAINTAINED_APP_DETAILS_MOCK, ...overrides };
+};
+
+const DEFAULT_SOFTWARE_INSTALL_RESULT: ISoftwareInstallResult = {
+  host_display_name: "Test Host",
+  install_uuid: "uuid-123",
+  software_title: "CoolApp",
+  software_title_id: 1,
+  software_package: "com.cool.app",
+  host_id: 42,
+  status: "installed",
+  detail: "",
+  output: "",
+  pre_install_query_output: "",
+  post_install_script_output: "",
+  created_at: "2025-08-10T12:00:00Z",
+  updated_at: "2025-08-10T12:05:00Z",
+  self_service: false,
+};
+
+export const createMockSoftwareInstallResult = (
+  overrides?: Partial<ISoftwareInstallResult>
+) => {
+  return {
+    ...DEFAULT_SOFTWARE_INSTALL_RESULT,
+    ...overrides,
+  };
+};
+
+const DEFAULT_SETUP_EXPERIENCE_SOFTWARE_MOCK: IGetSetupExperienceSoftwareResponse = {
+  ...createMockListEntitiesResponseCommon(),
+  counts_updated_at: null,
+  software_titles: [createMockSoftwareTitle()],
+};
+
+export const createMockSetupExperienceSoftware = (
+  overrides?: Partial<IGetSetupExperienceSoftwareResponse>
+): IGetSetupExperienceSoftwareResponse => {
+  return { ...DEFAULT_SETUP_EXPERIENCE_SOFTWARE_MOCK, ...overrides };
 };

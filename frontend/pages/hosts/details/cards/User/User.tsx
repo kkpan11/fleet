@@ -1,9 +1,7 @@
 import React from "react";
 import classnames from "classnames";
-import { noop } from "lodash";
 
 import { IHostEndUser } from "interfaces/host";
-import { HostPlatform } from "interfaces/platform";
 
 import Card from "components/Card";
 import CardHeader from "components/CardHeader";
@@ -15,9 +13,7 @@ import UserValue from "./components/UserValue";
 import {
   generateChromeProfilesValues,
   generateUsernameValues,
-  generateFullNameTipContent,
   generateFullNameValues,
-  generateGroupsTipContent,
   generateGroupsValues,
   generateOtherEmailsValues,
 } from "./helpers";
@@ -25,99 +21,114 @@ import {
 const baseClass = "user-card";
 
 interface IUserProps {
-  platform: HostPlatform;
+  /** There will be at most 1 end user */
   endUsers: IHostEndUser[];
-  enableAddEndUser: boolean;
-  disableFullNameTooltip?: boolean;
-  disableGroupsTooltip?: boolean;
+  canWriteEndUser?: boolean;
+  canViewMyDeviceLink?: boolean;
   className?: string;
-  onAddEndUser?: () => void;
+  onClickUpdateUser?: (
+    e:
+      | React.MouseEvent<HTMLButtonElement>
+      | React.KeyboardEvent<HTMLButtonElement>
+  ) => void;
+  onClickMyDevice?: (
+    e:
+      | React.MouseEvent<HTMLButtonElement>
+      | React.KeyboardEvent<HTMLButtonElement>
+  ) => void;
 }
 
 const User = ({
-  platform,
   endUsers,
-  enableAddEndUser,
-  disableFullNameTooltip = false,
-  disableGroupsTooltip = false,
+  canWriteEndUser = false,
+  canViewMyDeviceLink = false,
   className,
-  onAddEndUser = noop,
+  onClickUpdateUser,
+  onClickMyDevice,
 }: IUserProps) => {
   const classNames = classnames(baseClass, className);
 
+  // though this code implies otherwise, there will be at most 1 end user
   const userNameDisplayValues = generateUsernameValues(endUsers);
   const chromeProfilesDisplayValues = generateChromeProfilesValues(endUsers);
   const otherEmailsDisplayValues = generateOtherEmailsValues(endUsers);
 
+  const [writeButtonText, writeButtonIcon] = userNameDisplayValues.length
+    ? ["Edit user", "pencil" as const]
+    : ["Add user", "plus" as const];
+
   const endUser = endUsers[0];
-  const showUsername = platform === "darwin";
-  const showFullName = showUsername && userNameDisplayValues.length > 0;
-  const showGroups = showUsername && userNameDisplayValues.length > 0;
   const showChromeProfiles = chromeProfilesDisplayValues.length > 0;
   const showOtherEmails = otherEmailsDisplayValues.length > 0;
+  const userDepartment = [];
+  if (endUser?.idp_department) {
+    userDepartment.push(endUser.idp_department);
+  }
 
   return (
     <Card
       className={classNames}
       borderRadiusSize="xxlarge"
       paddingSize="xlarge"
-      includeShadow
     >
       <div className={`${baseClass}__header`}>
         <CardHeader header="User" />
-        {enableAddEndUser && (
-          <Button
-            className={`${baseClass}__add-user-btn`}
-            variant="text-link"
-            onClick={onAddEndUser}
-          >
-            + Add user
-          </Button>
-        )}
+        <div className={`${baseClass}__header-actions`}>
+          {canViewMyDeviceLink && (
+            <Button
+              variant="secondary"
+              onClick={onClickMyDevice}
+              size="small"
+              icon="external-link"
+              iconPosition="right"
+            >
+              My device
+            </Button>
+          )}
+          {canWriteEndUser && (
+            <Button
+              className={`${baseClass}__add-user-btn`}
+              variant="secondary"
+              onClick={onClickUpdateUser}
+              size="small"
+              icon={writeButtonIcon}
+            >
+              {writeButtonText}
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className={`${baseClass}__content`}>
-        {showUsername && (
-          <DataSet
-            title={
-              <TooltipWrapper tipContent="Username collected from your IdP during automatic enrollment (ADE).">
-                Username (IdP)
-              </TooltipWrapper>
-            }
-            value={<UserValue values={userNameDisplayValues} />}
-          />
-        )}
+        <DataSet
+          title="Username (IdP)"
+          value={<UserValue values={userNameDisplayValues} />}
+        />
 
-        {showFullName && (
-          <DataSet
-            title={
-              disableFullNameTooltip ? (
-                "Full name (IdP)"
-              ) : (
-                <TooltipWrapper
-                  tipContent={generateFullNameTipContent(endUsers)}
-                >
-                  Full name (IdP)
-                </TooltipWrapper>
-              )
-            }
-            value={<UserValue values={generateFullNameValues(endUsers)} />}
-          />
-        )}
-        {showGroups && (
-          <DataSet
-            title={
-              disableGroupsTooltip && endUser.idp_info_updated_at !== null ? (
-                "Groups (IdP)"
-              ) : (
-                <TooltipWrapper tipContent={generateGroupsTipContent(endUsers)}>
-                  Groups (IdP)
-                </TooltipWrapper>
-              )
-            }
-            value={<UserValue values={generateGroupsValues(endUsers)} />}
-          />
-        )}
+        <DataSet
+          title={
+            <TooltipWrapper
+              tipContent={`This is the "givenName + familyName" from your IdP.`}
+            >
+              Full name (IdP)
+            </TooltipWrapper>
+          }
+          value={<UserValue values={generateFullNameValues(endUsers)} />}
+        />
+        <DataSet
+          title="Groups (IdP)"
+          value={<UserValue values={generateGroupsValues(endUsers)} />}
+        />
+        <DataSet
+          title={
+            <TooltipWrapper
+              tipContent={`This is the "department" collected from your IdP.`}
+            >
+              Department (IdP)
+            </TooltipWrapper>
+          }
+          value={<UserValue values={userDepartment} />}
+        />
         {showChromeProfiles && (
           <DataSet
             title="Google Chrome profiles"

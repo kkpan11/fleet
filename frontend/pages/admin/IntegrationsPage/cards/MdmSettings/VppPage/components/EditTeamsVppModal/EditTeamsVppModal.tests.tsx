@@ -2,6 +2,7 @@ import {
   APP_CONTEXT_ALL_TEAMS_ID,
   APP_CONTEXT_NO_TEAM_ID,
 } from "interfaces/team";
+import { IMdmVppToken } from "interfaces/mdm";
 import {
   getOptions,
   selectedValueFromToken,
@@ -15,6 +16,7 @@ describe("EditTeamsVppModal", () => {
     org_name: "Org 1",
     location: "https://example.com/mdm/apple/mdm",
     renew_date: "2024-11-29T00:00:00Z",
+    country_code: "us",
     teams: [], // all teams
   };
 
@@ -23,6 +25,7 @@ describe("EditTeamsVppModal", () => {
     org_name: "Org 2",
     location: "https://example.com/mdm/apple/mdm",
     renew_date: "2024-11-29T00:00:00Z",
+    country_code: "us",
     teams: null, // unassigned
   };
 
@@ -31,7 +34,8 @@ describe("EditTeamsVppModal", () => {
     org_name: "Org 3",
     location: "https://example.com/mdm/apple/mdm",
     renew_date: "2024-11-29T00:00:00Z",
-    teams: [{ team_id: 0, name: "No team" }],
+    country_code: "us",
+    teams: [{ team_id: 0, name: "Unassigned" }],
   };
 
   const piratesAndNinjasToken = {
@@ -39,6 +43,7 @@ describe("EditTeamsVppModal", () => {
     org_name: "Org 4",
     location: "https://example.com/mdm/apple/mdm",
     renew_date: "2024-11-29T00:00:00Z",
+    country_code: "us",
     teams: [
       { team_id: 2, name: "Pirates" },
       { team_id: 1, name: "Ninjas" },
@@ -50,12 +55,24 @@ describe("EditTeamsVppModal", () => {
     org_name: "Org 5",
     location: "https://example.com/mdm/apple/mdm",
     renew_date: "2024-11-29T00:00:00Z",
+    country_code: "us",
     teams: [{ team_id: 3, name: "Pandas" }],
   };
 
+  // Legacy tokens surface as country_code "" until backfill runs, so
+  // pin the graceful path through getOptions.
+  const legacyEmptyCountryToken: IMdmVppToken = {
+    id: 6,
+    org_name: "Org 6",
+    location: "https://example.com/mdm/apple/mdm",
+    renew_date: "2024-11-29T00:00:00Z",
+    country_code: "",
+    teams: [{ team_id: 4, name: "Penguins" }],
+  };
+
   const availableTeams = [
-    { id: APP_CONTEXT_ALL_TEAMS_ID, name: "All teams" },
-    { id: APP_CONTEXT_NO_TEAM_ID, name: "No team" },
+    { id: APP_CONTEXT_ALL_TEAMS_ID, name: "All fleets" },
+    { id: APP_CONTEXT_NO_TEAM_ID, name: "Unassigned" },
     { id: 1, name: "Ninjas" },
     { id: 2, name: "Pirates" },
     { id: 3, name: "Pandas" },
@@ -68,10 +85,24 @@ describe("EditTeamsVppModal", () => {
   }));
 
   describe("getOptions", () => {
+    // Helper for getting a pendingTeamIds array from a token
+    const asArr = (token: IMdmVppToken) =>
+      selectedValueFromToken(token)
+        ? selectedValueFromToken(token)
+            .split(",")
+            .map((v) => v.trim())
+            .filter(Boolean)
+        : [];
+
     it("returns no options when another token is all teams", () => {
       const tokens = [allTeamsToken, piratesAndNinjasToken];
       const currentToken = piratesAndNinjasToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        currentToken,
+        asArr(currentToken)
+      );
       expect(options).toEqual([]);
     });
 
@@ -82,7 +113,12 @@ describe("EditTeamsVppModal", () => {
         { ...unassignedToken, id: 1338 },
       ];
       const currentToken = unassignedToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        currentToken,
+        asArr(currentToken)
+      );
       expect(options).toEqual(allOptions);
     });
 
@@ -94,14 +130,38 @@ describe("EditTeamsVppModal", () => {
         { ...unassignedToken, id: 1338 },
       ];
       const currentToken = allTeamsToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        currentToken,
+        asArr(currentToken)
+      );
       expect(options).toEqual(allOptions);
+    });
+
+    it("treats a legacy token with empty country_code like any other token", () => {
+      const tokens = [legacyEmptyCountryToken, pandasToken];
+      const currentToken = legacyEmptyCountryToken;
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        currentToken,
+        asArr(currentToken)
+      );
+      // pandasToken already claims team 3, legacyEmptyCountryToken claims team 4
+      expect(options.map((o) => o.value)).not.toContain(3);
+      expect(options.map((o) => o.value)).toContain(4);
     });
 
     it("excludes all teams option when any token is assigned", () => {
       const tokens = [unassignedToken, piratesAndNinjasToken];
       const currentToken = unassignedToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        currentToken,
+        asArr(currentToken)
+      );
       expect(options).toEqual(
         options.filter((o) => o.value !== APP_CONTEXT_ALL_TEAMS_ID)
       );
@@ -116,7 +176,14 @@ describe("EditTeamsVppModal", () => {
       ];
 
       // test with unassignedToken
-      expect(getOptions(availableTeams, tokens, unassignedToken)).toEqual([
+      expect(
+        getOptions(
+          availableTeams,
+          tokens,
+          unassignedToken,
+          asArr(unassignedToken)
+        )
+      ).toEqual([
         { label: "Penguins", value: 4 }, // only penguins is available
       ]);
 
@@ -126,7 +193,14 @@ describe("EditTeamsVppModal", () => {
         APP_CONTEXT_NO_TEAM_ID, // already assigned to noTeamToken
         3, // already assigned to pandasToken
       ];
-      expect(getOptions(availableTeams, tokens, piratesAndNinjasToken)).toEqual(
+      expect(
+        getOptions(
+          availableTeams,
+          tokens,
+          piratesAndNinjasToken,
+          asArr(piratesAndNinjasToken)
+        )
+      ).toEqual(
         allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
       );
 
@@ -137,7 +211,9 @@ describe("EditTeamsVppModal", () => {
         1, // already assigned to piratesAndNinjasToken
         2, // already assigned to piratesAndNinjasToken
       ];
-      expect(getOptions(availableTeams, tokens, pandasToken)).toEqual(
+      expect(
+        getOptions(availableTeams, tokens, pandasToken, asArr(pandasToken))
+      ).toEqual(
         allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
       );
 
@@ -148,7 +224,9 @@ describe("EditTeamsVppModal", () => {
         2, // already assigned to piratesAndNinjasToken
         3, // already assigned to pandasToken
       ];
-      expect(getOptions(availableTeams, tokens, noTeamToken)).toEqual(
+      expect(
+        getOptions(availableTeams, tokens, noTeamToken, asArr(noTeamToken))
+      ).toEqual(
         allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
       );
 
@@ -160,7 +238,12 @@ describe("EditTeamsVppModal", () => {
         3, // already assigned to pandasToken
       ];
       expect(
-        getOptions(availableTeams, [...tokens, allTeamsToken], allTeamsToken)
+        getOptions(
+          availableTeams,
+          [...tokens, allTeamsToken],
+          allTeamsToken,
+          asArr(allTeamsToken)
+        )
       ).toEqual(
         allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
       );
@@ -219,6 +302,48 @@ describe("EditTeamsVppModal", () => {
 
     it("returns team ids when value is not all teams id", () => {
       expect(teamIdsFromSelectedValue("2,1")).toEqual([2, 1]);
+    });
+  });
+
+  describe("pending edit scenarios", () => {
+    it("shows all teams option when user removes all teams in edit UI (pendingTeamIds = [])", () => {
+      const tokens = [piratesAndNinjasToken];
+      // simulating clearing everything in the modal before saving
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        piratesAndNinjasToken,
+        []
+      );
+      expect(options.some((o) => o.value === APP_CONTEXT_ALL_TEAMS_ID)).toBe(
+        true
+      );
+    });
+
+    it("shows only 'all teams' option when user selects all teams pending", () => {
+      const tokens = [unassignedToken, pandasToken];
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        unassignedToken,
+        [APP_CONTEXT_ALL_TEAMS_ID.toString()] // user picks 'all teams'
+      );
+      expect(options.some((o) => o.value === APP_CONTEXT_ALL_TEAMS_ID)).toBe(
+        true
+      );
+    });
+
+    it("hides teams already assigned to other tokens when editing assignment", () => {
+      const tokens = [pandasToken];
+      // Simulate user picks a team not yet assigned
+      const options = getOptions(
+        availableTeams,
+        tokens,
+        unassignedToken,
+        ["4"] // 'Penguins'
+      );
+      expect(options.find((o) => o.value === 3)).toBeUndefined(); // Pandas not selectable
+      expect(options.find((o) => o.value === 4)).not.toBeUndefined(); // Penguins selectable
     });
   });
 });

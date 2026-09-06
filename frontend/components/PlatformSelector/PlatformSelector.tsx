@@ -7,6 +7,7 @@ import CustomLink from "components/CustomLink";
 import TooltipWrapper from "components/TooltipWrapper";
 import { getPathWithQueryParams } from "utilities/url";
 import paths from "router/paths";
+import { getDisplayedSoftwareName } from "pages/SoftwarePage/helpers";
 
 interface IPlatformSelectorProps {
   baseClass?: string;
@@ -47,30 +48,35 @@ export const PlatformSelector = ({
     if (!installSoftware) {
       return null;
     }
-    const softwareName = installSoftware.name;
+    const softwareName = getDisplayedSoftwareName(
+      installSoftware.name,
+      installSoftware.display_name
+    );
     const softwareId = installSoftware.software_title_id.toString();
     const softwareLink = getPathWithQueryParams(
       paths.SOFTWARE_TITLE_DETAILS(softwareId),
-      { team_id: currentTeamId }
+      { fleet_id: currentTeamId }
     );
 
     return (
-      <span className={`${baseClass}__install-software`}>
-        <CustomLink text={softwareName} url={softwareLink} /> will only install
-        on{" "}
-        <TooltipWrapper
-          tipContent={
-            <>
-              To see targets, select{" "}
-              <b>{softwareName} &gt; Actions &gt; Edit</b>. Currently, hosts
-              that aren&apos;t targeted show an empty (---) policy status.
-            </>
-          }
-        >
-          targeted hosts
-        </TooltipWrapper>
-        .
-      </span>
+      <div className="form-field__help-text">
+        <span className={`${baseClass}__install-software`}>
+          <CustomLink text={softwareName} url={softwareLink} /> will only
+          install on{" "}
+          <TooltipWrapper
+            tipContent={
+              <>
+                To see targets, select{" "}
+                <b>{softwareName} &gt; Actions &gt; Edit</b>. Currently, hosts
+                that aren&apos;t targeted show an empty (---) policy status.
+              </>
+            }
+          >
+            targeted hosts
+          </TooltipWrapper>
+          .
+        </span>
+      </div>
     );
   };
 
@@ -111,9 +117,7 @@ export const PlatformSelector = ({
           ChromeOS
         </Checkbox>
       </span>
-      <div className="form-field__help-text">
-        {renderInstallSoftwareHelpText()}
-      </div>
+      {renderInstallSoftwareHelpText()}
     </div>
   );
 };

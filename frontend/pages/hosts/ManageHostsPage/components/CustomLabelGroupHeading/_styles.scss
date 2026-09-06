@@ -10,34 +10,49 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 1rem;
+    padding-left: $pad-medium;
   }
 
   &__field {
     position: relative;
+    display: flex;
+    align-items: center;
+    gap: $pad-small;
+    margin-bottom: $pad-medium;
 
-    .icon {
+    // Scoped to a direct child so this doesn't also catch the plus icon
+    // nested inside the "Add label" button below, which needs to stay
+    // centered in its own flex layout instead of being pulled out via
+    // absolute positioning.
+    > .icon {
       position: absolute;
       left: 12px;
-      top: 12px;
+      top: 0;
+      height: 36px;
+      width: 16px;
+      display: flex;
+      align-items: center;
     }
   }
 
+  &__add-label-button {
+    flex-shrink: 0;
+  }
+
   &__input {
-    width: 100%;
-    line-height: 1.5;
-    background-color: $ui-light-grey;
+    flex: 1;
+    min-width: 0;
+    line-height: $line-height;
+    background-color: $core-fleet-white;
     border: solid 1px $ui-fleet-black-10;
     border-radius: $border-radius;
     font-size: $small;
     padding: 9.5px 12px 9.5px 36px;
-    color: $core-fleet-blue;
+    color: $core-fleet-black;
     font-family: "Inter", sans-serif;
     font-size: $x-small;
     box-sizing: border-box;
-    height: 40px;
-
-    margin-bottom: $pad-medium;
+    height: 36px;
 
     &::placeholder {
       color: $ui-fleet-black-50;
@@ -46,12 +61,12 @@
     &:focus,
     &:hover {
       outline: none;
-      border-color: $core-vibrant-blue;
+      border-color: $ui-fleet-black-75;
 
       + .icon {
         svg {
           path {
-            fill: $core-vibrant-blue;
+            fill: $ui-fleet-black-75;
           }
         }
       }
@@ -69,7 +84,7 @@
 
       &:focus {
         border-color: $ui-error;
-        background-color: $core-white;
+        background-color: $core-fleet-white;
         color: $core-fleet-black;
       }
     }
@@ -95,21 +110,6 @@
 
     &__wrapper {
       margin-bottom: $pad-medium;
-    }
-
-    &__help-text {
-      font-size: $x-small;
-      font-weight: $regular;
-      line-height: 1.57;
-      letter-spacing: 1px;
-      color: $core-fleet-blue;
-
-      code {
-        color: $core-vibrant-blue;
-        background-color: $ui-gray;
-        padding: $pad-xxsmall;
-        font-family: "SourceCodePro", $monospace;
-      }
     }
   }
 }

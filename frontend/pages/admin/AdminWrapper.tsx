@@ -1,4 +1,5 @@
 import React, { useContext } from "react";
+
 import { Tab, Tabs, TabList } from "react-tabs";
 import { InjectedRouter } from "react-router";
 import PATHS from "router/paths";
@@ -48,8 +49,8 @@ const AdminWrapper = ({
       exclude: isSandboxMode,
     },
     {
-      name: "Teams",
-      pathname: PATHS.ADMIN_TEAMS,
+      name: "Fleets",
+      pathname: PATHS.ADMIN_FLEETS,
       exclude: !isPremiumTier,
     },
   ];
@@ -77,9 +78,9 @@ const AdminWrapper = ({
 
   return (
     <MainContent className={classNames}>
-      <div className={`${baseClass}_wrapper`}>
-        <TabNav sticky>
-          <h1>Settings</h1>
+      <>
+        <h1 className="page-header">Settings</h1>
+        <TabNav>
           <Tabs
             selectedIndex={getTabIndex(pathname)}
             onSelect={(i) => navigateToNav(i)}
@@ -97,8 +98,15 @@ const AdminWrapper = ({
             </TabList>
           </Tabs>
         </TabNav>
-        {children}
-      </div>
+        <div className="tab-nav-routed-content">
+          <div
+            key={getTabIndex(pathname)}
+            className="tab-nav-routed-content__fade"
+          >
+            {children}
+          </div>
+        </div>
+      </>
     </MainContent>
   );
 };

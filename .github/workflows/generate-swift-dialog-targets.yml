@@ -1,0 +1,55 @@
+name: Generate Swift Dialog targets for Fleetd
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # The workflow can be triggered by modifying SWIFT_DIALOG_VERSION EV.
+      - '.github/workflows/generate-swift-dialog-targets.yml'
+  pull_request:
+    paths:
+      # The workflow can be triggered by modifying SWIFT_DIALOG_VERSION EV.
+      - '.github/workflows/generate-swift-dialog-targets.yml'
+  workflow_dispatch:
+
+# This allows a subsequently queued workflow run to interrupt previous runs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # fail-fast using bash -eo pipefail. See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#exit-codes-and-error-action-preference
+    shell: bash
+
+env:
+  # NB: Makefile is locked to these versions so updating requires changing this + makefile
+  SWIFT_DIALOG_VERSION: 2.5.6
+  SWIFT_DIALOG_BUILD: 4805
+
+permissions:
+  contents: read
+
+jobs:
+  generate-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate swiftDialog.app.tar.gz
+        run: make swift-dialog-app-tar-gz version=${SWIFT_DIALOG_VERSION} build=${SWIFT_DIALOG_BUILD} out-path=.
+
+      - name: Upload swiftDialog.app.tar.gz
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swiftDialog.app.tar.gz
+          path: swiftDialog.app.tar.gz

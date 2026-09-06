@@ -1,18 +1,6 @@
 @import "../../../../../../../node_modules/react-tabs/style/react-tabs.scss";
 
 .platform-wrapper {
-  padding: 0; // different to pad sticky subnav properly
-
-  .tab-nav {
-    // negate problematic sticky positioning
-    position: initial;
-    .react-tabs {
-      &__tab-list {
-        margin: 0 0 $pad-large;
-      }
-    }
-  }
-
   h1 {
     margin-bottom: $pad-small;
   }
@@ -28,12 +16,11 @@
 
     &__textarea {
       font-family: "SourceCodePro", $monospace;
-      font-weight: $bold;
-      font-size: 13px;
-      color: $core-fleet-blue;
-      line-height: 20px;
+      color: $core-fleet-black;
+      line-height: $line-height;
       line-break: anywhere;
       padding: 12px $pad-xlarge 12px $pad-medium;
+      resize: none;
     }
   }
 
@@ -43,9 +30,12 @@
     }
   }
 
+  &__advanced--fleet-certificate {
+    @include flex-column-8px-gap;
+  }
+
   &__certificate-loading {
     color: $ui-fleet-black-50;
-    padding-top: $pad-xsmall;
   }
 
   &__certificate-error {
@@ -61,8 +51,16 @@
   }
 
   &__advanced--heading,
-  &__chromeos--heading {
+  &__chromeos--heading,
+  &__panel-heading {
     font-weight: $bold;
+  }
+
+  // `h3` has no font size of its own in the global stylesheet, so without this
+  // it inherits the browser default and renders larger than the form labels
+  // below it.
+  &__panel-heading {
+    font-size: $x-small;
   }
 
   &__chromeos--info {
@@ -82,6 +80,15 @@
         height: 190px;
       }
     }
+  }
+
+  &__command-line-tool.custom-link {
+    color: inherit;
+    font-weight: $bold;
+  }
+
+  &__advanced--osqueryd .custom-link {
+    font-weight: $bold;
   }
 
   .download-certificate--tooltip {

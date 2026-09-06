@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import classnames from "classnames";
 import { Row } from "react-table";
-import ReactTooltip from "react-tooltip";
 import useDeepEffect from "hooks/useDeepEffect";
 import { noop } from "lodash";
 
@@ -11,10 +10,9 @@ import Button from "components/buttons/Button";
 import Icon from "components/Icon/Icon";
 import TooltipWrapper from "components/TooltipWrapper";
 
-import { COLORS } from "styles/var/colors";
-
 import DataTable from "./DataTable/DataTable";
 import { IActionButtonProps } from "./DataTable/ActionButton/ActionButton";
+import TableLayoutContext from "./TableLayoutContext";
 
 export interface ITableQueryData {
   pageIndex: number;
@@ -44,6 +42,8 @@ interface ITableContainerProps<T = any> {
   defaultSortHeader?: string;
   defaultSortDirection?: string;
   defaultSearchQuery?: string;
+  /**  Used for client-side filtering with a search query controlled outside TableContainer */
+  searchQuery?: string;
   /**  When page index is externally managed like from the URL, this prop must be set to control currentPageIndex */
   pageIndex?: number;
   defaultSelectedRows?: Record<string, boolean>;
@@ -60,7 +60,9 @@ interface ITableContainerProps<T = any> {
   showMarkAllPages: boolean;
   isAllPagesSelected: boolean; // TODO: make dependent on showMarkAllPages
   toggleAllPagesSelected?: any; // TODO: an event type and make it dependent on showMarkAllPages
+  totalCount?: number;
   searchable?: boolean;
+  disableSearch?: boolean;
   wideSearch?: boolean;
   disablePagination?: boolean;
   /**
@@ -74,12 +76,14 @@ interface ITableContainerProps<T = any> {
   primarySelectAction?: IActionButtonProps;
   /** Secondary button/s after selecting a row */
   secondarySelectActions?: IActionButtonProps[]; // TODO: Combine with primarySelectAction as these are all rendered in the same spot
-  searchToolTipText?: string;
+  searchToolTipText?: JSX.Element;
   // TODO - consolidate this functionality within `filters`
   searchQueryColumn?: string;
   // TODO - consolidate this functionality within `filters`
   selectedDropdownFilter?: string;
   isClientSidePagination?: boolean;
+  /** Only used on self-service page client side pagination because clicking on a action re-orders the data and we don't want that to trigger reset to page 0 */
+  disableAutoResetPage?: boolean;
   /** Used to set URL to correct path and include page query param */
   onClientSidePaginationChange?: (pageIndex: number) => void;
   /** Sets the table to filter the data on the client */
@@ -93,8 +97,6 @@ interface ITableContainerProps<T = any> {
     | ((queryData: ITableQueryData) => void)
     | ((queryData: ITableQueryData) => number);
   customControl?: () => JSX.Element | null;
-  /** Filter button right of the search rendering alternative responsive design where search bar moves to new line but filter button remains inline with other table headers */
-  customFiltersButton?: () => JSX.Element;
   stackControls?: boolean;
   onSelectSingleRow?: (value: Row | IRowProps) => void;
   /** This is called when you click on a row. This was added as `onSelectSingleRow`
@@ -113,17 +115,20 @@ interface ITableContainerProps<T = any> {
   renderTableHelpText?: () => JSX.Element | null;
   setExportRows?: (rows: Row[]) => void;
   disableTableHeader?: boolean;
-  /** Set to true to persist the row selections across table data filters */
+  /** Set to true to persist row selection across client-side filters and pagination */
   persistSelectedRows?: boolean;
   /** Set to `true` to not display the footer section of the table */
   hideFooter?: boolean;
   /** handler called when the  `clear selection` button is called */
   onClearSelection?: () => void;
+  /** don't show the Clear selection button and selected item count when items are selected */
+  suppressHeaderActions?: boolean;
+  getRowId?: (row: any, index: number) => string;
 }
 
 const baseClass = "table-container";
 
-const DEFAULT_PAGE_SIZE = 20;
+export const DEFAULT_PAGE_SIZE = 20;
 const DEFAULT_PAGE_INDEX = 0;
 
 const TableContainer = <T,>({
@@ -133,6 +138,7 @@ const TableContainer = <T,>({
   isLoading,
   manualSortBy = false,
   defaultSearchQuery = "",
+  searchQuery: controlledSearchQuery,
   pageIndex = DEFAULT_PAGE_INDEX,
   defaultSortHeader = "name",
   defaultSortDirection = "asc",
@@ -148,7 +154,9 @@ const TableContainer = <T,>({
   showMarkAllPages,
   isAllPagesSelected,
   toggleAllPagesSelected,
+  totalCount,
   searchable,
+  disableSearch,
   wideSearch,
   disablePagination,
   disableNextPage,
@@ -157,6 +165,7 @@ const TableContainer = <T,>({
   secondarySelectActions,
   searchToolTipText,
   isClientSidePagination,
+  disableAutoResetPage = false,
   onClientSidePaginationChange,
   isClientSideFilter,
   isMultiColumnFilter,
@@ -167,7 +176,6 @@ const TableContainer = <T,>({
   hideFooter,
   onQueryChange,
   customControl,
-  customFiltersButton,
   stackControls,
   onSelectSingleRow,
   onClickRow,
@@ -178,7 +186,10 @@ const TableContainer = <T,>({
   disableTableHeader,
   persistSelectedRows,
   onClearSelection = noop,
+  suppressHeaderActions,
+  getRowId,
 }: ITableContainerProps<T>) => {
+  const isControlledSearchQuery = controlledSearchQuery !== undefined;
   const [searchQuery, setSearchQuery] = useState(defaultSearchQuery);
   const [sortHeader, setSortHeader] = useState(defaultSortHeader || "");
   const [sortDirection, setSortDirection] = useState(
@@ -187,12 +198,24 @@ const TableContainer = <T,>({
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(pageIndex);
   const [clientFilterCount, setClientFilterCount] = useState<number>();
 
+  // If using a clientside search query outside of TableContainer,
+  // we need to set the searchQuery state to the controlledSearchQuery prop anytime it changes
+  useEffect(() => {
+    if (isControlledSearchQuery) {
+      setSearchQuery(controlledSearchQuery);
+    }
+  }, [controlledSearchQuery, isControlledSearchQuery]);
+
   // Client side pagination is being overridden to previous page without this
   useEffect(() => {
-    if (isClientSidePagination && currentPageIndex !== DEFAULT_PAGE_INDEX) {
+    if (
+      isClientSidePagination &&
+      currentPageIndex !== DEFAULT_PAGE_INDEX &&
+      !disableAutoResetPage
+    ) {
       setCurrentPageIndex(DEFAULT_PAGE_INDEX);
     }
-  }, [currentPageIndex, isClientSidePagination]);
+  }, [currentPageIndex, isClientSidePagination, disableAutoResetPage]);
 
   // pageIndex must update currentPageIndex anytime it's changed or else it causes bugs
   // e.g. bug of filter dd not reverting table to page 0
@@ -234,6 +257,44 @@ const TableContainer = <T,>({
     },
     [isClientSidePagination]
   );
+
+  // When server-side pagination lands on an empty page beyond the first page
+  // (e.g. the last row on the current page was just deleted, or the URL points
+  // to a page that no longer exists), navigate back to a page with data instead
+  // of stranding the user on the empty state.
+  useEffect(() => {
+    if (
+      isClientSidePagination ||
+      disablePagination ||
+      isLoading ||
+      isMultiColumnFilter ||
+      data.length !== 0 ||
+      pageIndex === 0
+    ) {
+      return;
+    }
+    // When the total count is known (including a known-empty 0), jump straight
+    // to the last page that has data; when it's unknown, step back one page.
+    const lastValidPageIndex =
+      totalCount !== undefined
+        ? Math.max(0, Math.ceil(totalCount / pageSize) - 1)
+        : pageIndex - 1;
+    const targetPageIndex = Math.max(
+      0,
+      Math.min(lastValidPageIndex, pageIndex - 1)
+    );
+    onPaginationChange(targetPageIndex);
+  }, [
+    isClientSidePagination,
+    disablePagination,
+    isLoading,
+    isMultiColumnFilter,
+    data.length,
+    pageIndex,
+    totalCount,
+    pageSize,
+    onPaginationChange,
+  ]);
 
   useDeepEffect(() => {
     if (!onQueryChange) {
@@ -298,6 +359,10 @@ const TableContainer = <T,>({
   const renderFilterActionButton = () => {
     // always !!actionButton here, this is for type checker
     if (actionButton) {
+      const resolvedButtonText =
+        typeof actionButton.buttonText === "function"
+          ? actionButton.buttonText(actionButton.targetIds ?? [])
+          : actionButton.buttonText;
       const button = (
         <Button
           disabled={
@@ -308,8 +373,21 @@ const TableContainer = <T,>({
           className={`${baseClass}__table-action-button`}
         >
           <>
-            {actionButton.buttonText}
-            {actionButton.iconSvg && <Icon name={actionButton.iconSvg} />}
+            {actionButton.iconPosition === "left" && actionButton.iconSvg && (
+              <Icon
+                name={actionButton.iconSvg}
+                color={actionButton.iconColor || "ui-fleet-black-75"}
+                size="small"
+              />
+            )}
+            {resolvedButtonText}
+            {actionButton.iconPosition !== "left" && actionButton.iconSvg && (
+              <Icon
+                name={actionButton.iconSvg}
+                color={actionButton.iconColor || "ui-fleet-black-75"}
+                size="small"
+              />
+            )}
           </>
         </Button>
       );
@@ -357,31 +435,29 @@ const TableContainer = <T,>({
             {customControl && customControl()}
             {searchable && !wideSearch && (
               <div className={`${baseClass}__search`}>
-                <div
-                  className={`${baseClass}__search-input`}
-                  data-tip
-                  data-for="search-tooltip"
-                  data-tip-disable={!searchToolTipText}
+                <TooltipWrapper
+                  tipContent={
+                    <span className={`tooltip ${baseClass}__tooltip-text`}>
+                      {searchToolTipText}
+                    </span>
+                  }
+                  disableTooltip={!searchToolTipText}
+                  underline={false}
+                  position="top"
+                  tipOffset={8}
+                  showArrow
                 >
-                  <SearchField
-                    placeholder={inputPlaceHolder}
-                    defaultValue={searchQuery}
-                    onChange={onSearchQueryChange}
-                  />
-                </div>
-                <ReactTooltip
-                  effect="solid"
-                  backgroundColor={COLORS["tooltip-bg"]}
-                  id="search-tooltip"
-                  data-html
-                >
-                  <span className={`tooltip ${baseClass}__tooltip-text`}>
-                    {searchToolTipText}
-                  </span>
-                </ReactTooltip>
+                  <div className={`${baseClass}__search-input`}>
+                    <SearchField
+                      placeholder={inputPlaceHolder}
+                      defaultValue={searchQuery}
+                      onChange={onSearchQueryChange}
+                      disabled={disableSearch}
+                    />
+                  </div>
+                </TooltipWrapper>
               </div>
             )}
-            {customFiltersButton && customFiltersButton()}
           </div>
         </div>
       );
@@ -395,6 +471,7 @@ const TableContainer = <T,>({
               placeholder={inputPlaceHolder}
               defaultValue={searchQuery}
               onChange={onSearchQueryChange}
+              disabled={disableSearch}
             />
           </div>
         )}
@@ -411,7 +488,7 @@ const TableContainer = <T,>({
             >
               {renderCount && !disableCount && (
                 <div
-                  className={`${baseClass}__results-count ${
+                  className={`${baseClass}__results-count  ${
                     stackControls ? "stack-table-controls" : ""
                   }`}
                   style={opacity}
@@ -419,6 +496,11 @@ const TableContainer = <T,>({
                   {renderCount()}
                 </div>
               )}
+              {/* `.controls` shape is load-bearing: the collapse rule in
+                  TableContainer/_styles.scss uses `:has(.controls > *)` to
+                  hide the header when this element renders no children.
+                  Renaming or restructuring this span needs a matching
+                  update to the selector. */}
               <span className="controls">
                 {actionButton &&
                   !actionButton.hideButton &&
@@ -430,30 +512,31 @@ const TableContainer = <T,>({
             {/* Render search bar only if not empty component */}
             {searchable && !wideSearch && (
               <div className={`${baseClass}__search`}>
-                <div
-                  className={`${baseClass}__search-input ${
-                    stackControls ? "stack-table-controls" : ""
-                  }`}
-                  data-tip
-                  data-for="search-tooltip"
-                  data-tip-disable={!searchToolTipText}
+                <TooltipWrapper
+                  tipContent={
+                    <span className={`tooltip ${baseClass}__tooltip-text`}>
+                      {searchToolTipText}
+                    </span>
+                  }
+                  disableTooltip={!searchToolTipText}
+                  underline={false}
+                  position="top"
+                  tipOffset={8}
+                  showArrow
                 >
-                  <SearchField
-                    placeholder={inputPlaceHolder}
-                    defaultValue={searchQuery}
-                    onChange={onSearchQueryChange}
-                  />
-                </div>
-                <ReactTooltip
-                  effect="solid"
-                  backgroundColor={COLORS["tooltip-bg"]}
-                  id="search-tooltip"
-                  data-html
-                >
-                  <span className={`tooltip ${baseClass}__tooltip-text`}>
-                    {searchToolTipText}
-                  </span>
-                </ReactTooltip>
+                  <div
+                    className={`${baseClass}__search-input ${
+                      stackControls ? "stack-table-controls" : ""
+                    }`}
+                  >
+                    <SearchField
+                      placeholder={inputPlaceHolder}
+                      defaultValue={searchQuery}
+                      onChange={onSearchQueryChange}
+                      disabled={disableSearch}
+                    />
+                  </div>
+                </TooltipWrapper>
               </div>
             )}
           </div>
@@ -463,9 +546,9 @@ const TableContainer = <T,>({
   }, [
     actionButton,
     customControl,
-    customFiltersButton,
     disableActionButton,
     disableCount,
+    disableSearch,
     disableTableHeader,
     inputPlaceHolder,
     isLoading,
@@ -480,87 +563,81 @@ const TableContainer = <T,>({
   return (
     <div className={wrapperClasses}>
       {renderFilters()}
-      <div className={`${baseClass}__data-table-block`}>
-        {/* No entities for this result. */}
-        {(!isLoading && data.length === 0 && !isMultiColumnFilter) ||
-        (searchQuery.length &&
-          data.length === 0 &&
-          !isMultiColumnFilter &&
-          !isLoading) ? (
-          <>
+      <TableLayoutContext.Provider value={{ insideTable: true }}>
+        <div className={`${baseClass}__data-table-block`}>
+          {/* No entities for this result. */}
+          {(!isLoading && data.length === 0 && !isMultiColumnFilter) ||
+          (searchQuery.length &&
+            data.length === 0 &&
+            !isMultiColumnFilter &&
+            !isLoading) ? (
             <EmptyComponent pageIndex={currentPageIndex} />
-            {/* This UI only shows if a user navigates to a table page with a URL page param that is outside the # of pages available */}
-            {currentPageIndex !== 0 && (
-              <div className={`${baseClass}__empty-page`}>
-                <div className={`${baseClass}__previous-button`}>
-                  <Pagination
-                    disableNext
-                    onNextPage={() => onPaginationChange(currentPageIndex + 1)}
-                    onPrevPage={() => onPaginationChange(currentPageIndex - 1)}
-                  />
-                </div>
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            {/* TODO: Fix this hacky solution to clientside search being 0 rendering emptycomponent but
+          ) : (
+            <>
+              {/* TODO: Fix this hacky solution to clientside search being 0 rendering emptycomponent but
             no longer accesses rows.length because DataTable is not rendered */}
-            {!isLoading && clientFilterCount === 0 && !isMultiColumnFilter && (
-              <EmptyComponent pageIndex={currentPageIndex} />
-            )}
-            <div
-              className={
-                isClientSideFilter && !isMultiColumnFilter
-                  ? `client-result-count-${clientFilterCount}`
-                  : ""
-              }
-            >
-              <DataTable
-                isLoading={isLoading}
-                columns={columnConfigs}
-                data={data}
-                filters={filters}
-                manualSortBy={manualSortBy}
-                sortHeader={sortHeader}
-                sortDirection={sortDirection}
-                onSort={onSortChange}
-                disableMultiRowSelect={disableMultiRowSelect}
-                showMarkAllPages={showMarkAllPages}
-                isAllPagesSelected={isAllPagesSelected}
-                toggleAllPagesSelected={toggleAllPagesSelected}
-                resultsTitle={resultsTitle}
-                defaultPageSize={pageSize}
-                defaultPageIndex={pageIndex}
-                defaultSelectedRows={defaultSelectedRows}
-                primarySelectAction={primarySelectAction}
-                secondarySelectActions={secondarySelectActions}
-                onSelectSingleRow={onSelectSingleRow}
-                onClickRow={onClickRow}
-                keyboardSelectableRows={keyboardSelectableRows}
-                onResultsCountChange={setClientFilterCount}
-                isClientSidePagination={isClientSidePagination}
-                onClientSidePaginationChange={onClientSidePaginationChange}
-                isClientSideFilter={isClientSideFilter}
-                disableHighlightOnHover={disableHighlightOnHover}
-                searchQuery={searchQuery}
-                searchQueryColumn={searchQueryColumn}
-                selectedDropdownFilter={selectedDropdownFilter}
-                renderTableHelpText={renderTableHelpText}
-                renderPagination={
-                  isClientSidePagination
-                    ? undefined
-                    : renderServersidePagination
+              {!isLoading &&
+                clientFilterCount === 0 &&
+                !isMultiColumnFilter && (
+                  <EmptyComponent pageIndex={currentPageIndex} />
+                )}
+              <div
+                className={
+                  isClientSideFilter && !isMultiColumnFilter
+                    ? `client-result-count-${clientFilterCount}`
+                    : ""
                 }
-                setExportRows={setExportRows}
-                onClearSelection={onClearSelection}
-                persistSelectedRows={persistSelectedRows}
-                hideFooter={hideFooter}
-              />
-            </div>
-          </>
-        )}
-      </div>
+              >
+                <DataTable
+                  isLoading={isLoading}
+                  columns={columnConfigs}
+                  data={data}
+                  filters={filters}
+                  manualSortBy={manualSortBy}
+                  sortHeader={sortHeader}
+                  sortDirection={sortDirection}
+                  onSort={onSortChange}
+                  disableMultiRowSelect={disableMultiRowSelect}
+                  showMarkAllPages={showMarkAllPages}
+                  isAllPagesSelected={isAllPagesSelected}
+                  toggleAllPagesSelected={toggleAllPagesSelected}
+                  totalCount={totalCount}
+                  resultsTitle={resultsTitle}
+                  defaultPageSize={pageSize}
+                  defaultPageIndex={pageIndex}
+                  defaultSelectedRows={defaultSelectedRows}
+                  autoResetPage={!disableAutoResetPage}
+                  primarySelectAction={primarySelectAction}
+                  secondarySelectActions={secondarySelectActions}
+                  onSelectSingleRow={onSelectSingleRow}
+                  onClickRow={onClickRow}
+                  keyboardSelectableRows={keyboardSelectableRows}
+                  onResultsCountChange={setClientFilterCount}
+                  isClientSidePagination={isClientSidePagination}
+                  onClientSidePaginationChange={onClientSidePaginationChange}
+                  isClientSideFilter={isClientSideFilter}
+                  disableHighlightOnHover={disableHighlightOnHover}
+                  searchQuery={searchQuery}
+                  searchQueryColumn={searchQueryColumn}
+                  selectedDropdownFilter={selectedDropdownFilter}
+                  renderTableHelpText={renderTableHelpText}
+                  renderPagination={
+                    isClientSidePagination
+                      ? undefined
+                      : renderServersidePagination
+                  }
+                  setExportRows={setExportRows}
+                  onClearSelection={onClearSelection}
+                  suppressHeaderActions={suppressHeaderActions}
+                  getRowId={getRowId}
+                  persistSelectedRows={persistSelectedRows}
+                  hideFooter={hideFooter}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      </TableLayoutContext.Provider>
     </div>
   );
 };
