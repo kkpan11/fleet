@@ -1,5 +1,11 @@
-import { IHostCertificate } from "interfaces/certificates";
+import {
+  ICertificateAuthorityPartial,
+  ICertificatesNDES,
+  IHostCertificate,
+} from "interfaces/certificates";
+import { ICertificate } from "services/entities/certificates";
 import { IGetHostCertificatesResponse } from "services/entities/hosts";
+import { UNCHANGED_PASSWORD_API_RESPONSE } from "utilities/constants";
 
 const DEFAULT_HOST_CERTIFICATE_MOCK: IHostCertificate = {
   id: 1,
@@ -24,6 +30,8 @@ const DEFAULT_HOST_CERTIFICATE_MOCK: IHostCertificate = {
     organizational_unit: "Test Inc.",
     common_name: "Test Biz",
   },
+  source: "system",
+  username: "",
 };
 
 export const createMockHostCertificate = (
@@ -38,10 +46,54 @@ const DEFAULT_HOST_CERTIFICATES_RESPONSE_MOCK: IGetHostCertificatesResponse = {
     has_next_results: false,
     has_previous_results: false,
   },
+  count: 1,
 };
 
 export const createMockGetHostCertificatesResponse = (
   overrides?: Partial<IGetHostCertificatesResponse>
 ): IGetHostCertificatesResponse => {
   return { ...DEFAULT_HOST_CERTIFICATES_RESPONSE_MOCK, ...overrides };
+};
+
+const DEFAULT_CERT_AUTHORITY_PARTIAL_MOCK: ICertificateAuthorityPartial = {
+  id: 1,
+  name: "Test CA",
+  type: "digicert",
+};
+
+const DEFAULT_NDES_CERT_AUTHORITY_MOCK: ICertificatesNDES = {
+  id: 1,
+  type: "ndes_scep_proxy",
+  url: "https://ndes.example.com/certsrv/mscep/mscep.dll",
+  admin_url: "https://ndes.example.com/certsrv/mscep_admin/",
+  username: "ndes-username",
+  // the API returns the password masked
+  password: UNCHANGED_PASSWORD_API_RESPONSE,
+};
+
+export const createMockNDESCertAuthority = (
+  overrides?: Partial<ICertificatesNDES>
+): ICertificatesNDES => {
+  return { ...DEFAULT_NDES_CERT_AUTHORITY_MOCK, ...overrides };
+};
+
+export const createMockCertificateAuthorityPartial = (
+  overrides?: Partial<ICertificateAuthorityPartial>
+): ICertificateAuthorityPartial => {
+  return { ...DEFAULT_CERT_AUTHORITY_PARTIAL_MOCK, ...overrides };
+};
+
+const DEFAULT_ANDROID_CERT_MOCK: ICertificate = {
+  id: 1,
+  name: "Test Android Certificate",
+  subject_name: "CN=test@example.com, O=Test Inc.",
+  certificate_authority_id: 1,
+  certificate_authority_name: "Test CA",
+  created_at: "2021-08-19T02:02:17Z",
+};
+
+export const createMockAndroidCert = (
+  overrides?: Partial<ICertificate>
+): ICertificate => {
+  return { ...DEFAULT_ANDROID_CERT_MOCK, ...overrides };
 };

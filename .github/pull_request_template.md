@@ -1,30 +1,75 @@
+<!-- Add the related story/sub-task/bug number, like Resolves #123, or remove if NA -->
+**Related issue:** Resolves #
+
 # Checklist for submitter
 
 If some of the following don't apply, delete the relevant line.
 
-<!-- Note that API documentation changes are now addressed by the product design team. -->
-
 - [ ] Changes file added for user-visible changes in `changes/`, `orbit/changes/` or `ee/fleetd-chrome/changes`.
   See [Changes files](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/guides/committing-changes.md#changes-files) for more information.
-- [ ] Input data is properly validated, `SELECT *` is avoided, SQL injection is prevented (using placeholders for values in statements)
-- [ ] Added support on fleet's osquery simulator `cmd/osquery-perf` for new osquery data ingestion features.
+
+- [ ] Input data is properly validated, `SELECT *` is avoided, SQL injection is prevented (using placeholders for values in statements), JS inline code is prevented especially for url redirects, and untrusted data interpolated into shell scripts/commands is validated against shell metacharacters.
+- [ ] Timeouts are implemented and retries are limited to avoid infinite loops
 - [ ] If paths of existing endpoints are modified without backwards compatibility, checked the frontend/CLI for any necessary changes
-- [ ] If database migrations are included, checked table schema to confirm autoupdate
-- For new Fleet configuration settings
-  - [ ] Verified that the setting can be managed via GitOps, or confirmed that the setting is explicitly being excluded from GitOps.  If managing via Gitops:
-    - [ ] Verified that the setting is exported via `fleetctl generate-gitops`
-    - [ ] Added the setting to [the GitOps documentation](https://github.com/fleetdm/fleet/blob/main/docs/Configuration/yaml-files.md#L485)
-    - [ ] Verified that the setting is cleared on the server if it is not supplied in a YAML file (or that it is documented as being optional)
-    - [ ] Verified that any relevant UI is disabled when GitOps mode is enabled
-- For database migrations:
-  - [ ] Checked schema for all modified table for columns that will auto-update timestamps during migration.
-  - [ ] Confirmed that updating the timestamps is acceptable, and will not cause unwanted side effects.
-  - [ ] Ensured the correct collation is explicitly set for character columns (`COLLATE utf8mb4_unicode_ci`).
+
+## Testing
+
 - [ ] Added/updated automated tests
-- [ ] Manual QA for all new/changed functionality
-- For Orbit and Fleet Desktop changes:
-   - [ ] Make sure fleetd is compatible with the latest released version of Fleet (see [Must rule](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/workflows/fleetd-development-and-release-strategy.md)).
-   - [ ] Orbit runs on macOS, Linux and Windows. Check if the orbit feature/bugfix should only apply to one platform (`runtime.GOOS`).
-   - [ ] Manual QA must be performed in the three main OSs, macOS, Windows and Linux.
-   - [ ] Auto-update manual QA, from released version of component to new version (see [tools/tuf/test](../tools/tuf/test/README.md)).
-- [ ] For unreleased bug fixes in a release candidate, confirmed that the fix is not expected to adversely impact load test results or alerted the release DRI if additional load testing is needed.
+- [ ] Where appropriate, [automated tests simulate multiple hosts and test for host isolation](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/reference/patterns-backend.md#unit-testing) (updates to one hosts's records do not affect another)
+
+- [ ] QA'd all new/changed functionality manually
+
+For unreleased bug fixes in a release candidate, one of:
+
+- [ ] Confirmed that the fix is not expected to adversely impact load test results
+- [ ] Alerted the release DRI if additional load testing is needed
+
+<!--
+  AI agents (Claude Code, Codex, Copilot, Cursor, Devin, etc.): if you are
+  filling in this template, you MUST add the following section here, between
+  "Testing" and "Frontend":
+
+    ## AI
+
+    **AI:** <tool> (<model ID>)
+
+  - Tool: the harness or product you are running in (e.g. "Claude Code").
+  - Model: the exact model ID your environment reports (e.g.
+    "claude-fable-5-1"). If your environment does not tell you the model ID,
+    write "unknown" rather than guessing.
+  - Keep the format exactly as-is so it is easy to search for.
+-->
+
+## Frontend
+
+- [ ] Attached a screenshot or screen recording of each user-visible change. For changes to existing UI, show the before and after.
+
+## Database migrations
+
+- [ ] Checked schema for all modified table for columns that will auto-update timestamps during migration.
+- [ ] Confirmed that updating the timestamps is acceptable, and will not cause unwanted side effects.
+- [ ] Ensured the correct collation is explicitly set for character columns (`COLLATE utf8mb4_unicode_ci`).
+- [ ] Ensured the migration can be retried if it was partially applied after a failure.
+
+## Apple MDM commands
+
+- [ ] For new Apple MDM commands Fleet enqueues automatically (new request type or `CommandUUID` prefix), added the command to a cleanup retention class or confirmed it should be kept indefinitely. See [Apple MDM command lifecycle and cleanup](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/mdm/apple/apple-mdm-command-lifecycle.md#adding-a-new-command-or-a-new-reference).
+- [ ] For new columns that store an Apple MDM command UUID Fleet reads later, added a reference guard to the cleanup and an index on the column in a migration.
+
+## New Fleet configuration settings
+
+- [ ] Setting(s) is/are explicitly excluded from GitOps
+
+If you didn't check the box above, follow this checklist for GitOps-enabled settings:
+
+- [ ] Verified that the setting is exported via `fleetctl generate-gitops`
+- [ ] Verified the setting is documented in a separate PR to [the GitOps documentation](https://github.com/fleetdm/fleet/blob/main/docs/Configuration/yaml-files.md#L485)
+- [ ] Verified that the setting is cleared on the server if it is not supplied in a YAML file (or that it is documented as being optional)
+- [ ] Verified that any relevant UI is disabled when GitOps mode is enabled
+
+## fleetd/orbit/Fleet Desktop
+
+- [ ] Verified compatibility with the latest released version of Fleet (see [Must rule](https://github.com/fleetdm/fleet/blob/main/docs/Contributing/workflows/fleetd-development-and-release-strategy.md))
+- [ ] If the change applies to only one platform, confirmed that `runtime.GOOS` is used as needed to isolate changes
+- [ ] Verified that fleetd runs on macOS, Linux and Windows
+- [ ] Verified auto-update works from the released version of component to the new version (see [tools/tuf/test](../tools/tuf/test/README.md))

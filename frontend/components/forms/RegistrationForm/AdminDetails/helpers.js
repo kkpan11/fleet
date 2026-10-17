@@ -1,7 +1,8 @@
 import { size } from "lodash";
-import validateEquality from "components/forms/validators/validate_equality";
+
 import validEmail from "components/forms/validators/valid_email";
 import validPassword from "components/forms/validators/valid_password";
+import validateEquality from "components/forms/validators/validate_equality";
 
 const validate = (formData) => {
   const errors = {};
@@ -22,8 +23,9 @@ const validate = (formData) => {
     errors.name = "Full name must be present";
   }
 
-  if (password && passwordConfirmation && !validPassword(password)) {
-    errors.password = "Password must meet the criteria below";
+  const { isValid, error } = validPassword(password);
+  if (password && passwordConfirmation && !isValid) {
+    errors.password = error;
   }
 
   if (

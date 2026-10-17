@@ -1,6 +1,6 @@
 import { IUser } from "interfaces/user";
 
-const DEFAULT_HOST_MOCK: IUser = {
+const DEFAULT_USER_MOCK: IUser = {
   created_at: "2022-01-01T12:00:00Z",
   updated_at: "2022-01-02T12:00:00Z",
   id: 1,
@@ -12,11 +12,14 @@ const DEFAULT_HOST_MOCK: IUser = {
   sso_enabled: false,
   global_role: "admin",
   api_only: false,
+  last_login_at: null,
+  last_activity_at: null,
   teams: [],
+  fleets: [],
 };
 
 const createMockUser = (overrides?: Partial<IUser>): IUser => {
-  return { ...DEFAULT_HOST_MOCK, ...overrides };
+  return { ...DEFAULT_USER_MOCK, ...overrides };
 };
 
 export default createMockUser;

@@ -1,11 +1,3 @@
 .setup-assistant {
-  &__upload-container {
-    display: flex;
-    flex-direction: column;
-    gap: $pad-large;
-  }
-
-  &__section-description {
-    margin: 0;
-  }
+  @include vertical-card-layout;
 }

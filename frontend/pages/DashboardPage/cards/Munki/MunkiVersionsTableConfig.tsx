@@ -1,8 +1,7 @@
 import React from "react";
 
-import { IMacadminsResponse } from "interfaces/host";
-
 import TextCell from "components/TableContainer/DataTable/TextCell";
+import { IMacadminsResponse } from "interfaces/host";
 
 // NOTE: cellProps come from react-table
 // more info here https://react-table.tanstack.com/docs/api/useTable#cell-properties
@@ -13,22 +12,6 @@ interface ICellProps {
   row: {
     original: IMacadminsResponse;
   };
-}
-
-interface IHeaderProps {
-  column: {
-    title: string;
-    isSortedDesc: boolean;
-  };
-}
-
-interface IDataColumn {
-  title: string;
-  Header: ((props: IHeaderProps) => JSX.Element) | string;
-  accessor: string;
-  Cell: (props: ICellProps) => JSX.Element;
-  disableHidden?: boolean;
-  disableSortBy?: boolean;
 }
 
 const munkiVersionsTableHeaders = [

@@ -1,25 +1,25 @@
-import React, { useContext, useState } from "react";
-import { Tab, Tabs, TabList, TabPanel } from "react-tabs";
 import FileSaver from "file-saver";
-
-import { NotificationContext } from "context/notification";
-import { IConfig } from "interfaces/config";
+import React, { useState } from "react";
+import { Tab, Tabs, TabList, TabPanel } from "react-tabs";
 
 import Button from "components/buttons/Button";
-import Icon from "components/Icon/Icon";
 import RevealButton from "components/buttons/RevealButton";
-// @ts-ignore
-import InputField from "components/forms/fields/InputField";
-import TooltipWrapper from "components/TooltipWrapper";
-import TabNav from "components/TabNav";
-import InfoBanner from "components/InfoBanner/InfoBanner";
 import CustomLink from "components/CustomLink/CustomLink";
+import InputField from "components/forms/fields/InputField";
 import Radio from "components/forms/fields/Radio";
+import InfoBanner from "components/InfoBanner/InfoBanner";
+import TabNav from "components/TabNav";
 import TabText from "components/TabText";
+import { notify } from "components/ToastNotification";
+import TooltipWrapper from "components/TooltipWrapper";
+import { IConfig } from "interfaces/config";
+import { LEARN_MORE_ABOUT_BASE_LINK } from "utilities/constants";
 
 import { isValidPemCertificate } from "../../../pages/hosts/ManageHostsPage/helpers";
-import IosIpadosPanel from "./IosIpadosPanel";
+
 import AndroidPanel from "./AndroidPanel";
+import IosIpadosPanel from "./IosIpadosPanel";
+import MacosPanel from "./MacosPanel";
 
 interface IPlatformSubNav {
   name: string;
@@ -76,8 +76,6 @@ const PlatformWrapper = ({
   fetchCertificateError,
   config,
 }: IPlatformWrapperProps): JSX.Element => {
-  const { renderFlash } = useContext(NotificationContext);
-
   const [hostType, setHostType] = useState<"workstation" | "server">(
     "workstation"
   );
@@ -159,8 +157,7 @@ const PlatformWrapper = ({
 
       FileSaver.saveAs(file);
     } else {
-      renderFlash(
-        "error",
+      notify.error(
         "Your certificate could not be downloaded. Please check your Fleet configuration."
       );
     }
@@ -200,12 +197,13 @@ const PlatformWrapper = ({
                 </>
               )}
               <Button
-                variant="text-icon"
+                variant="secondary"
                 className={`${baseClass}__fleet-certificate-download`}
                 onClick={onDownloadCertificate}
+                icon="download"
+                iconPosition="right"
               >
                 Download
-                <Icon name="download" color="core-fleet-blue" size="small" />
               </Button>
             </p>
           ) : (
@@ -239,16 +237,13 @@ const PlatformWrapper = ({
       <>
         {packageType !== "plain-osquery" && (
           <span className={`${baseClass}__cta`}>
-            Run this command with the{" "}
-            <a
+            Use this command to generate Fleet&apos;s agent.{" "}
+            <CustomLink
               className={`${baseClass}__command-line-tool`}
-              href="https://fleetdm.com/learn-more-about/installing-fleetctl"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Fleet command-line tool
-            </a>
-            :
+              url={`${LEARN_MORE_ABOUT_BASE_LINK}/generate-fleets-agent`}
+              text="Learn how"
+              newTab
+            />
           </span>
         )}
       </>
@@ -273,18 +268,20 @@ const PlatformWrapper = ({
     if (packageType === "deb") {
       packageTypeHelpText = (
         <>
-          For CentOS, Red Hat, and Fedora Linux, use <code>--type=rpm</code>.
-          For ARM, use <code>--arch=arm64</code>
+          Run this on your computer, then deploy the generated package to your
+          hosts. For CentOS, Red Hat, and Fedora Linux, use{" "}
+          <code>--type=rpm</code>. For Arch Linux, use{" "}
+          <code>--type=pkg.tar.zst</code>. For ARM, use{" "}
+          <code>--arch=arm64</code>.
         </>
       );
     } else if (packageType === "msi") {
       packageTypeHelpText = (
         <>
-          For ARM, use <code>--arch=arm64</code>
+          Run this on your computer, then deploy the generated package to your
+          hosts. For ARM, use <code>--arch=arm64</code>
         </>
       );
-    } else if (packageType === "pkg") {
-      packageTypeHelpText = "Install this package to add hosts to Fleet.";
     } else {
       packageTypeHelpText = "";
     }
@@ -301,12 +298,13 @@ const PlatformWrapper = ({
               information below.
             </p>
             <InfoBanner className={`${baseClass}__chromeos--instructions`}>
-              For a step-by-step guide, see the documentation page for{" "}
+              For a step-by-step guide, see the documentation page for&nbsp;
               <CustomLink
                 url="https://fleetdm.com/docs/using-fleet/adding-hosts#enroll-chromebooks"
                 text="adding hosts"
                 newTab
                 multiline
+                variant="banner-link"
               />
             </InfoBanner>
           </div>
@@ -340,11 +338,29 @@ const PlatformWrapper = ({
     }
 
     if (packageType === "ios-ipados") {
-      return <IosIpadosPanel enrollSecret={enrollSecret} />;
+      return (
+        <IosIpadosPanel
+          enrollSecret={enrollSecret}
+          isManualAppleEnrollmentsBlocked={
+            config?.mdm.only_allow_apple_business_enrollment || false
+          }
+        />
+      );
     }
 
     if (packageType === "android") {
       return <AndroidPanel enrollSecret={enrollSecret} />;
+    }
+
+    if (packageType === "pkg") {
+      return (
+        <MacosPanel
+          enrollSecret={enrollSecret}
+          isManualAppleEnrollmentsBlocked={
+            config?.mdm.only_allow_apple_business_enrollment || false
+          }
+        />
+      );
     }
 
     if (packageType === "advanced") {
@@ -367,11 +383,8 @@ const PlatformWrapper = ({
             <InfoBanner className={`${baseClass}__chrome--instructions`}>
               This works for macOS, Windows, and Linux hosts. To add
               Chromebooks,{" "}
-              <Button
-                variant="text-link"
-                onClick={() => setSelectedTabIndex(4)}
-              >
-                click here
+              <Button variant="link" onClick={() => setSelectedTabIndex(3)}>
+                visit the ChromeOS tab
               </Button>
               .
             </InfoBanner>
@@ -394,13 +407,13 @@ const PlatformWrapper = ({
                   Osquery uses an enroll secret to authenticate with the Fleet
                   server.
                   <br />
-                  <Button variant="text-icon" onClick={onDownloadEnrollSecret}>
+                  <Button
+                    variant="secondary"
+                    onClick={onDownloadEnrollSecret}
+                    icon="download"
+                    iconPosition="right"
+                  >
                     Download
-                    <Icon
-                      name="download"
-                      color="core-fleet-blue"
-                      size="small"
-                    />
                   </Button>
                 </p>
               </div>
@@ -419,13 +432,13 @@ const PlatformWrapper = ({
                       {fetchCertificateError}
                     </span>
                   ) : (
-                    <Button variant="text-icon" onClick={onDownloadFlagfile}>
+                    <Button
+                      variant="secondary"
+                      onClick={onDownloadFlagfile}
+                      icon="download"
+                      iconPosition="right"
+                    >
                       Download
-                      <Icon
-                        name="download"
-                        color="core-fleet-blue"
-                        size="small"
-                      />
                     </Button>
                   )}
                 </p>
@@ -433,13 +446,11 @@ const PlatformWrapper = ({
               <div className={`${baseClass}__advanced--osqueryd`}>
                 <p className={`${baseClass}__advanced--heading`}>
                   With{" "}
-                  <a
-                    href="https://www.osquery.io/downloads"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    osquery
-                  </a>{" "}
+                  <CustomLink
+                    url="https://www.osquery.io/downloads"
+                    text="osquery"
+                    newTab
+                  />{" "}
                   installed:
                 </p>
                 <p className={`${baseClass}__advanced--text`}>
@@ -535,7 +546,7 @@ const PlatformWrapper = ({
         </Tabs>
       </TabNav>
       <div className="modal-cta-wrap">
-        <Button onClick={onCancel}>Done</Button>
+        <Button onClick={onCancel}>Close</Button>
       </div>
     </div>
   );

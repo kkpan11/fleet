@@ -1,6 +1,7 @@
-import React from "react";
 import { screen } from "@testing-library/react";
-import { createCustomRenderer } from "test/test-utils";
+import React from "react";
+
+import { createCustomRenderer, createMockRouter } from "test/test-utils";
 
 import AdminWrapper from "./AdminWrapper";
 
@@ -8,18 +9,7 @@ const urlLocation = {
   pathname: "settings/organization/info",
 };
 
-// TODO: figure out how to mock the router properly.
-const mockRouter = {
-  push: jest.fn(),
-  replace: jest.fn(),
-  goBack: jest.fn(),
-  goForward: jest.fn(),
-  go: jest.fn(),
-  setRouteLeaveHook: jest.fn(),
-  isActive: jest.fn(),
-  createHref: jest.fn(),
-  createPath: jest.fn(),
-};
+const mockRouter = createMockRouter();
 
 describe("AdminWrapper - component", () => {
   it("renders correct navigation for free global admin", async () => {
@@ -42,7 +32,7 @@ describe("AdminWrapper - component", () => {
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
     expect(screen.getByText(/users/i)).toBeInTheDocument();
 
-    expect(screen.queryByText(/teams/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fleets/i)).not.toBeInTheDocument();
   });
   it("renders correct navigation for free global maintainer", async () => {
     const render = createCustomRenderer({
@@ -64,7 +54,7 @@ describe("AdminWrapper - component", () => {
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
     expect(screen.getByText(/users/i)).toBeInTheDocument();
 
-    expect(screen.queryByText(/teams/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fleets/i)).not.toBeInTheDocument();
   });
   it("renders correct navigation for premium global admin", async () => {
     const render = createCustomRenderer({
@@ -85,7 +75,7 @@ describe("AdminWrapper - component", () => {
     expect(screen.getByText(/organization settings/i)).toBeInTheDocument();
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
     expect(screen.getByText(/users/i)).toBeInTheDocument();
-    expect(screen.getByText(/teams/i)).toBeInTheDocument();
+    expect(screen.getByText(/fleets/i)).toBeInTheDocument();
   });
   it("renders correct navigation for premium global maintainer", async () => {
     const render = createCustomRenderer({
@@ -106,7 +96,7 @@ describe("AdminWrapper - component", () => {
     expect(screen.getByText(/organization settings/i)).toBeInTheDocument();
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
     expect(screen.getByText(/users/i)).toBeInTheDocument();
-    expect(screen.getByText(/teams/i)).toBeInTheDocument();
+    expect(screen.getByText(/fleets/i)).toBeInTheDocument();
   });
   it("renders correct navigation for premium team admin", async () => {
     const render = createCustomRenderer({
@@ -127,7 +117,7 @@ describe("AdminWrapper - component", () => {
     expect(screen.getByText(/organization settings/i)).toBeInTheDocument();
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
     expect(screen.getByText(/users/i)).toBeInTheDocument();
-    expect(screen.getByText(/teams/i)).toBeInTheDocument();
+    expect(screen.getByText(/fleets/i)).toBeInTheDocument();
   });
   it("renders correct navigation for premium team maintainer", async () => {
     const render = createCustomRenderer({
@@ -148,7 +138,7 @@ describe("AdminWrapper - component", () => {
     expect(screen.getByText(/organization settings/i)).toBeInTheDocument();
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
     expect(screen.getByText(/users/i)).toBeInTheDocument();
-    expect(screen.getByText(/teams/i)).toBeInTheDocument();
+    expect(screen.getByText(/fleets/i)).toBeInTheDocument();
   });
   it("renders correct navigation for sandbox mode", async () => {
     const render = createCustomRenderer({
@@ -167,7 +157,7 @@ describe("AdminWrapper - component", () => {
     );
 
     expect(screen.getByText(/integrations/i)).toBeInTheDocument();
-    expect(screen.getByText(/teams/i)).toBeInTheDocument();
+    expect(screen.getByText(/fleets/i)).toBeInTheDocument();
 
     expect(
       screen.queryByText(/organization settings/i)

@@ -1,6 +1,5 @@
 import { http, HttpResponse } from "msw";
 
-import { baseUrl } from "test/test-utils";
 import {
   createMockBootstrapPackageMetadataResponse,
   createMockBootstrapPackageSummaryResponse,
@@ -13,9 +12,10 @@ import {
   IGetSetupExperienceScriptResponse,
   IGetSetupExperienceSoftwareResponse,
 } from "services/entities/mdm";
+import { baseUrl } from "test/test-utils";
 
 const setupExperienceScriptUrl = baseUrl("/setup_experience/script");
-const setupExperienceInstallSoftwareUrl = baseUrl("/setup_experience/software");
+const setupExperienceInstallSoftwareUrl = baseUrl(`/setup_experience/software`);
 const setupExperienceBootstrapMetadataUrl = baseUrl(
   "/mdm/bootstrap/:teamId/metadata"
 );
@@ -53,7 +53,7 @@ export const createSetupExperienceSoftwareHandler = (
     );
   });
 
-export const createSetupExperienceBootstrapPackageHandler = (
+export const createSetupExperienceBootstrapMetadataHandler = (
   overrides?: Partial<IGetBootstrapPackageMetadataResponse>
 ) =>
   http.get(setupExperienceBootstrapMetadataUrl, () => {

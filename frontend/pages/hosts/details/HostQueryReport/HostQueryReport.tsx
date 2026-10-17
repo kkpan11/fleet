@@ -1,24 +1,23 @@
 import React, { useCallback, useContext, useState } from "react";
 import { useQuery } from "react-query";
-import { browserHistory, InjectedRouter, Link } from "react-router";
+import { browserHistory, InjectedRouter } from "react-router";
 import { Params } from "react-router/lib/Router";
-import PATHS from "router/paths";
-import { AppContext } from "context/app";
 
-import { DOCUMENT_TITLE_SUFFIX } from "utilities/constants";
-import { getPathWithQueryParams } from "utilities/url";
-import hqrAPI, { IGetHQRResponse } from "services/entities/host_query_report";
-import queryAPI from "services/entities/queries";
+import Button from "components/buttons/Button";
+import MainContent from "components/MainContent";
+import ShowQueryModal from "components/modals/ShowQueryModal";
+import Spinner from "components/Spinner";
+import { AppContext } from "context/app";
 import {
   IGetQueryResponse,
   ISchedulableQuery,
 } from "interfaces/schedulable_query";
+import PATHS from "router/paths";
+import hqrAPI, { IGetHQRResponse } from "services/entities/host_query_report";
+import queryAPI from "services/entities/queries";
+import { DOCUMENT_TITLE_SUFFIX } from "utilities/constants";
+import { getPathWithQueryParams } from "utilities/url";
 
-import BackLink from "components/BackLink";
-import Icon from "components/Icon";
-import MainContent from "components/MainContent";
-import ShowQueryModal from "components/modals/ShowQueryModal";
-import Spinner from "components/Spinner";
 import HQRTable from "./HQRTable";
 
 const baseClass = "host-query-report";
@@ -38,7 +37,7 @@ const HostQueryReport = ({
   const queryId = Number(query_id);
 
   if (globalReportsDisabled) {
-    router.push(PATHS.HOST_QUERIES(hostId));
+    router.push(PATHS.HOST_REPORTS(hostId));
   }
 
   const [showQuery, setShowQuery] = useState(false);
@@ -91,11 +90,12 @@ const HostQueryReport = ({
     description: queryDescription,
     query: querySQL,
     discard_data: queryDiscardData,
+    stats,
   } = queryResponse || {};
 
   // previous reroute can be done before API call, not this one, hence 2
   if (queryDiscardData) {
-    router.push(PATHS.HOST_QUERIES(hostId));
+    router.push(PATHS.HOST_REPORTS(hostId));
   }
 
   // Updates title that shows up on browser tabs
@@ -109,36 +109,23 @@ const HostQueryReport = ({
 
   const HQRHeader = useCallback(() => {
     const fullReportPath = getPathWithQueryParams(
-      PATHS.QUERY_DETAILS(queryId),
-      { team_id: currentTeam?.id }
+      PATHS.REPORT_DETAILS(queryId),
+      { fleet_id: currentTeam?.id }
     );
     return (
       <div className={`${baseClass}__header`}>
-        <div className={`${baseClass}__header__row1`}>
-          <BackLink
-            text="Back to host details"
-            path={PATHS.HOST_QUERIES(hostId)}
-          />
-        </div>
-        <div className={`${baseClass}__header__row2`}>
-          {!hqrError && <h1 className="host-name">{hostName}</h1>}
-          <Link
-            // to and onClick seem redundant
-            to={fullReportPath}
-            onClick={() => {
-              browserHistory.push(fullReportPath);
-            }}
-            className={`${baseClass}__direction-link`}
-          >
-            <>
-              <span>View full query report</span>
-              <Icon name="chevron-right" color="core-fleet-blue" />
-            </>
-          </Link>
-        </div>
+        {!hqrError && <h1 className="host-name">{hostName}</h1>}
+        <Button
+          variant="secondary"
+          onClick={() => {
+            browserHistory.push(fullReportPath);
+          }}
+        >
+          View report for all hosts
+        </Button>
       </div>
     );
-  }, [queryId, hostId, hqrError, hostName]);
+  }, [queryId, hqrError, hostName]);
 
   return (
     <MainContent className={baseClass}>
@@ -148,8 +135,10 @@ const HostQueryReport = ({
         <>
           <HQRHeader />
           <HQRTable
+            queryId={queryId}
             queryName={queryName}
             queryDescription={queryDescription}
+            queryStats={stats}
             hostName={hostName}
             rows={rows}
             reportClipped={reportClipped}

@@ -3,14 +3,13 @@
 package execuser
 
 import (
-	"io"
 	"time"
 )
 
 type eopts struct {
 	env        [][2]string
 	args       [][2]string
-	stderrPath string //nolint:structcheck,unused
+	stderrPath string //nolint:unused
 	timeout    time.Duration
 	user       string
 }
@@ -69,12 +68,4 @@ func RunWithOutput(path string, opts ...Option) (output []byte, exitCode int, er
 		fn(&o)
 	}
 	return runWithOutput(path, o)
-}
-
-func RunWithStdin(path string, opts ...Option) (io.WriteCloser, error) {
-	var o eopts
-	for _, fn := range opts {
-		fn(&o)
-	}
-	return runWithStdin(path, o)
 }

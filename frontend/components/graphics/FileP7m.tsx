@@ -1,9 +1,12 @@
+import { uniqueId } from "lodash";
 import React from "react";
 
 const FileP7m = () => {
+  const clipPathId = uniqueId("clip-path-");
+
   return (
     <svg xmlns="http://www.w3.org/2000/svg" width="34" height="40" fill="none">
-      <g clipPath="url(#filep7m_clippath)">
+      <g clipPath={`url(#${clipPathId})`}>
         <path
           fill="#fff"
           stroke="#192147"
@@ -46,7 +49,7 @@ const FileP7m = () => {
         />
       </g>
       <defs>
-        <clipPath id="filep7m_clippath">
+        <clipPath id={clipPathId}>
           <path fill="#fff" d="M0 0h34v40H0z" />
         </clipPath>
       </defs>

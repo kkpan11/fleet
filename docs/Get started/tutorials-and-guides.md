@@ -17,7 +17,7 @@ A collection of guides to help you with Fleet.
 
 ## Further learning
 <!--Highest level organizational unit-->
-[Teams](https://fleetdm.com/guides/teams)
+[Fleets](https://fleetdm.com/guides/teams)
 
 [Enroll BYOD iOS/iPadOS hosts](https://fleetdm.com/guides/enroll-byod-ios-ipados-hosts)
 
@@ -31,6 +31,10 @@ A collection of guides to help you with Fleet.
 
 [Enforce disk encryption](https://fleetdm.com/guides/enforce-disk-encryption)
 
+[Create Windows configuration profiles (CSPs)](https://fleetdm.com/guides/creating-windows-csps)
+
+[Build and validate configuration profiles with AI](https://fleetdm.com/guides/build-configuration-profiles-with-ai)
+
 [Automatically run scripts](https://fleetdm.com/guides/policy-automation-run-script)
 
 <!--Installing software-->
@@ -40,7 +44,7 @@ A collection of guides to help you with Fleet.
 
 [Automatically install software](https://fleetdm.com/guides/automatic-software-install-in-fleet)
 
-[Install App Store (VPP) apps](https://fleetdm.com/guides/install-vpp-apps-on-macos-using-fleet)
+[Install App store apps](https://fleetdm.com/guides/install-app-store-apps)
 <!--Admin-->
 [Fleetctl](https://fleetdm.com/guides/fleetctl)
 
@@ -55,3 +59,4 @@ A collection of guides to help you with Fleet.
 
 <meta name="description" value="Links to deployment tutorials and guides for using Fleet.">
 <meta name="pageOrderInSection" value="300">
+<meta name="keywordsForDocsearch" value="fleet tutorials, getting started, learning resources, fleet guides, walkthroughs">

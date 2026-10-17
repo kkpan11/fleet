@@ -2,18 +2,17 @@
 // disable this rule as it was throwing an error in Header and Cell component
 // definitions for the selection row for some reason when we dont really need it.
 import React from "react";
-
 import { CellProps, Column } from "react-table";
 
-import DefaultColumnFilter from "components/TableContainer/DataTable/DefaultColumnFilter";
 import HeaderCell from "components/TableContainer/DataTable/HeaderCell/HeaderCell";
-
+import LinkCell from "components/TableContainer/DataTable/LinkCell";
+import { IHeaderProps, IWebSocketData } from "interfaces/datatable_config";
+import PATHS from "router/paths";
 import {
   getUniqueColsAreNumTypeFromRows,
   humanHostLastSeen,
   internallyTruncateText,
 } from "utilities/helpers";
-import { IHeaderProps, IWebSocketData } from "interfaces/datatable_config";
 
 type IQueryReportTableColumnConfig = Column<IWebSocketData>;
 type ITableHeaderProps = IHeaderProps<IWebSocketData>;
@@ -40,12 +39,17 @@ const _unshiftHostname = (headers: IQueryReportTableColumnConfig[]) => {
 };
 
 const generateReportColumnConfigsFromResults = (
-  results: IWebSocketData[]
+  results: IWebSocketData[],
+  queryId: number | null
 ): IQueryReportTableColumnConfig[] => {
   const colsAreNumTypes = getUniqueColsAreNumTypeFromRows(results) as Map<
     string,
     boolean
   >;
+
+  // We are only using the host_id column for the hostname link, so we can remove it from the table.
+  colsAreNumTypes.delete("host_id");
+
   const columnConfigs = Array.from(colsAreNumTypes.keys()).map<
     Column<IWebSocketData>
   >((colName) => {
@@ -64,6 +68,18 @@ const generateReportColumnConfigsFromResults = (
       accessor: (data) => data[colName],
       Cell: (cellProps: ITableCellProps) => {
         if (typeof cellProps.cell.value !== "string") return null;
+        if (cellProps.column.id === "Host") {
+          const hostID = cellProps.row.original.host_id as number;
+          if (queryId === null) {
+            return <>cellProps.cell.value</>;
+          }
+          return (
+            <LinkCell
+              value={cellProps.cell.value}
+              path={PATHS.HOST_REPORT_RESULTS(hostID, queryId)}
+            />
+          );
+        }
 
         // Sorts chronologically by date, but UI displays readable last fetched
         if (cellProps.column.id === "last_fetched") {
@@ -77,12 +93,7 @@ const generateReportColumnConfigsFromResults = (
           <>{val}</>
         );
       },
-      Filter: DefaultColumnFilter, // Component hides filter for last_fetched
-      filterType: "text",
       disableSortBy: false,
-      sortType: colsAreNumTypes.get(colName)
-        ? "alphanumeric"
-        : "caseInsensitive",
     };
   });
   return _unshiftHostname(columnConfigs);

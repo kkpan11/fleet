@@ -1,9 +1,10 @@
-import React from "react";
 import { Meta, StoryObj } from "@storybook/react";
 import { noop } from "lodash";
+import React from "react";
 
-import { DEFAULT_GRAVATAR_LINK } from "utilities/constants";
 import Avatar from "components/Avatar";
+import { DEFAULT_GRAVATAR_LINK } from "utilities/constants";
+
 // @ts-ignore
 import DropdownButton from ".";
 
@@ -31,14 +32,9 @@ const meta: Meta<typeof DropdownButton> = {
     variant: {
       options: [
         "default",
-        "success",
         "alert",
         "pill",
-        "text-link",
-        "text-icon",
-        "icon",
-        "inverse",
-        "inverse-alert",
+        "link",
         "unstyled",
         "unstyled-modal-query",
       ],
@@ -47,17 +43,6 @@ const meta: Meta<typeof DropdownButton> = {
     type: {
       options: ["button", "submit", "reset"],
       control: "select",
-    },
-  },
-  parameters: {
-    backgrounds: {
-      default: "header",
-      values: [
-        {
-          name: "header",
-          value: "linear-gradient(270deg, #201e43 0%, #353d62 100%)",
-        },
-      ],
     },
   },
   args: {

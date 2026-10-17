@@ -1,6 +1,5 @@
-import { ICertificatesIntegrationDigicert } from "interfaces/integration";
-
 import valid_url from "components/forms/validators/valid_url";
+import { ICertificateAuthorityPartial } from "interfaces/certificates";
 
 import { IDigicertFormData } from "./DigicertForm";
 
@@ -32,7 +31,7 @@ type IFormValidations = Record<
 >;
 
 export const generateFormValidations = (
-  digicertIntegrations: ICertificatesIntegrationDigicert[],
+  certAuthorities: ICertificateAuthorityPartial[],
   isEditing: boolean
 ) => {
   const FORM_VALIDATIONS: IFormValidations = {
@@ -57,8 +56,9 @@ export const generateFormValidations = (
           isValid: (formData: IDigicertFormData) => {
             return (
               isEditing ||
-              digicertIntegrations.find(
-                (cert) => cert.name === formData.name
+              certAuthorities.find(
+                (cert) =>
+                  cert.type === "digicert" && cert.name === formData.name
               ) === undefined
             );
           },

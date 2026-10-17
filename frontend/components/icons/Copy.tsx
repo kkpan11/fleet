@@ -1,4 +1,5 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 import { ICON_SIZES, IconSizes } from "styles/var/icon_sizes";
 
@@ -7,7 +8,7 @@ interface ICopy {
   size?: IconSizes;
 }
 
-const Copy = ({ color = "core-fleet-blue", size = "medium" }: ICopy) => {
+const Copy = ({ color = "ui-fleet-black-75", size = "medium" }: ICopy) => {
   return (
     <svg
       width={ICON_SIZES[size]}

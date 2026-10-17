@@ -1,9 +1,3 @@
-/*
- * NOTE: This is an example of how to define data for your mock responses.
- * Be sure to copy this file into `../mocks` and only edit that copy!
- * Also please check the README for how to use the mock service :)
- */
-
 import { createMockIosHostResponse } from "__mocks__/hostMock";
 import { createMockPoliciesResponse } from "__mocks__/policyMock";
 
@@ -10608,6 +10602,64 @@ const aiAutofillPolicy = {
     "The maintenance will probably involve investigation of the firewall status, troubleshooting any issues found, and enabling the firewall to ensure the laptop's security.",
 };
 
+let mockVariables = new Array(39).fill(null).map((_, index) => ({
+  id: index + 1,
+  name: `SECRET_${index + 1}`,
+  created_at: new Date(Date.now() - index * 1000 * 60 * 60 * 24).toISOString(), // Created 1 day apart
+  updated_at: new Date(Date.now() - index * 1000 * 60 * 60 * 24).toISOString(), // Updated 1 day apart
+}));
+let nextVariableId = mockVariables.length + 1;
+
+const VARIABLES_PAGE_SIZE = 20;
+const variables = (url: string) => {
+  const parsedUrl = new URL(`http://example.com/${url}`);
+  const params = new URLSearchParams(parsedUrl.search);
+  const page = parseInt(params.get("page") || "0", 10);
+  const perPage = parseInt(
+    params.get("per_page") || `${VARIABLES_PAGE_SIZE}`,
+    10
+  );
+  const startIndex = (page || 0) * (perPage || VARIABLES_PAGE_SIZE);
+  const endIndex = startIndex + (perPage || VARIABLES_PAGE_SIZE);
+  const hasNextResults = endIndex < mockVariables.length;
+  const hasPreviousResults = startIndex > 0;
+  return {
+    custom_variables: [...mockVariables].slice(startIndex, endIndex),
+    meta: {
+      has_next_results: hasNextResults,
+      has_previous_results: hasPreviousResults,
+    },
+    count: mockVariables.length,
+  };
+};
+
+const addVariable = (url: string, variable: any) => {
+  if (variable.name === "DUPE") {
+    return Promise.reject({ status: 409, message: "Conflict" });
+  }
+  if (variable.name === "ERR") {
+    return Promise.reject({ status: 500, message: "Internal Server Error" });
+  }
+
+  nextVariableId += 1;
+  mockVariables = [
+    ...mockVariables,
+    {
+      name: variable.name,
+      id: nextVariableId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    },
+  ];
+  return Promise.resolve({});
+};
+
+const deleteVariable = (url: string) => {
+  const variableId = parseInt(url.split("/").pop() || "0", 10);
+  mockVariables = mockVariables.filter((v) => v.id !== variableId);
+  return Promise.resolve({});
+};
+
 export default {
   count,
   hosts,
@@ -10626,4 +10678,7 @@ export default {
   aiAutofillPolicy,
   teamPolicy1,
   hostDetailsiOS,
+  variables,
+  addVariable,
+  deleteVariable,
 };

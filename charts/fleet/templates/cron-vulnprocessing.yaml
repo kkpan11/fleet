@@ -27,6 +27,46 @@ spec:
             heritage: {{ .Release.Service }}
             release: {{ .Release.Name }}
         spec:
+          initContainers:
+          {{- if include "fleet.additionalCAs.enabled" . }}
+          - name: install-trusted-cas
+            image: "{{ .Values.imageRepository }}:{{ .Values.imageTag }}"
+            {{- with .Values.imagePullPolicy }}
+            imagePullPolicy: {{ . }}
+            {{- end }}
+            securityContext:
+              runAsUser: 0
+              runAsNonRoot: false
+              allowPrivilegeEscalation: false
+            command:
+              - sh
+              - -c
+              - |
+                set -e
+                apk add ca-certificates
+                echo "Installing trusted CA certificates..."
+
+                for dir in /custom-ca/*; do
+                  if [ -d "$dir" ]; then
+                    cp "$dir"/*.crt /usr/local/share/ca-certificates/
+                  fi
+                done
+
+                update-ca-certificates
+            volumeMounts:
+          {{- range .Values.fleet.additionalCAs.configMaps }}
+              - name: ca-configmap-{{ .name }}
+                mountPath: /custom-ca/configmap-{{ .name }}
+                readOnly: true
+          {{- end }}
+          {{- range .Values.fleet.additionalCAs.secrets }}
+              - name: ca-secret-{{ .name }}
+                mountPath: /custom-ca/secret-{{ .name }}
+                readOnly: true
+          {{- end }}
+              - name: ca-certs
+                mountPath: /etc/ssl/certs
+          {{- end }}
           restartPolicy: Never
           shareProcessNamespace: true
           containers:
@@ -39,6 +79,9 @@ spec:
                 sql_proxy_pid=$(pgrep cloud_sql_proxy) && kill -INT $sql_proxy_pid;
                 {{- end }}
             image: "{{ .Values.imageRepository }}:{{ .Values.imageTag }}"
+            {{- with .Values.imagePullPolicy }}
+            imagePullPolicy: {{ . }}
+            {{- end }}
             resources:
               limits:
                 cpu: {{ .Values.vulnProcessing.resources.limits.cpu }}
@@ -125,6 +168,67 @@ spec:
                 value: "{{ .Values.database.tls.serverName }}"
               {{- end }}
               ## END MYSQL SECTION
+              ## BEGIN MYSQL READ REPLICA SECTION
+              {{- if .Values.database_read_replica }}
+              {{- if .Values.database_read_replica.address }}
+              - name: FLEET_MYSQL_READ_REPLICA_ADDRESS
+                value: "{{ .Values.database_read_replica.address }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.database }}
+              - name: FLEET_MYSQL_READ_REPLICA_DATABASE
+                value: "{{ .Values.database_read_replica.database }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.username }}
+              - name: FLEET_MYSQL_READ_REPLICA_USERNAME
+                value: "{{ .Values.database_read_replica.username }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.passwordPath }}
+              - name: FLEET_MYSQL_READ_REPLICA_PASSWORD_PATH
+                value: "{{ .Values.database_read_replica.passwordPath }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.secretName }}
+              - name: FLEET_MYSQL_READ_REPLICA_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: {{ .Values.database_read_replica.secretName }}
+                    key: {{ .Values.database_read_replica.passwordKey }}
+              {{- end }}
+              {{- if .Values.database_read_replica.maxOpenConns }}
+              - name: FLEET_MYSQL_READ_REPLICA_MAX_OPEN_CONNS
+                value: "{{ .Values.database_read_replica.maxOpenConns }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.maxIdleConns }}
+              - name: FLEET_MYSQL_READ_REPLICA_MAX_IDLE_CONNS
+                value: "{{ .Values.database_read_replica.maxIdleConns }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.connMaxLifetime }}
+              - name: FLEET_MYSQL_READ_REPLICA_CONN_MAX_LIFETIME
+                value: "{{ .Values.database_read_replica.connMaxLifetime }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.tls.enabled }}
+              {{- if .Values.database_read_replica.tls.caCertKey }}
+              - name: FLEET_MYSQL_READ_REPLICA_TLS_CA
+                value: "/secrets/mysql/{{ .Values.database_read_replica.tls.caCertKey }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.tls.certKey }}
+              - name: FLEET_MYSQL_READ_REPLICA_TLS_CERT
+                value: "/secrets/mysql/{{ .Values.database_read_replica.tls.certKey }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.tls.keyKey }}
+              - name: FLEET_MYSQL_READ_REPLICA_TLS_KEY
+                value: "/secrets/mysql/{{ .Values.database_read_replica.tls.keyKey }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.tls.config }}
+              - name: FLEET_MYSQL_READ_REPLICA_TLS_CONFIG
+                value: "{{ .Values.database_read_replica.tls.config }}"
+              {{- end }}
+              {{- if .Values.database_read_replica.tls.serverName }}
+              - name: FLEET_MYSQL_READ_REPLICA_TLS_SERVER_NAME
+                value: "{{ .Values.database_read_replica.tls.serverName }}"
+              {{- end }}
+              {{- end }}
+              {{- end }}
+              ## END MYSQL READ REPLICA SECTION
               ## BEGIN REDIS SECTION
               - name: FLEET_REDIS_ADDRESS
                 value: "{{ .Values.cache.address }}"
@@ -139,9 +243,15 @@ spec:
               {{- end }}
               ## END REDIS SECTION
               ## APPEND ENVIRONMENT VARIABLES FROM VALUES
+              # Skip empty/unset values so an env var provided via envsFrom (e.g. a
+              # secretKeyRef for FLEET_SERVER_PRIVATE_KEY) isn't duplicated by the
+              # empty default here, which server-side apply rejects as a
+              # duplicate env entry.
               {{- range $key, $value := .Values.environments }}
+              {{- if and (ne (kindOf $value) "invalid") (or (ne (kindOf $value) "string") (ne $value "")) }}
               - name: {{ $key }}
                 value: {{ $value | quote }}
+              {{- end }}
               {{- end }}
               ## APPEND ENVIRONMENT VARIABLES FROM SECRETS/CMs
               {{- range .Values.envsFrom }}
@@ -174,7 +284,9 @@ spec:
               {{- if .Values.fleet.securityContext.runAsUser }}
               runAsUser: {{ int64 .Values.fleet.securityContext.runAsUser }}
               {{- end }}
-              runAsNonRoot: true
+              {{- if .Values.fleet.securityContext.runAsNonRoot }}
+              runAsNonRoot: {{ .Values.fleet.securityContext.runAsNonRoot }}
+              {{- end }}
             volumeMounts:
               - name: tmp
                 mountPath: /tmp
@@ -182,6 +294,10 @@ spec:
               - name: mysql-tls
                 readOnly: true
                 mountPath: /secrets/mysql
+              {{- end }}
+              {{- if include "fleet.additionalCAs.enabled" . }}
+              - name: ca-certs
+                mountPath: /etc/ssl/certs
               {{- end }}
           {{- if .Values.gke.cloudSQL.enableProxy }}
           - name: cloudsql-proxy
@@ -209,7 +325,9 @@ spec:
               {{- if .Values.fleet.securityContext.runAsUser }}
               runAsUser: {{ int64 .Values.fleet.securityContext.runAsUser }}
               {{- end }}
-              runAsNonRoot: true
+              {{- if .Values.fleet.securityContext.runAsNonRoot }}
+              runAsNonRoot: {{ .Values.fleet.securityContext.runAsNonRoot }}
+              {{- end }}
           {{- end }}
           {{- with .Values.imagePullSecrets }}
           imagePullSecrets:
@@ -223,6 +341,20 @@ spec:
             - name: mysql-tls
               secret:
                 secretName: "{{ .Values.database.secretName }}"
+            {{- end }}
+            {{- if include "fleet.additionalCAs.enabled" . }}
+            {{- range .Values.fleet.additionalCAs.configMaps }}
+            - name: ca-configmap-{{ .name }}
+              configMap:
+                name: {{ .name }}
+            {{- end }}
+            {{- range .Values.fleet.additionalCAs.secrets }}
+            - name: ca-secret-{{ .name }}
+              secret:
+                secretName: {{ .name }}
+            {{- end }}
+            - name: ca-certs
+              emptyDir: {}
             {{- end }}
           {{- with .Values.nodeSelector }}
           nodeSelector:

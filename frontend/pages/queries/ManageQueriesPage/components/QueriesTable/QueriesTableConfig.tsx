@@ -2,22 +2,19 @@
 // disable this rule as it was throwing an error in Header and Cell component
 // definitions for the selection row for some reason when we dont really need it.
 import React from "react";
-import { formatDistanceToNow } from "date-fns";
-import PATHS from "router/paths";
 
-import { Tooltip as ReactTooltip5 } from "react-tooltip-5";
-
-import { secondsToDhms } from "utilities/helpers";
-import {
-  isGlobalAdmin,
-  isGlobalMaintainer,
-  isTeamAdmin,
-  isTeamMaintainer,
-  isTeamObserver,
-  isOnlyObserver,
-} from "utilities/permissions/permissions";
-import { getPathWithQueryParams } from "utilities/url";
-
+import Checkbox from "components/forms/fields/Checkbox";
+import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
+import { HumanTimeDiffWithDateTip } from "components/HumanTimeDiffWithDateTip";
+import Icon from "components/Icon";
+import HeaderCell from "components/TableContainer/DataTable/HeaderCell/HeaderCell";
+import LinkCell from "components/TableContainer/DataTable/LinkCell/LinkCell";
+import PerformanceImpactCell from "components/TableContainer/DataTable/PerformanceImpactCell";
+import PlatformCell from "components/TableContainer/DataTable/PlatformCell";
+import TextCell from "components/TableContainer/DataTable/TextCell";
+import { getConditionalSelectHeaderCheckboxProps } from "components/TableContainer/utilities/config_utils";
+import Tag from "components/Tag";
+import TooltipWrapper from "components/TooltipWrapper";
 import {
   isScheduledQueryablePlatform,
   ScheduledQueryablePlatform,
@@ -29,18 +26,18 @@ import {
 } from "interfaces/schedulable_query";
 import { API_ALL_TEAMS_ID } from "interfaces/team";
 import { IUser } from "interfaces/user";
+import PATHS from "router/paths";
+import { secondsToDhms } from "utilities/helpers";
+import {
+  isGlobalAdmin,
+  isGlobalMaintainer,
+  isTeamAdmin,
+  isTeamMaintainer,
+  isTeamObserver,
+  isOnlyObserver,
+} from "utilities/permissions/permissions";
+import { getPathWithQueryParams } from "utilities/url";
 
-import Icon from "components/Icon";
-import Checkbox from "components/forms/fields/Checkbox";
-import { getConditionalSelectHeaderCheckboxProps } from "components/TableContainer/utilities/config_utils";
-import LinkCell from "components/TableContainer/DataTable/LinkCell/LinkCell";
-import HeaderCell from "components/TableContainer/DataTable/HeaderCell/HeaderCell";
-import PlatformCell from "components/TableContainer/DataTable/PlatformCell";
-import TextCell from "components/TableContainer/DataTable/TextCell";
-import PerformanceImpactCell from "components/TableContainer/DataTable/PerformanceImpactCell";
-import TooltipWrapper from "components/TooltipWrapper";
-import InheritedBadge from "components/InheritedBadge";
-import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
 import QueryAutomationsStatusIndicator from "../QueryAutomationsStatusIndicator";
 
 interface IQueryRow {
@@ -155,10 +152,11 @@ const generateColumnConfigs = ({
               <>
                 {!isCurrentTeamObserverOrGlobalObserver && observer_can_run && (
                   <TooltipWrapper
-                    tipContent="Observers can run this query."
+                    tipContent="Observers can run this report."
                     underline={false}
                     showArrow
                     position="top"
+                    delayInMs={300}
                   >
                     <Icon
                       className="observer-can-run-query-icon"
@@ -171,12 +169,14 @@ const generateColumnConfigs = ({
                 {viewingTeamScope &&
                   // inherited
                   team_id !== currentTeamId && (
-                    <InheritedBadge tooltipContent="This query runs on all hosts." />
+                    <Tag tooltip="This report runs on all hosts." size="small">
+                      Inherited
+                    </Tag>
                   )}
               </>
             }
-            path={getPathWithQueryParams(PATHS.QUERY_DETAILS(id), {
-              team_id: team_id ?? currentTeamId,
+            path={getPathWithQueryParams(PATHS.REPORT_DETAILS(id), {
+              fleet_id: team_id ?? currentTeamId,
             })}
           />
         );
@@ -240,7 +240,6 @@ const generateColumnConfigs = ({
         <PerformanceImpactCell
           value={{
             indicator: cellProps.cell.value,
-            id: cellProps.row.original.id,
           }}
         />
       ),
@@ -270,10 +269,10 @@ const generateColumnConfigs = ({
       accessor: "updated_at",
       Cell: (cellProps: INumberCellProps): JSX.Element => (
         <TextCell
-          value={formatDistanceToNow(new Date(cellProps.cell.value), {
-            includeSeconds: true,
-            addSuffix: true,
-          })}
+          value={cellProps.cell.value}
+          formatter={(updatedAt) => (
+            <HumanTimeDiffWithDateTip timeString={updatedAt} />
+          )}
         />
       ),
     },

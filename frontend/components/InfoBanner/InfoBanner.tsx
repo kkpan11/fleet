@@ -1,37 +1,41 @@
-import React, { useState } from "react";
 import classNames from "classnames";
+import React, { useState } from "react";
 
-import Icon from "components/Icon";
 import Button from "components/buttons/Button";
-import { IconNames } from "components/icons";
 import Card from "components/Card";
+import Icon from "components/Icon";
+import { IconNames } from "components/icons";
+import { Colors } from "styles/var/colors";
 
 const baseClass = "info-banner";
 
 export interface IInfoBannerProps {
   children?: React.ReactNode;
   className?: string;
-  /** default light purple */
-  color?: "purple" | "yellow" | "grey";
-  /** default 4px  */
-  borderRadius?: "medium" | "xlarge";
+  /** default grey */
+  color?: "grey" | "yellow";
   pageLevel?: boolean;
   /** Add this element to the end of the banner message. Mutually exclusive with `link`. */
   cta?: JSX.Element;
   /** closable and link are mutually exclusive */
   closable?: boolean;
+  /** Renders an icon to the left of the banner copy. When set, the banner
+   * switches from `space-between` to a left-aligned flex layout so the icon
+   * groups with the text rather than getting pushed to the opposite edge. */
   icon?: IconNames;
+  /** Overrides the icon's default color when `icon` is set. */
+  iconColor?: Colors;
 }
 
 const InfoBanner = ({
   children,
   className,
-  color = "purple",
-  borderRadius,
+  color = "grey",
   pageLevel,
   cta,
   closable,
   icon,
+  iconColor,
 }: IInfoBannerProps) => {
   const wrapperClasses = classNames(
     baseClass,
@@ -46,6 +50,13 @@ const InfoBanner = ({
 
   const content = (
     <>
+      {icon && (
+        <Icon
+          name={icon}
+          color={iconColor}
+          className={`${baseClass}__leading-icon`}
+        />
+      )}
       <div className={`${baseClass}__info`}>{children}</div>
 
       {(cta || closable) && (
@@ -53,17 +64,12 @@ const InfoBanner = ({
           {cta}
           {closable && (
             <Button
-              variant="icon"
+              variant="subdued"
+              icon="close"
+              ariaLabel="Close"
               onClick={() => setHideBanner(true)}
-              iconStroke
-            >
-              <Icon
-                name="close"
-                color="core-fleet-black"
-                size="small"
-                className={`${baseClass}__close`}
-              />
-            </Button>
+              className={`${baseClass}__close`}
+            />
           )}
         </div>
       )}
@@ -75,11 +81,7 @@ const InfoBanner = ({
   }
 
   return (
-    <Card
-      className={wrapperClasses}
-      color={color}
-      borderRadiusSize={borderRadius}
-    >
+    <Card className={wrapperClasses} color={color}>
       {content}
     </Card>
   );

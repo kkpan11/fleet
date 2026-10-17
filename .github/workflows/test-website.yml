@@ -9,6 +9,7 @@ on:
       - "schema/**"
       - "articles/**"
       - ".github/workflows/test-website.yml"
+      - "ee/maintained-apps/outputs/**"
 
 # This allows a subsequently queued workflow run to interrupt previous runs
 concurrency:
@@ -23,6 +24,10 @@ defaults:
 permissions:
   contents: read
 
+env:
+  # Supply-chain guard: refuse npm packages younger than 12 hours. See .npmrc.
+  NPM_CONFIG_MIN_RELEASE_AGE: 0.5
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,11 +38,15 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3.5.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
 
       # Set the Node.js version
       - name: Use Node.js ${{ matrix.node-version }}
@@ -45,8 +54,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      # Download top-level dependencies and build Storybook in the website's assets/ folder.
-      - run: npm install --legacy-peer-deps && npm run build-storybook -- -o ./website/assets/storybook --loglevel verbose
+      # 2025-08-07: The Storybook steps in website workflows have been temporarily disabled until a compatibility issue with the @storybook/test-runner has been resolved. See https://github.com/fleetdm/fleet/issues/31720 for more information.
+      # # Download top-level dependencies and build Storybook in the website's assets/ folder.
+      # - run: npm install --legacy-peer-deps && npm run build-storybook -- -o ./website/assets/storybook --loglevel verbose
 
       # Now start building!
       # > …but first, get a little crazy for a sec and delete the top-level package.json file
@@ -64,6 +74,14 @@ jobs:
 
       # Run sanity checks
       - run: cd website/ && npm test
+
+      # Scan for malicious packages
+      # - name: Security Scan with Shai-Hulud Detector
+#         run: |
+          # git clone https://github.com/Cobenian/shai-hulud-detect
+#          cd shai-hulud-detect
+#          chmod +x shai-hulud-detector.sh
+# #          ./shai-hulud-detector.sh --paranoid ../ # Pipeline will automatically fail on exit codes 1 or 2
 
       # Compile assets
       - run: cd website/ && BUILD_SCRIPT_ARGS="--githubAccessToken=${{ secrets.FLEET_GITHUB_TOKEN_FOR_WEBSITE_TEST }}" npm run build-for-prod

@@ -35,8 +35,6 @@ We’re pleased to announce the introduction of the Admin, Maintainer, and Obser
 ## API-only users
 **Available in Fleet Core, Fleet Basic**
 
-![API-only users](../website/assets/images/articles/fleet-4.0.0-4-600x337@2x.gif)
-
 You can now create users that can only access the Fleet API and `fleetctl` CLI tool. This allows you to generate as many automation or bot users as you like without having to think about who and which accounts can access the Fleet UI. API-only users can currently be created by adding the `--api_only` flag to the `fleetctl user create` command. Look for this ability to come to the Fleet UI in a future release of Fleet.
 
 ---
@@ -61,7 +59,7 @@ Enroll secrets no longer have “names” and are now either global or for a spe
 
 JWT encoding is no longer used for session keys. Sessions now default to expiring in 4 hours of inactivity. `auth_jwt_key` and `auth_jwt_key_file` are no longer accepted as configuration.
 
-As of Fleet 4.0.0, Fleet Device Management Inc. periodically collects anonymous information about your instance. Sending usage statistics is turned off by default for users upgrading from a previous version of Fleet. Read more about the exact information collected [here](https://github.com/fleetdm/fleet/blob/2f42c281f98e39a72ab4a5125ecd26d303a16a6b/docs/1-Using-Fleet/11-Usage-statistics.md).
+As of Fleet 4.0.0, Fleet Device Management Inc. periodically collects [anonymous information](https://fleetdm.com/guides/fleet-usage-statistics) about your instance. Sending usage statistics is turned off by default for users upgrading from a previous version of Fleet.
 
 <meta name="category" value="releases">
 <meta name="authorFullName" value="Noah Talerman">

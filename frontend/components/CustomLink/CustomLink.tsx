@@ -1,17 +1,19 @@
+import classnames from "classnames";
 import React from "react";
 
 import Icon from "components/Icon";
-import classnames from "classnames";
 import { Colors } from "styles/var/colors";
 
 interface ICustomLinkProps {
-  url: string;
+  url?: string;
   text: string;
   className?: string;
   /** open the link in a new tab
    * @default false
    */
   newTab?: boolean;
+  /** Emphasizes the link appearance by changing the color to an accent color */
+  emphasized?: boolean;
   /** Icon wraps on new line with last word */
   multiline?: boolean;
   /** Restricts access via keyboard when CustomLink is part of disabled UI */
@@ -21,7 +23,12 @@ interface ICustomLinkProps {
    *
    * @default "default"
    */
-  variant?: "tooltip-link" | "banner-link" | "flash-message-link" | "default";
+  variant?:
+    | "tooltip-link"
+    | "banner-link"
+    | "flash-message-link"
+    | "default"
+    | "button";
 }
 
 const baseClass = "custom-link";
@@ -32,25 +39,34 @@ const CustomLink = ({
   className,
   newTab = false,
   multiline = false,
+  emphasized = false,
   disableKeyboardNavigation = false,
   variant = "default",
 }: ICustomLinkProps): JSX.Element => {
   const getIconColor = (): Colors => {
     switch (variant) {
       case "tooltip-link":
-      case "flash-message-link":
         return "core-fleet-white";
+      case "flash-message-link":
+        return "core-fleet-black";
       case "banner-link":
         return "core-fleet-black";
       default:
-        return "core-fleet-blue";
+        return "ui-fleet-black-75";
     }
   };
 
   const customLinkClass = classnames(baseClass, className, {
     [`${baseClass}--${variant}`]: variant !== "default",
     [`${baseClass}--multiline`]: multiline,
+    [`${baseClass}--emphasized`]: emphasized,
   });
+
+  // Needed to not trigger clickable parent elements
+  // e.g. cell/row handlers with a tooltip that has a custom link inside
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
 
   const target = newTab ? "_blank" : "";
 
@@ -61,7 +77,7 @@ const CustomLink = ({
     <>
       {multilineText}
       <span className={`${baseClass}__no-wrap`}>
-        {lastWord}
+        <span className={`${baseClass}__last-word`}>{lastWord}</span>
         {newTab && (
           <Icon
             name="external-link"
@@ -74,7 +90,7 @@ const CustomLink = ({
   ) : (
     <>
       {text}
-      {newTab && (
+      {newTab && variant !== "button" && (
         <Icon
           name="external-link"
           className={`${baseClass}__external-icon`}
@@ -89,8 +105,11 @@ const CustomLink = ({
       href={url}
       target={target}
       rel="noopener noreferrer"
-      className={customLinkClass}
+      className={
+        variant === "button" ? "button button--default" : customLinkClass
+      }
       tabIndex={disableKeyboardNavigation ? -1 : 0}
+      onClick={handleClick}
     >
       {content}
     </a>

@@ -1,6 +1,2 @@
-url: https://zoom.us/client/6.3.10.7150/zoom_x86_64.rpm
-self_service: true
-categories:
-  - Communication
-labels_include_any:
-  - "RPM-based Linux hosts"
+url: https://cdn.zoom.us/prod/7.1.5.4332/zoom_x86_64.rpm
+display_name: Zoom

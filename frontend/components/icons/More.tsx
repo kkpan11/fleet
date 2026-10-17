@@ -1,11 +1,12 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 
 interface IMoreProps {
   color?: Colors;
 }
 
-const More = ({ color = "core-fleet-blue" }: IMoreProps) => {
+const More = ({ color = "ui-fleet-black-75" }: IMoreProps) => {
   return (
     <svg
       width="16"

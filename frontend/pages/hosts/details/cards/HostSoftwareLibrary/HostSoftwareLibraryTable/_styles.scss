@@ -1,0 +1,18 @@
+.host-sw-library-table {
+  // Keep the dropdown and "Add software" button on one line next to the
+  // search, and stop the card's full-width search rule from squeezing them.
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: $pad-small;
+  }
+
+  .table-container__header .table-container__search {
+    flex: 0 0 auto;
+    width: 315px;
+  }
+
+  &__filter-controls {
+    width: 230px;
+  }
+}

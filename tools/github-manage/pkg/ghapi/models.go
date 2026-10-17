@@ -1,0 +1,242 @@
+package ghapi
+
+import (
+	"strconv"
+	"strings"
+)
+
+type Author struct {
+	Login string `json:"login"`
+	IsBot bool   `json:"is_bot"`
+	Name  string `json:"name"`
+	ID    string `json:"id"`
+}
+
+type Label struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Color       string `json:"color"`
+}
+
+type Milestone struct {
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	DueOn       string `json:"dueOn"`
+}
+
+type Issue struct {
+	Typename  string     `json:"__typename"`
+	ID        string     `json:"id"`
+	Number    int        `json:"number"`
+	Title     string     `json:"title"`
+	URL       string     `json:"url,omitempty"`
+	Body      string     `json:"body"`
+	Author    Author     `json:"author"`
+	Assignees []Author   `json:"assignees"`
+	CreatedAt string     `json:"createdAt"`
+	UpdatedAt string     `json:"updatedAt"`
+	State     string     `json:"state"`
+	Labels    []Label    `json:"labels"`
+	Milestone *Milestone `json:"milestone,omitempty"`
+	Estimate  int        `json:"estimate,omitempty"` // Custom field for estimate
+	Status    string     `json:"status,omitempty"`   // Custom field for status
+}
+
+// HasLabel checks if an issue currently has the specified label (case-insensitive)
+func (issue Issue) HasLabel(labelName string) bool {
+	for _, label := range issue.Labels {
+		if strings.EqualFold(label.Name, labelName) {
+			return true
+		}
+	}
+	return false
+}
+
+type Sprint struct {
+	Duration    int    `json:"duration"`
+	IterationId string `json:"iterationId"`
+	StartDate   string `json:"startDate"`
+	Title       string `json:"title"`
+}
+
+type GenericCount struct {
+	TotalCount int `json:"totalCount"`
+}
+
+type ProjectDetails struct {
+	ID        string       `json:"id"`
+	Title     string       `json:"title"`
+	ShortDesc string       `json:"shortDescription"`
+	URL       string       `json:"url"`
+	README    string       `json:"readme"`
+	Number    int          `json:"number"`
+	Public    bool         `json:"public"`
+	Closed    bool         `json:"closed"`
+	Fields    GenericCount `json:"fields"`
+	Items     GenericCount `json:"items"`
+	Owner     struct {
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	} `json:"owner"`
+}
+
+type ProjectItemContent struct {
+	Body   string `json:"body"`
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Type   string `json:"type"`
+	URL    string `json:"url"`
+}
+
+type ProjectItem struct {
+	ID         string             `json:"id"`
+	Title      string             `json:"title"`
+	Content    ProjectItemContent `json:"content"`
+	Estimate   int                `json:"estimate"`
+	Repository string             `json:"repository"`
+	Labels     []string           `json:"labels"`
+	Assignees  []string           `json:"assignees"`
+	Milestone  *Milestone         `json:"milestone,omitempty"`
+	Sprint     *Sprint            `json:"sprint,omitempty"`
+	Status     string             `json:"status"`
+	Size       string             `json:"size"`
+	TShirtSize string             `json:"t-shirt size"` // release planning's name for the size field
+}
+
+// SizeValue returns the item's size regardless of whether its project names
+// the field "Size" or "T-shirt size".
+func (item ProjectItem) SizeValue() string {
+	if item.Size != "" {
+		return item.Size
+	}
+	return item.TShirtSize
+}
+
+// IssueRefKey qualifies an issue number with the repo it lives in
+// ("owner/name#123", lowercased). Issue numbers are only unique per repo and
+// project boards mix repos, so a bare number is an ambiguous identity.
+// Returns "" for number 0 (e.g. draft issues).
+func IssueRefKey(repo string, number int) string {
+	if number == 0 {
+		return ""
+	}
+	return strings.ToLower(repo) + "#" + strconv.Itoa(number)
+}
+
+// RepoFullName returns the "owner/name" repo the item's content lives in,
+// from its content URL or the project's Repository field; "" when unknown.
+func (item ProjectItem) RepoFullName() string {
+	if r := RepoFromURL(item.Content.URL); r != "" {
+		return r
+	}
+	if r := RepoFromURL(item.Repository); r != "" {
+		return r
+	}
+	// The Repository field may already be a bare "owner/name".
+	if i := strings.IndexByte(item.Repository, '/'); i > 0 && !strings.Contains(item.Repository, "://") {
+		return item.Repository
+	}
+	return ""
+}
+
+// IssueKey returns the item's repo-qualified issue identity, "" for items
+// without an issue number.
+func (item ProjectItem) IssueKey() string {
+	return IssueRefKey(item.RepoFullName(), item.Content.Number)
+}
+
+// RepoFromURL extracts "owner/name" from a github.com URL, or "" when it can't.
+func RepoFromURL(url string) string {
+	const host = "github.com/"
+	i := strings.Index(url, host)
+	if i < 0 {
+		return ""
+	}
+	parts := strings.SplitN(url[i+len(host):], "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
+}
+
+type ProjectItemsResponse struct {
+	Items      []ProjectItem `json:"items"`
+	TotalCount int           `json:"totalCount"`
+}
+
+type ProjectFieldsResponse struct {
+	Fields     []ProjectField `json:"fields"`
+	TotalCount int            `json:"totalCount"`
+}
+
+type ProjectFieldOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type ProjectField struct {
+	ID      string               `json:"id"`
+	Name    string               `json:"name"`
+	Type    string               `json:"type"`
+	Options []ProjectFieldOption `json:"options,omitempty"`
+}
+
+type User struct {
+	Login        string `json:"login"`
+	ID           int    `json:"id"`
+	NodeID       string `json:"node_id"`
+	AvatarURL    string `json:"avatar_url"`
+	HTMLURL      string `json:"html_url"`
+	Name         string `json:"name"`
+	Type         string `json:"type"`
+	GravatarID   string `json:"gravatar_id"`
+	URL          string `json:"url"`
+	Company      string `json:"company"`
+	UserViewType string `json:"user_view_type"`
+	SiteAdmin    bool   `json:"site_admin"`
+}
+
+func ConvertItemsToIssues(items []ProjectItem) []Issue {
+	var issues []Issue
+	for _, item := range items {
+		issue := Issue{
+			ID:     item.ID,
+			Number: item.Content.Number,
+			Title:  item.Content.Title,
+			Body:   item.Content.Body,
+		}
+		if item.Milestone != nil {
+			issue.Milestone = &Milestone{
+				Number:      item.Milestone.Number,
+				Title:       item.Milestone.Title,
+				Description: item.Milestone.Description,
+				DueOn:       item.Milestone.DueOn,
+			}
+		}
+		for _, assignee := range item.Assignees {
+			issue.Assignees = append(issue.Assignees, Author{
+				Login: assignee,
+			})
+		}
+		issue.Estimate = item.Estimate
+		issue.Status = item.Status
+		for _, label := range item.Labels {
+			if label == "story" {
+				issue.Typename = "Feature"
+			}
+			if label == "bug" {
+				issue.Typename = "Bug"
+			}
+			if label == "~sub-task" {
+				issue.Typename = "Task"
+			}
+			issue.Labels = append(issue.Labels, Label{
+				Name: label,
+			})
+		}
+		issues = append(issues, issue)
+	}
+	return issues
+}

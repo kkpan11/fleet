@@ -42,6 +42,9 @@ func TestRunScriptCommand(t *testing.T) {
 	ds.ListPoliciesForHostFunc = func(ctx context.Context, host *fleet.Host) ([]*fleet.HostPolicy, error) {
 		return nil, nil
 	}
+	ds.GetHostCustomHostVitalsFunc = func(ctx context.Context, hostID uint) ([]fleet.HostCustomHostVital, error) {
+		return nil, nil
+	}
 	ds.ListHostBatteriesFunc = func(ctx context.Context, hid uint) ([]*fleet.HostBattery, error) {
 		return nil, nil
 	}
@@ -113,12 +116,12 @@ hello world
 		{
 			name:         "invalid hashbang",
 			scriptPath:   func() string { return writeTmpScriptContents(t, "#! /foo/bar", ".sh") },
-			expectErrMsg: `Interpreter not supported. Shell scripts must run in "#!/bin/sh", "#!/bin/bash", or "#!/bin/zsh."`,
+			expectErrMsg: `Interpreter not supported. Supported interpreters are "#!/bin/sh", "#!/bin/bash", "#!/bin/zsh", "#!/usr/bin/env python3", or an absolute path to "python" / "python3".`,
 		},
 		{
 			name:         "unsupported hashbang",
 			scriptPath:   func() string { return writeTmpScriptContents(t, "#!/bin/ksh", ".sh") },
-			expectErrMsg: `Interpreter not supported. Shell scripts must run in "#!/bin/sh", "#!/bin/bash", or "#!/bin/zsh."`,
+			expectErrMsg: `Interpreter not supported. Supported interpreters are "#!/bin/sh", "#!/bin/bash", "#!/bin/zsh", "#!/usr/bin/env python3", or an absolute path to "python" / "python3".`,
 		},
 		{
 			name:       "posix shell hashbang",
@@ -208,7 +211,7 @@ hello world
 			name:         "script-path and team disallowed",
 			scriptPath:   generateValidPath,
 			teamID:       ptr.Uint(1),
-			expectErrMsg: `Only one of '--script-path' or '--team' is allowed.`,
+			expectErrMsg: `Only one of '--script-path' or '--fleet' is allowed.`,
 		},
 		{
 			name:         "script empty",
@@ -364,6 +367,12 @@ Fleet records the last 10,000 characters to prevent downtime.
 				ExecutionID:    "123",
 			}, nil
 		}
+		ds.IsHostDiskEncryptionKeyArchivedFunc = func(ctx context.Context, hostID uint) (bool, error) {
+			return false, nil
+		}
+		ds.ConditionalAccessBypassedAtFunc = func(ctx context.Context, hostID uint) (*time.Time, error) {
+			return nil, nil
+		}
 		if c.name == "disabled scripts globally" {
 			ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
 				return &fleet.AppConfig{ServerSettings: fleet.ServerSettings{ScriptsDisabled: true}}, nil
@@ -414,10 +423,10 @@ Fleet records the last 10,000 characters to prevent downtime.
 			}
 
 			if c.teamID != nil {
-				args = append(args, "--team", fmt.Sprintf("%d", *c.teamID))
+				args = append(args, "--fleet", fmt.Sprintf("%d", *c.teamID))
 			}
 
-			b, err := RunAppNoChecks(args)
+			b, err := runAppNoChecks(args)
 			if c.expectErrMsg != "" {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), c.expectErrMsg)

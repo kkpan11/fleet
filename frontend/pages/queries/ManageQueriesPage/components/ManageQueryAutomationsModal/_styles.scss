@@ -2,7 +2,7 @@
   &__checkboxes {
     display: flex;
     flex-direction: column;
-    border-radius: $border-radius;
+    border-radius: $border-radius-large;
     border: 1px solid $ui-fleet-black-10;
   }
 
@@ -49,9 +49,5 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-  }
-
-  &__preview-data {
-    @include form-button-extra-clickable-area-compensation;
   }
 }

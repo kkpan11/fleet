@@ -5,16 +5,16 @@ $exeFilePath = "${env:INSTALLER_PATH}"
 
 try {
 
-# Add argument to install silently
-# Argument to make install silent depends on installer,
-# each installer might use different argument (usually it's "/S" or "/s")
+# Firefox's full installer is NSIS-based; /S installs silently and machine-wide.
+# /RegisterDefaultAgent=false: the Default Browser Agent task can't be registered
+# from SYSTEM context (0x80070534 error + firefox.exe dialog on first launch).
 $processOptions = @{
   FilePath = "$exeFilePath"
-  ArgumentList = "/S"
+  ArgumentList = "/S /RegisterDefaultAgent=false"
   PassThru = $true
   Wait = $true
 }
-    
+
 # Start process and track exit code
 $process = Start-Process @processOptions
 $exitCode = $process.ExitCode

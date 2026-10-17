@@ -1,0 +1,60 @@
+#!/bin/bash
+
+quit_application() {
+  local bundle_id="$1"
+  local timeout_duration=10
+  local app_running; app_running=$(osascript -e "application id \"$bundle_id\" is running" 2>/dev/null)
+  if [[ "$app_running" != "true" ]]; then return; fi
+  local console_user; console_user=$(stat -f "%Su" /dev/console)
+  if [[ $EUID -eq 0 && "$console_user" == "root" ]]; then echo "Skipping quit for '$bundle_id'."; return; fi
+  echo "Quitting '$bundle_id'..."
+  local still_running
+  SECONDS=0
+  while (( SECONDS < timeout_duration )); do
+    osascript -e "tell application id \"$bundle_id\" to quit" >/dev/null 2>&1 || true
+    sleep 1
+    if still_running=$(osascript -e "application id \"$bundle_id\" is running" 2>/dev/null) && [[ "$still_running" == "false" ]]; then echo "'$bundle_id' quit successfully."; return 0; fi
+  done
+  echo "'$bundle_id' did not quit."
+  return 1
+}
+
+[[ -n "$INSTALLER_PATH" && -f "$INSTALLER_PATH" ]] || { echo "missing installer"; exit 1; }
+
+APPDIR="/Applications"
+
+quit_application "com.perforce.p4v" || exit 1
+quit_application "com.perforce.p4merge" || exit 1
+quit_application "com.perforce.p4admin" || exit 1
+
+MOUNT_POINT="$(hdiutil attach -nobrowse -readonly "$INSTALLER_PATH" | awk '/\/Volumes\//{print $3; exit}')"
+[[ -n "$MOUNT_POINT" ]] || { echo "failed to mount dmg"; exit 1; }
+
+for app in p4v.app p4merge.app p4admin.app; do
+  if [[ -d "$MOUNT_POINT/$app" ]]; then
+    rm -rf "$APPDIR/$app" >/dev/null 2>&1 || true
+    if ! ditto "$MOUNT_POINT/$app" "$APPDIR/$app"; then
+      # remove the partial copy so a failed install isn't inventoried as installed
+      rm -rf "$APPDIR/$app" >/dev/null 2>&1 || true
+      hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+      echo "failed to install $app"
+      exit 1
+    fi
+  fi
+done
+
+# Install p4vc command line binary to /usr/local/bin
+if [[ -f "$MOUNT_POINT/p4vc" ]]; then
+  mkdir -p /usr/local/bin
+  if ! cp "$MOUNT_POINT/p4vc" /usr/local/bin/p4vc; then
+    hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+    echo "failed to install p4vc"
+    exit 1
+  fi
+  chmod +x /usr/local/bin/p4vc
+  chown root:wheel /usr/local/bin/p4vc
+fi
+
+hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true
+
+echo "p4v installed"

@@ -2,12 +2,22 @@
   position: relative; // needed for copy button
 
   &__label {
-    font-size: $x-small;
-    font-weight: $bold;
+    @include form-label;
 
     &--error {
       color: $core-vibrant-red;
     }
+  }
+
+  &__label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  // Ace styles its placeholder in Arial; match the form's other placeholders.
+  .ace_placeholder {
+    font-family: "Inter", sans-serif;
   }
 
   &__help-text {
@@ -28,9 +38,5 @@
     z-index: 2; /* Ensure it's above the editor */
     display: flex;
     align-items: center;
-  }
-
-  &__copied-confirmation {
-    @include copy-message;
   }
 }

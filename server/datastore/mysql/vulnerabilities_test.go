@@ -3,15 +3,42 @@ package mysql
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
-	"github.com/fleetdm/fleet/v4/server/datastore/mysql/common_mysql"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	common_mysql "github.com/fleetdm/fleet/v4/server/platform/mysql"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 	"github.com/fleetdm/fleet/v4/server/test"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAtomicTableSwapVulnerabilityCountsDropsStaleOldTable(t *testing.T) {
+	mock, ds := mockDatastore(t)
+	defer ds.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DROP TABLE IF EXISTS vulnerability_host_counts_swap")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(vulnerabilityHostCountsSwapTableSchema)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DROP TABLE IF EXISTS vulnerability_host_counts_old")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)RENAME TABLE\s+vulnerability_host_counts TO vulnerability_host_counts_old,\s+vulnerability_host_counts_swap TO vulnerability_host_counts`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("DROP TABLE vulnerability_host_counts_old")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	require.NoError(t, ds.atomicTableSwapVulnerabilityCounts(t.Context(), vulnerabilityCounts{}))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 func TestVulnerabilities(t *testing.T) {
 	ds := CreateMySQLDS(t)
@@ -23,16 +50,20 @@ func TestVulnerabilities(t *testing.T) {
 		{"TestListVulnerabilities", testListVulnerabilities},
 		{"TestVulnerabilityWithOS", testVulnerabilityWithOS},
 		{"TestVulnerabilityWithSoftware", testVulnerabilityWithSoftware},
+		{"TestIsCVEKnownToFleet", testIsCVEKnownToFleet},
 		{"TestOSVersionsByCVEFailsGracefullyWithNoOSVersionRows", testOSVersionsByCVEFailsGracefullyWithNoOSVersionRows},
 		{"TestOSVersionsByCVE", testOSVersionsByCVE},
 		{"TestSoftwareByCVE", testSoftwareByCVE},
 		{"TestVulnerabilitiesPagination", testVulnerabilitiesPagination},
 		{"TestVulnerabilitiesTeamFilter", testVulnerabilitiesTeamFilter},
 		{"TestListVulnerabilitiesSort", testListVulnerabilitiesSort},
+		{"TestListVulnerabilitiesSortByCreatedAt", testListVulnerabilitiesSortByCreatedAt},
 		{"TestVulnerabilitiesFilters", testVulnerabilitiesFilters},
 		{"TestCountVulnerabilities", testCountVulnerabilities},
 		{"TestInsertVulnerabilityCounts", testInsertVulnerabilityCounts},
 		{"TestVulnerabilityHostCountBatchInserts", testVulnerabilityHostCountBatchInserts},
+		{"TestVulnerabilityHostCountSwapRecovery", testVulnerabilityHostCountSwapRecovery},
+		{"TestListVulnerabilitiesCursorPagination", testListVulnerabilitiesCursorPagination},
 	}
 
 	for _, c := range cases {
@@ -175,6 +206,10 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 	var nfe *common_mysql.NotFoundError
 	require.ErrorAs(t, err, &nfe)
 
+	known, err := ds.IsCVEKnownToFleet(ctx, "CVE-2020-1234")
+	require.NoError(t, err)
+	require.False(t, known)
+
 	// Insert Host Count
 	insertStmt := `
 		INSERT INTO vulnerability_host_counts (cve, team_id, host_count, global_stats)
@@ -197,6 +232,20 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 	}, fleet.MSRCSource)
 	require.NoError(t, err)
 
+	// Matched CVEs can lack cve_meta, e.g. when MSRC publishes a CVE before NVD does.
+	known, err = ds.IsCVEKnownToFleet(ctx, "CVE-2020-1234")
+	require.NoError(t, err)
+	require.True(t, known)
+	for teamID, hostsCount := range map[*uint]uint{nil: 10, new(uint(1)): 4, new(uint(0)): 6} {
+		for _, includeCVEScores := range []bool{false, true} {
+			v, err = ds.Vulnerability(ctx, "CVE-2020-1234", teamID, includeCVEScores)
+			require.NoError(t, err)
+			require.Equal(t, fleet.CVE{CVE: "CVE-2020-1234"}, v.CVE)
+			require.Equal(t, hostsCount, v.HostsCount)
+			require.Equal(t, fleet.MSRCSource, v.Source)
+		}
+	}
+
 	// // insert CVEMeta
 	err = ds.InsertCVEMeta(context.Background(), []fleet.CVEMeta{
 		{
@@ -216,7 +265,14 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 		},
 		HostsCount: 10,
 		Source:     fleet.MSRCSource,
+		CreatedAt:  mockTime,
 	}
+
+	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
+		// Mock the time to make it easier to check
+		_, err := q.ExecContext(ctx, "UPDATE operating_system_vulnerabilities SET created_at = ? WHERE cve = ?", mockTime, expected.CVE.CVE)
+		return err
+	})
 
 	// No CVSSScores
 	v, err = ds.Vulnerability(ctx, "CVE-2020-1234", nil, false)
@@ -224,6 +280,7 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 
 	// Team 1
 	expected.HostsCount = 4
@@ -232,6 +289,7 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 
 	// No Team
 	expected.HostsCount = 6
@@ -240,6 +298,7 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 
 	expected = fleet.VulnerabilityWithMetadata{
 		CVE: fleet.CVE{
@@ -252,6 +311,7 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 		},
 		HostsCount: 10,
 		Source:     fleet.MSRCSource,
+		CreatedAt:  mockTime,
 	}
 
 	// With CVSSScores
@@ -260,6 +320,28 @@ func testVulnerabilityWithOS(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
+}
+
+func testIsCVEKnownToFleet(t *testing.T, ds *Datastore) {
+	ctx := t.Context()
+
+	require.NoError(t, ds.InsertCVEMeta(ctx, []fleet.CVEMeta{{CVE: "CVE-2020-0001", CVSSScore: new(5.0)}}))
+	_, err := ds.InsertSoftwareVulnerability(ctx, fleet.SoftwareVulnerability{SoftwareID: 1, CVE: "CVE-2020-0002"}, fleet.NVDSource)
+	require.NoError(t, err)
+	_, err = ds.InsertOSVulnerability(ctx, fleet.OSVulnerability{OSID: 1, CVE: "CVE-2020-0003"}, fleet.MSRCSource)
+	require.NoError(t, err)
+
+	for cve, want := range map[string]bool{
+		"CVE-2020-0001": true, // cve_meta only: NVD knows it, nothing matched
+		"CVE-2020-0002": true, // software match only
+		"CVE-2020-0003": true, // OS match only
+		"CVE-2020-0004": false,
+	} {
+		known, err := ds.IsCVEKnownToFleet(ctx, cve)
+		require.NoError(t, err)
+		require.Equal(t, want, known, cve)
+	}
 }
 
 func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
@@ -292,6 +374,15 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 	}, fleet.NVDSource)
 	require.NoError(t, err)
 
+	known, err := ds.IsCVEKnownToFleet(ctx, "CVE-2020-1234")
+	require.NoError(t, err)
+	require.True(t, known)
+	v, err = ds.Vulnerability(ctx, "CVE-2020-1234", nil, true)
+	require.NoError(t, err)
+	require.Equal(t, fleet.CVE{CVE: "CVE-2020-1234"}, v.CVE)
+	require.Equal(t, uint(10), v.HostsCount)
+	require.Equal(t, fleet.NVDSource, v.Source)
+
 	// insert CVEMeta
 	err = ds.InsertCVEMeta(context.Background(), []fleet.CVEMeta{
 		{
@@ -312,7 +403,14 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 		},
 		HostsCount: 10,
 		Source:     fleet.NVDSource,
+		CreatedAt:  mockTime,
 	}
+
+	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
+		// Mock the time to make it easier to check
+		_, err := q.ExecContext(ctx, "UPDATE software_cve SET created_at = ? WHERE cve = ?", mockTime, expected.CVE.CVE)
+		return err
+	})
 
 	// Global (all teams)
 	v, err = ds.Vulnerability(ctx, "CVE-2020-1234", nil, false)
@@ -320,6 +418,7 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 
 	// Team 1
 	expected.HostsCount = 4
@@ -328,6 +427,7 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 
 	// No Team
 	expected.HostsCount = 6
@@ -336,6 +436,7 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 
 	// With CVSSScores
 	expected = fleet.VulnerabilityWithMetadata{
@@ -349,6 +450,7 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 		},
 		HostsCount: 10,
 		Source:     fleet.NVDSource,
+		CreatedAt:  mockTime,
 	}
 
 	v, err = ds.Vulnerability(ctx, "CVE-2020-1234", nil, true)
@@ -356,6 +458,7 @@ func testVulnerabilityWithSoftware(t *testing.T, ds *Datastore) {
 	require.Equal(t, expected.CVE, v.CVE)
 	require.Equal(t, expected.HostsCount, v.HostsCount)
 	require.Equal(t, expected.Source, v.Source)
+	require.Equal(t, expected.CreatedAt, v.CreatedAt)
 }
 
 func testVulnerabilitiesPagination(t *testing.T, ds *Datastore) {
@@ -484,7 +587,7 @@ func testListVulnerabilitiesSort(t *testing.T, ds *Datastore) {
 	require.Equal(t, "CVE-2020-1237", list[3].CVE.CVE)
 	require.Equal(t, "CVE-2020-1236", list[4].CVE.CVE)
 
-	opts.ListOptions.OrderKey = "published"
+	opts.ListOptions.OrderKey = "cve_published"
 	opts.ListOptions.OrderDirection = fleet.OrderAscending
 	list, _, err = ds.ListVulnerabilities(context.Background(), opts)
 	require.NoError(t, err)
@@ -494,6 +597,228 @@ func testListVulnerabilitiesSort(t *testing.T, ds *Datastore) {
 	require.Equal(t, "CVE-2020-1236", list[2].CVE.CVE)
 	require.Equal(t, "CVE-2020-1235", list[3].CVE.CVE)
 	require.Equal(t, "CVE-2020-1237", list[4].CVE.CVE)
+
+	t.Run("rejects_unknown_key", func(t *testing.T) {
+		_, _, err := ds.ListVulnerabilities(context.Background(), fleet.VulnListOptions{
+			ListOptions: fleet.ListOptions{OrderKey: "h.node_key"},
+		})
+		require.Error(t, err)
+	})
+}
+
+func testListVulnerabilitiesSortByCreatedAt(t *testing.T, ds *Datastore) {
+	ctx := t.Context()
+
+	// osOnly exists only in operating_system_vulnerabilities, swOnly and newest
+	// only in software_cve, and crossTable is in both with its older row on the
+	// OS side so the minimum has to span the two tables.
+	const (
+		osOnly     = "CVE-2020-0001"
+		swOnly     = "CVE-2020-0002"
+		crossTable = "CVE-2020-0003"
+		newest     = "CVE-2020-0004"
+	)
+
+	host := test.NewHost(t, ds, "host1", "192.168.0.1", "1111", "1111", time.Now())
+	require.NoError(t, ds.UpdateHostOperatingSystem(ctx, host.ID, fleet.OperatingSystem{
+		Name:     "Windows 11 Pro",
+		Version:  "10.0.22000.3007",
+		Arch:     "x86_64",
+		Platform: "windows",
+	}))
+	_, err := ds.UpdateHostSoftware(ctx, host.ID, []fleet.Software{
+		{Name: "Chrome", Version: "1.0.0", Source: "programs"},
+	})
+	require.NoError(t, err)
+
+	team, err := ds.NewTeam(ctx, &fleet.Team{Name: "team1"})
+	require.NoError(t, err)
+	require.NoError(t, ds.AddHostsToTeam(ctx, fleet.NewAddHostsToTeamParams(&team.ID, []uint{host.ID})))
+
+	_, err = ds.InsertOSVulnerabilities(ctx, []fleet.OSVulnerability{
+		{OSID: 1, CVE: osOnly},
+		{OSID: 1, CVE: crossTable},
+	}, fleet.MSRCSource)
+	require.NoError(t, err)
+
+	for _, cve := range []string{swOnly, crossTable, newest} {
+		_, err = ds.InsertSoftwareVulnerability(ctx, fleet.SoftwareVulnerability{SoftwareID: 1, CVE: cve}, fleet.NVDSource)
+		require.NoError(t, err)
+	}
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	setCreatedAt := []struct {
+		table string
+		cve   string
+		at    time.Time
+	}{
+		{"operating_system_vulnerabilities", crossTable, base},
+		{"software_cve", swOnly, base.Add(1 * time.Hour)},
+		{"operating_system_vulnerabilities", osOnly, base.Add(2 * time.Hour)},
+		{"software_cve", newest, base.Add(3 * time.Hour)},
+		{"software_cve", crossTable, base.Add(4 * time.Hour)},
+	}
+	ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
+		for _, s := range setCreatedAt {
+			if _, err := q.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET created_at = ? WHERE cve = ?", s.table), s.at, s.cve); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	expectedCreatedAt := map[string]time.Time{
+		crossTable: base,
+		swOnly:     base.Add(1 * time.Hour),
+		osOnly:     base.Add(2 * time.Hour),
+		newest:     base.Add(3 * time.Hour),
+	}
+	ascending := []string{crossTable, swOnly, osOnly, newest}
+	descending := []string{newest, osOnly, swOnly, crossTable}
+
+	require.NoError(t, ds.UpdateVulnerabilityHostCounts(ctx, 5))
+
+	assertOrder := func(t *testing.T, opts fleet.VulnListOptions, want []string) {
+		t.Helper()
+		opts.ListOptions.OrderKey = "created_at"
+		list, _, err := ds.ListVulnerabilities(ctx, opts)
+		require.NoError(t, err)
+		got := make([]string, 0, len(list))
+		for _, vuln := range list {
+			got = append(got, vuln.CVE.CVE)
+			require.Equal(t, expectedCreatedAt[vuln.CVE.CVE], vuln.CreatedAt, "created_at for %s", vuln.CVE.CVE)
+		}
+		require.Equal(t, want, got)
+	}
+
+	for _, isEE := range []bool{true, false} {
+		t.Run(fmt.Sprintf("is_ee=%t", isEE), func(t *testing.T) {
+			assertOrder(t, fleet.VulnListOptions{
+				IsEE:        isEE,
+				ListOptions: fleet.ListOptions{OrderDirection: fleet.OrderAscending},
+			}, ascending)
+
+			assertOrder(t, fleet.VulnListOptions{
+				IsEE:        isEE,
+				ListOptions: fleet.ListOptions{OrderDirection: fleet.OrderDescending},
+			}, descending)
+		})
+	}
+
+	t.Run("team_scoped", func(t *testing.T) {
+		assertOrder(t, fleet.VulnListOptions{
+			IsEE:        true,
+			TeamID:      new(team.ID),
+			ListOptions: fleet.ListOptions{OrderDirection: fleet.OrderAscending},
+		}, ascending)
+	})
+
+	t.Run("cursor_pagination", func(t *testing.T) {
+		var got []string
+		var after string
+		for range len(ascending) {
+			list, _, err := ds.ListVulnerabilities(ctx, fleet.VulnListOptions{
+				IsEE: true,
+				ListOptions: fleet.ListOptions{
+					PerPage:        1,
+					OrderKey:       "created_at",
+					OrderDirection: fleet.OrderAscending,
+					After:          after,
+				},
+			})
+			require.NoError(t, err)
+			if len(list) == 0 {
+				break
+			}
+			require.Len(t, list, 1)
+			got = append(got, list[0].CVE.CVE)
+			after = list[0].CreatedAt.Format("2006-01-02 15:04:05")
+		}
+		require.Equal(t, ascending, got)
+	})
+
+	// Added last because the cursor subtest above compares only the primary
+	// sort column, so it would skip a CVE that ties with the previous page.
+	t.Run("ties_break_on_cve", func(t *testing.T) {
+		const tiedWithSwOnly = "CVE-2020-0000"
+		_, err := ds.InsertSoftwareVulnerability(ctx, fleet.SoftwareVulnerability{SoftwareID: 1, CVE: tiedWithSwOnly}, fleet.NVDSource)
+		require.NoError(t, err)
+		ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
+			_, err := q.ExecContext(ctx, "UPDATE software_cve SET created_at = ? WHERE cve = ?", base.Add(1*time.Hour), tiedWithSwOnly)
+			return err
+		})
+		expectedCreatedAt[tiedWithSwOnly] = base.Add(1 * time.Hour)
+		require.NoError(t, ds.UpdateVulnerabilityHostCounts(ctx, 5))
+
+		assertOrder(t, fleet.VulnListOptions{
+			IsEE:        true,
+			ListOptions: fleet.ListOptions{OrderDirection: fleet.OrderAscending},
+		}, []string{crossTable, tiedWithSwOnly, swOnly, osOnly, newest})
+		// The cve tie-break stays ascending when the primary sort is descending.
+		assertOrder(t, fleet.VulnListOptions{
+			IsEE:        true,
+			ListOptions: fleet.ListOptions{OrderDirection: fleet.OrderDescending},
+		}, []string{newest, osOnly, tiedWithSwOnly, swOnly, crossTable})
+	})
+
+	// software_cve.created_at is nullable; a NULL there must not hide the dated
+	// OS row for the same CVE.
+	t.Run("null_software_created_at", func(t *testing.T) {
+		const mixedNull = "CVE-2020-0005"
+		_, err := ds.InsertSoftwareVulnerability(ctx, fleet.SoftwareVulnerability{SoftwareID: 1, CVE: mixedNull}, fleet.NVDSource)
+		require.NoError(t, err)
+		_, err = ds.InsertOSVulnerabilities(ctx, []fleet.OSVulnerability{{OSID: 1, CVE: mixedNull}}, fleet.MSRCSource)
+		require.NoError(t, err)
+		ExecAdhocSQL(t, ds, func(q sqlx.ExtContext) error {
+			if _, err := q.ExecContext(ctx, "UPDATE software_cve SET created_at = NULL WHERE cve = ?", mixedNull); err != nil {
+				return err
+			}
+			_, err := q.ExecContext(ctx, "UPDATE operating_system_vulnerabilities SET created_at = ? WHERE cve = ?", base.Add(30*time.Minute), mixedNull)
+			return err
+		})
+		expectedCreatedAt[mixedNull] = base.Add(30 * time.Minute)
+		require.NoError(t, ds.UpdateVulnerabilityHostCounts(ctx, 5))
+
+		assertOrder(t, fleet.VulnListOptions{
+			IsEE:        true,
+			ListOptions: fleet.ListOptions{OrderDirection: fleet.OrderAscending},
+		}, []string{crossTable, mixedNull, "CVE-2020-0000", swOnly, osOnly, newest})
+	})
+}
+
+func testListVulnerabilitiesCursorPagination(t *testing.T, ds *Datastore) {
+	seedVulnerabilities(t, ds)
+
+	// Test cursor pagination with order keys that previously caused SQL errors
+	// due to ambiguous or unresolvable column names in the WHERE clause.
+	// See https://github.com/fleetdm/fleet/issues/45843
+	cursorTests := []struct {
+		name     string
+		orderKey string
+		after    string
+	}{
+		{"cve", "cve", "CVE-2020-1236"},
+		{"hosts_count", "hosts_count", "70"},
+		{"cve_published", "cve_published", "2020-01-01"},
+		{"created_at", "created_at", "2020-01-01"},
+	}
+
+	for _, tc := range cursorTests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := fleet.VulnListOptions{
+				IsEE: true,
+				ListOptions: fleet.ListOptions{
+					PerPage:        3,
+					OrderKey:       tc.orderKey,
+					OrderDirection: fleet.OrderAscending,
+					After:          tc.after,
+				},
+			}
+			list, _, err := ds.ListVulnerabilities(context.Background(), opts)
+			require.NoError(t, err)
+			require.NotEmpty(t, list)
+		})
+	}
 }
 
 func testVulnerabilitiesFilters(t *testing.T, ds *Datastore) {
@@ -682,7 +1007,7 @@ func testInsertVulnerabilityCounts(t *testing.T, ds *Datastore) {
 	// move host 1 to team 1
 	team1, err := ds.NewTeam(context.Background(), &fleet.Team{Name: "team1"})
 	require.NoError(t, err)
-	err = ds.AddHostsToTeam(context.Background(), &team1.ID, []uint{host1.ID})
+	err = ds.AddHostsToTeam(context.Background(), fleet.NewAddHostsToTeamParams(&team1.ID, []uint{host1.ID}))
 	require.NoError(t, err)
 
 	err = ds.UpdateVulnerabilityHostCounts(context.Background(), 5)
@@ -718,7 +1043,7 @@ func testInsertVulnerabilityCounts(t *testing.T, ds *Datastore) {
 		host := test.NewHost(t, ds, fmt.Sprintf("host%d", i+4), fmt.Sprintf("192.168.0.%d", i+4), fmt.Sprintf("%d", i+4444), fmt.Sprintf("%d", i+4444), time.Now())
 		err = ds.UpdateHostOperatingSystem(context.Background(), host.ID, macOS)
 		require.NoError(t, err)
-		err = ds.AddHostsToTeam(context.Background(), &team2.ID, []uint{host.ID})
+		err = ds.AddHostsToTeam(context.Background(), fleet.NewAddHostsToTeamParams(&team2.ID, []uint{host.ID}))
 		require.NoError(t, err)
 	}
 
@@ -826,7 +1151,7 @@ func testVulnerabilityHostCountBatchInserts(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 
 	for i := 0; i < 2; i++ {
-		err = ds.AddHostsToTeam(context.Background(), &team1.ID, []uint{hosts[i].ID})
+		err = ds.AddHostsToTeam(context.Background(), fleet.NewAddHostsToTeamParams(&team1.ID, []uint{hosts[i].ID}))
 		require.NoError(t, err)
 	}
 
@@ -899,6 +1224,46 @@ func testVulnerabilityHostCountBatchInserts(t *testing.T, ds *Datastore) {
 	for _, vuln := range list {
 		require.Equal(t, uint(2), vuln.HostsCount)
 	}
+}
+
+func testVulnerabilityHostCountSwapRecovery(t *testing.T, ds *Datastore) {
+	ctx := t.Context()
+	writer := ds.writer(ctx)
+	defer func() {
+		_, err := writer.ExecContext(ctx, "DROP TABLE IF EXISTS vulnerability_host_counts_old")
+		require.NoError(t, err)
+	}()
+
+	_, err := writer.ExecContext(ctx, "DROP TABLE IF EXISTS vulnerability_host_counts_old")
+	require.NoError(t, err)
+	_, err = writer.ExecContext(ctx, "CREATE TABLE vulnerability_host_counts_old LIKE vulnerability_host_counts")
+	require.NoError(t, err)
+
+	counts := vulnerabilityCounts{
+		Global: []hostCount{{
+			CVE:         "CVE-2026-45100",
+			HostCount:   2,
+			GlobalStats: true,
+		}},
+	}
+	require.NoError(t, ds.atomicTableSwapVulnerabilityCounts(ctx, counts))
+
+	var got []hostCount
+	err = sqlx.SelectContext(ctx, ds.reader(ctx), &got, `
+		SELECT team_id, cve, host_count, global_stats
+		FROM vulnerability_host_counts
+	`)
+	require.NoError(t, err)
+	require.Equal(t, counts.Global, got)
+
+	var oldTableCount int
+	err = sqlx.GetContext(ctx, ds.reader(ctx), &oldTableCount, `
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_schema = DATABASE() AND table_name = 'vulnerability_host_counts_old'
+	`)
+	require.NoError(t, err)
+	require.Zero(t, oldTableCount)
 }
 
 func testOSVersionsByCVEFailsGracefullyWithNoOSVersionRows(t *testing.T, ds *Datastore) {
@@ -986,6 +1351,38 @@ func testSoftwareByCVE(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 	require.Len(t, software, 1)
 	require.Equal(t, expected, software[0])
+
+	// release carries the Go toolchain version for go_binaries and the OS release for an
+	// RPM package.
+	ctx := t.Context()
+	goHost := test.NewHost(t, ds, "gohost", "192.168.1.1", "gohostkey", "gohostuuid", time.Now())
+	_, err = ds.UpdateHostSoftware(ctx, goHost.ID, []fleet.Software{
+		{Name: "air", Version: "v1.48.0", Source: "go_binaries", ExtensionID: "github.com/air-verse/air", Release: "go1.26.1"},
+		{Name: "openssl", Version: "1.1.1k", Source: "rpm_packages", Release: "30.el7"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, ds.SyncHostsSoftware(ctx, time.Now()))
+
+	stored, err := ds.ListSoftwareByHostIDShort(ctx, goHost.ID)
+	require.NoError(t, err)
+	require.Len(t, stored, 2)
+
+	var vulns []fleet.SoftwareVulnerability
+	for _, sw := range stored {
+		vulns = append(vulns, fleet.SoftwareVulnerability{SoftwareID: sw.ID, CVE: "CVE-2026-9999"})
+	}
+	_, err = ds.InsertSoftwareVulnerabilities(ctx, vulns, fleet.NVDSource)
+	require.NoError(t, err)
+
+	software, _, err = ds.SoftwareByCVE(ctx, "CVE-2026-9999", nil)
+	require.NoError(t, err)
+	require.Len(t, software, 2)
+	releaseByName := map[string]string{}
+	for _, sw := range software {
+		releaseByName[sw.Name] = sw.Release
+	}
+	require.Equal(t, "go1.26.1", releaseByName["air"])
+	require.Equal(t, "30.el7", releaseByName["openssl"])
 }
 
 func assertHostCounts(t *testing.T, expected []hostCount, actual []fleet.VulnerabilityWithMetadata) {
@@ -1040,17 +1437,17 @@ func seedVulnerabilities(t *testing.T, ds *Datastore) {
 	// move 4 windows hosts to team 1
 	team1, err := ds.NewTeam(context.Background(), &fleet.Team{Name: "team1"})
 	require.NoError(t, err)
-	err = ds.AddHostsToTeam(context.Background(), &team1.ID, hostids[:4])
+	err = ds.AddHostsToTeam(context.Background(), fleet.NewAddHostsToTeamParams(&team1.ID, hostids[:4]))
 	require.NoError(t, err)
 
 	// move 3 windows hosts to team 2
 	team2, err := ds.NewTeam(context.Background(), &fleet.Team{Name: "team2"})
 	require.NoError(t, err)
-	err = ds.AddHostsToTeam(context.Background(), &team2.ID, hostids[4:7])
+	err = ds.AddHostsToTeam(context.Background(), fleet.NewAddHostsToTeamParams(&team2.ID, hostids[4:7]))
 	require.NoError(t, err)
 
 	// move 1 macOS host to team 2
-	err = ds.AddHostsToTeam(context.Background(), &team2.ID, []uint{hostids[10]})
+	err = ds.AddHostsToTeam(context.Background(), fleet.NewAddHostsToTeamParams(&team2.ID, []uint{hostids[10]}))
 	require.NoError(t, err)
 
 	err = ds.UpdateOSVersions(context.Background())
@@ -1117,11 +1514,19 @@ func seedVulnerabilities(t *testing.T, ds *Datastore) {
 		},
 		{
 			SoftwareID: 2,
+			CVE:        "CVE-2020-1235", // overlaps software ID 1
+		},
+		{
+			SoftwareID: 2,
 			CVE:        "CVE-2020-1236",
 		},
 		{
 			SoftwareID: 2,
 			CVE:        "CVE-2020-1237",
+		},
+		{
+			SoftwareID: 2,
+			CVE:        "CVE-2020-1238", // overlaps between software and OS
 		},
 	}
 
@@ -1349,7 +1754,7 @@ func seedVulnerabilities(t *testing.T, ds *Datastore) {
 
 	// Insert Software Vuln
 	for _, vuln := range softwareVulns {
-		_, err = ds.InsertSoftwareVulnerability(context.Background(), vuln, fleet.NVDSource)
+		_, err = ds.InsertSoftwareVulnerability(context.Background(), vuln, fleet.CustomSource)
 		require.NoError(t, err)
 	}
 

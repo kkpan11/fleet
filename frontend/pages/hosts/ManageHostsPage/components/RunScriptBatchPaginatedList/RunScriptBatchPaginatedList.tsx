@@ -1,13 +1,11 @@
-import React, { useCallback } from "react";
-import { useQueryClient } from "react-query";
+import React, { useCallback, useState } from "react";
+import { useQuery } from "react-query";
 
-import scriptAPI, { IScriptsResponse } from "services/entities/scripts";
-
-import { IScript } from "interfaces/script";
-
-import PaginatedList from "components/PaginatedList";
 import Button from "components/buttons/Button";
 import Icon from "components/Icon";
+import PaginatedList from "components/PaginatedList";
+import { addTeamIdCriteria, IScript } from "interfaces/script";
+import scriptAPI, { IScriptsResponse } from "services/entities/scripts";
 
 const baseClass = "run-script-batch-paginated-list";
 
@@ -16,9 +14,10 @@ export interface IPaginatedListScript extends IScript {
 }
 
 interface IRunScriptBatchPaginatedList {
-  onRunScript: (script: IPaginatedListScript) => Promise<void>;
+  onRunScript: (script: IPaginatedListScript) => void;
   isUpdating: boolean;
   teamId: number;
+  isFreeTier?: boolean;
   scriptCount: number;
   setScriptForDetails: (script: IPaginatedListScript) => void;
 }
@@ -28,36 +27,31 @@ export const SCRIPT_BATCH_PAGE_SIZE = 6;
 const RunScriptBatchPaginatedList = ({
   onRunScript: _onRunScript,
   isUpdating,
+  isFreeTier,
   teamId,
   scriptCount,
   setScriptForDetails,
 }: IRunScriptBatchPaginatedList) => {
+  const [pageNumber, setPageNumber] = useState(0);
+
   // Fetch a single page of scripts.
-  const queryClient = useQueryClient();
-
-  const fetchPage = useCallback(
-    (pageNumber: number) => {
-      // scripts not supported for All teams
-      const fetchPromise = queryClient.fetchQuery(
-        [
-          {
-            scope: "scripts",
-            team_id: teamId,
-            page: pageNumber,
-            per_page: SCRIPT_BATCH_PAGE_SIZE,
-          },
-        ],
-        ({ queryKey }) => {
-          return scriptAPI.getScripts(queryKey[0]);
-        }
-      );
-
-      return fetchPromise.then(({ scripts }: IScriptsResponse) => {
-        return scripts || [];
-      });
+  const queryKey = addTeamIdCriteria(
+    {
+      scope: "scripts",
+      page: pageNumber,
+      per_page: SCRIPT_BATCH_PAGE_SIZE,
     },
-    [queryClient, teamId]
+    teamId,
+    isFreeTier
   );
+
+  const { data, isFetching } = useQuery<
+    IScriptsResponse,
+    Error,
+    IScriptsResponse
+  >([queryKey], () => {
+    return scriptAPI.getScripts(queryKey);
+  });
 
   const onRunScript = useCallback(
     (
@@ -83,8 +77,8 @@ const RunScriptBatchPaginatedList = ({
     <>
       <a>{script.name}</a>
       <Button
-        variant="text-icon"
-        iconStroke={!script.hasRun}
+        className="row-hover-button"
+        variant="secondary"
         onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
           e.stopPropagation();
           onRunScript(script, onChange);
@@ -93,7 +87,7 @@ const RunScriptBatchPaginatedList = ({
         {script.hasRun ? (
           <>
             Run again
-            <Icon name="refresh" color="core-fleet-blue" />
+            <Icon name="refresh" color="ui-fleet-black-75" />
           </>
         ) : (
           <>
@@ -110,13 +104,15 @@ const RunScriptBatchPaginatedList = ({
       <PaginatedList<IPaginatedListScript>
         renderItemRow={renderScriptRow}
         count={scriptCount}
-        fetchPage={fetchPage}
+        data={data?.scripts || []}
+        onChangePage={setPageNumber}
+        currentPage={pageNumber}
         onClickRow={onClickScriptRow}
         setDirtyOnClickRow={false}
         pageSize={SCRIPT_BATCH_PAGE_SIZE}
         disabled={isUpdating}
         useCheckBoxes={false}
-        ancestralUpdating={isUpdating}
+        isLoading={isUpdating || isFetching}
       />
     </div>
   );

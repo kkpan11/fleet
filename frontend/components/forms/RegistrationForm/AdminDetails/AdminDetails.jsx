@@ -1,10 +1,11 @@
-import React, { Component } from "react";
 import PropTypes from "prop-types";
+import React, { Component } from "react";
 
-import Form from "components/forms/Form";
-import formFieldInterface from "interfaces/form_field";
 import Button from "components/buttons/Button";
 import InputField from "components/forms/fields/InputField";
+import Form from "components/forms/Form";
+import formFieldInterface from "interfaces/form_field";
+
 import helpers from "./helpers";
 
 const formFields = ["name", "password", "password_confirmation", "email"];
@@ -42,7 +43,12 @@ class AdminDetails extends Component {
     const tabIndex = currentPage ? 0 : -1;
 
     return (
-      <form onSubmit={handleSubmit} className={className} autoComplete="off">
+      <form
+        onSubmit={handleSubmit}
+        className={className}
+        autoComplete="off"
+        noValidate
+      >
         <p>Additional admins can be designated within the Fleet app.</p>
         <InputField
           {...fields.name}
@@ -55,24 +61,40 @@ class AdminDetails extends Component {
           inputOptions={{
             maxLength: "80",
           }}
+          ignore1password={false}
         />
-        <InputField {...fields.email} label="Email" tabIndex={tabIndex} />
+        <InputField
+          {...fields.email}
+          label="Email"
+          tabIndex={tabIndex}
+          type="email"
+          ignore1password={false}
+        />
         <InputField
           {...fields.password}
           label="Password"
           type="password"
           tabIndex={tabIndex}
-          helpText="Must include 12 characters, at least 1 number (e.g. 0 - 9), and at least 1 symbol (e.g. &*#)"
+          helpText="12-48 characters, with at least 1 number (e.g. 0 - 9) and 1 symbol (e.g. &*#)."
+          ignore1password={false}
         />
         <InputField
           {...fields.password_confirmation}
           type="password"
           tabIndex={tabIndex}
           label="Confirm password"
+          ignore1password={false}
         />
-        <Button type="submit" tabIndex={tabIndex} disabled={!currentPage}>
-          Next
-        </Button>
+        <div className="button-wrap--center">
+          <Button
+            type="submit"
+            tabIndex={tabIndex}
+            disabled={!currentPage}
+            size="wide"
+          >
+            Next
+          </Button>
+        </div>
       </form>
     );
   }

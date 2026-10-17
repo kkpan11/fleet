@@ -1,112 +1,75 @@
-$softwareName = "notion"
-$arguments = "/S"
+# Learn more about .exe install scripts:
+# http://fleetdm.com/learn-more-about/exe-install-scripts
+#
+# Notion installs per user and has no machine-wide mode, so installing it from this
+# script's SYSTEM context would put it in SYSTEM's profile where nobody can launch
+# it. Run the installer as the signed-in user instead.
+
 $exeFilePath = "${env:INSTALLER_PATH}"
-$taskName = "fleet-install-$softwareName.msix"
-$scriptPath = "$env:PUBLIC\install-$softwareName.ps1"
-$logFile = "$env:PUBLIC\install-output-$softwareName.txt"
-$exitCodeFile = "$env:PUBLIC\install-exitcode-$softwareName.txt"
-
-$userScript = @"
-`$exeFilePath = "$exeFilePath"
-`$arguments = "$arguments"
-`$logFile = "$logFile"
-`$exitCodeFile = "$exitCodeFile"
-`$exitCode = 0
-Start-Transcript -Path `$logFile -Append
-try {
-    `$exeFilename = Split-Path `$exeFilePath -leaf
-    `$exePath = "`${env:PUBLIC}\`$exeFilename"
-    & `$exePath `$arguments
-} catch {
-    Write-Host "Error: `$_.Exception.Message"
-    `$exitCode = 1
-} finally {
-    Set-Content -Path `$exitCodeFile -Value `$
-}
-Stop-Transcript
-Exit `$exitCode
-"@
-
+$taskName = "fleet-install-notion"
+$taskRunning = 267009  # SCHED_S_TASK_RUNNING
 $exitCode = 0
+$stagedInstaller = $null
 
 try {
-    # Wait for an interactive user to be logged on
-    while ($true) {
-        $userName = (Get-CimInstance Win32_ComputerSystem).UserName
-
-        if ($userName -and $userName -like "*\*") {
-            Write-Output "Interactive user detected: $userName"
-            break
-        } else {
-            Start-Sleep -Seconds 5
-        }
+    $owner = Get-CimInstance Win32_Process -Filter 'name = "explorer.exe"' -ErrorAction SilentlyContinue |
+        Invoke-CimMethod -MethodName GetOwner -ErrorAction SilentlyContinue |
+        Where-Object { $_.User } |
+        Select-Object -First 1
+    if (-not $owner) {
+        Throw "Notion installs per user and no user is signed in to this host. Sign in and try again."
     }
+    $userAccount = "$($owner.Domain)\$($owner.User)"
+    Write-Host "Installing Notion for $userAccount."
 
-    # Write the uninstall script to disk
-    Set-Content -Path $scriptPath -Value $userScript -Force
+    # Fleet's installer directory is not readable by that user.
+    $stagedInstaller = Join-Path $env:PUBLIC (Split-Path $exeFilePath -Leaf)
+    Copy-Item -Path $exeFilePath -Destination $stagedInstaller -Force -ErrorAction Stop
 
-    # Copy the installer to a public folder so that all can access it
-    # users
-    $exeFilename = Split-Path $exeFilePath -leaf
-    Copy-Item -Path $exeFilePath -Destination "${env:PUBLIC}" -Force
-    $exeFilePath = "${env:PUBLIC}\$exeFilename"
-
-    # Build task action: run script, redirect stdout/stderr to log file
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" `
-        -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" *> `"$logFile`" 2>&1"
-
+    $installArgs = "/S"
+    if ($installArgs) {
+        $action = New-ScheduledTaskAction -Execute $stagedInstaller -Argument $installArgs
+    } else {
+        $action = New-ScheduledTaskAction -Execute $stagedInstaller
+    }
     $trigger = New-ScheduledTaskTrigger -AtLogOn
-
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries
-
-    $principal = New-ScheduledTaskPrincipal -UserId $userName -RunLevel Highest
-
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    $principal = New-ScheduledTaskPrincipal -UserId $userAccount
     $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
+    Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
 
-    Register-ScheduledTask -TaskName $taskName -InputObject $task -User $userName -Force
-
-    # Start the task
+    $startDate = Get-Date
     Start-ScheduledTask -TaskName $taskName
 
-    # Wait for it to start
-    $startDate = Get-Date
-    $state = (Get-ScheduledTask -TaskName $taskName).State
-    while ($state -ne "Running") {
-        Start-Sleep -Seconds 1
-        $elapsed = (New-Timespan -Start $startDate).TotalSeconds
-        if ($elapsed -gt 120) { throw "Timeout waiting for task to start." }
+    # Wait for a result rather than for the "Running" state, which a fast task can
+    # enter and leave between polls.
+    Start-Sleep -Seconds 2
+    while ($true) {
+        $info = Get-ScheduledTaskInfo -TaskName $taskName
         $state = (Get-ScheduledTask -TaskName $taskName).State
-    }
-
-    # Wait for it to complete
-    while ($state -eq "Running") {
+        if ($state -ne "Running" -and $info.LastTaskResult -ne $taskRunning) {
+            $exitCode = $info.LastTaskResult
+            break
+        }
+        if ((New-TimeSpan -Start $startDate).TotalSeconds -gt 900) {
+            Throw "Timed out waiting for the install task to finish."
+        }
         Start-Sleep -Seconds 5
-        $elapsed = (New-Timespan -Start $startDate).TotalSeconds
-        if ($elapsed -gt 120) { throw "Timeout waiting for task to finish." }
-        $state = (Get-ScheduledTask -TaskName $taskName).State
     }
-
-    # Show task output
-    if (Test-Path $logFile) {
-        Write-Host "`n--- Scheduled Task Output ---"
-        Get-Content $logFile | Write-Host
-    }
-
-    if (Test-Path $exitCodeFile) {
-        $exitCode = Get-Content $exitCodeFile
-        Write-Host "`nScheduled task exit code: $exitCode"
-    }
+    Write-Host "Install exit code: $exitCode"
 
 } catch {
     Write-Host "Error: $_"
     $exitCode = 1
 } finally {
-    # Clean up
-    Write-Host "Cleaning up..."
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    Remove-Item -Path $scriptPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path $logFile -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path $exitCodeFile -Force -ErrorAction SilentlyContinue
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    if ($stagedInstaller -and (Test-Path -LiteralPath $stagedInstaller)) {
+        Remove-Item -LiteralPath $stagedInstaller -Force -ErrorAction SilentlyContinue
+    }
 }
 
+# Exit turns a code above Int32.MaxValue, such as a task's HRESULT, into 0.
+if ($exitCode -gt [int]::MaxValue) { $exitCode = 1 }
 Exit $exitCode

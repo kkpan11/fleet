@@ -1,3 +1,4 @@
+// --- Apple Platform Display Names ---
 export const APPLE_PLATFORM_DISPLAY_NAMES = {
   darwin: "macOS",
   ios: "iOS",
@@ -6,6 +7,8 @@ export const APPLE_PLATFORM_DISPLAY_NAMES = {
 
 export type ApplePlatform = keyof typeof APPLE_PLATFORM_DISPLAY_NAMES;
 export type AppleDisplayPlatform = typeof APPLE_PLATFORM_DISPLAY_NAMES[keyof typeof APPLE_PLATFORM_DISPLAY_NAMES];
+
+// --- All Platform Display Names (Single Source of Truth) ---
 
 export const PLATFORM_DISPLAY_NAMES = {
   windows: "Windows",
@@ -26,6 +29,9 @@ export const NON_QUERYABLE_PLATFORMS = ["ios", "ipados", "android"] as const;
 
 export type Platform = keyof typeof PLATFORM_DISPLAY_NAMES;
 export type DisplayPlatform = typeof PLATFORM_DISPLAY_NAMES[keyof typeof PLATFORM_DISPLAY_NAMES];
+
+// --- Query supported Platforms ---
+
 export type QueryableDisplayPlatform = Exclude<
   DisplayPlatform,
   typeof PLATFORM_DISPLAY_NAMES[typeof NON_QUERYABLE_PLATFORMS[number]]
@@ -53,9 +59,6 @@ export const isScheduledQueryablePlatform = (
     platform as ScheduledQueryablePlatform
   );
 
-// TODO - add "iOS" and "iPadOS" once we support them
-export const VULN_SUPPORTED_PLATFORMS: Platform[] = ["darwin", "windows"];
-
 export type SelectedPlatform = QueryablePlatform | "all";
 
 export type CommaSeparatedPlatformString =
@@ -64,6 +67,8 @@ export type CommaSeparatedPlatformString =
   | `${QueryablePlatform},${QueryablePlatform}`
   | `${QueryablePlatform},${QueryablePlatform},${QueryablePlatform}`
   | `${QueryablePlatform},${QueryablePlatform},${QueryablePlatform},${QueryablePlatform}`;
+
+// --- MacAdmins Extension Tables ---
 
 // TODO: revisit this approach pending resolution of https://github.com/fleetdm/fleet/issues/3555.
 export const MACADMINS_EXTENSION_TABLES: Record<string, QueryablePlatform[]> = {
@@ -74,22 +79,26 @@ export const MACADMINS_EXTENSION_TABLES: Record<string, QueryablePlatform[]> = {
   mdm: ["darwin"],
   munki_info: ["darwin"],
   munki_install: ["darwin"],
-  // network_quality: ["darwin"], // TODO: add this table if/when it is incorporated into orbit
+  crowdstrike_falcon: ["darwin", "linux"],
+  network_quality: ["darwin"],
   puppet_info: ["darwin", "linux", "windows"],
   puppet_logs: ["darwin", "linux", "windows"],
   puppet_state: ["darwin", "linux", "windows"],
   macadmins_unified_log: ["darwin"],
 };
 
+// --- Host Platform Groups ---
+
 /**
  * Host Linux OSs as defined by the Fleet server.
- *
- * @see https://github.com/fleetdm/fleet/blob/5a21e2cfb029053ddad0508869eb9f1f23997bf2/server/fleet/hosts.go#L780
+ * IMPORTANT: When updating this, also make sure to update fleet.HostLinuxOSs in backend code.
  */
 export const HOST_LINUX_PLATFORMS = [
   "linux",
   "ubuntu", // covers Kubuntu
+  "zorin", // Zorin OS (Ubuntu-based)
   "debian",
+  "parrot", // Parrot OS (Debian-based)
   "rhel", // covers Fedora
   "centos",
   "sles",
@@ -97,16 +106,23 @@ export const HOST_LINUX_PLATFORMS = [
   "gentoo",
   "amzn",
   "pop",
-  "arch",
+  "arch", // Arch Linux
   "linuxmint",
   "void",
   "nixos",
   "endeavouros",
   "manjaro",
+  "manjaro-arm",
   "opensuse-leap",
   "opensuse-tumbleweed",
   "tuxedo",
   "neon",
+  "archarm", // Arch Linux ARM
+  "flatcar", // Flatcar Container Linux
+  "coreos", // CoreOS Container Linux
+  "cachyos", // CachyOS (Arch-based)
+  "omarchy", // Omarchy (Arch-based)
+  "amd-ryzen-ai-developer-platform", // AMD Ryzen AI Developer Platform (Debian-based)
 ] as const;
 
 export const HOST_APPLE_PLATFORMS = ["darwin", "ios", "ipados"] as const;
@@ -117,6 +133,8 @@ export type HostPlatform =
   | "windows"
   | "chrome"
   | "android";
+
+// --- Platform Type Guards ---
 
 /**
  * Checks if the provided platform is a Linux-like OS. We can recieve many
@@ -135,6 +153,20 @@ export const isAppleDevice = (platform = "") => {
   );
 };
 
+// Accept both the single-value host platform (`"windows"`, `"darwin"`,
+// `"macos"`) and the comma-joined `CommaSeparatedPlatformString` from
+// policies (`"darwin,linux"`) so the same predicate works at the wire
+// boundary for patch policies without a second helper. `undefined` is
+// allowed so callers with `string | undefined` don't need to `?? ""`.
+export const isWindows = (platform: string | HostPlatform | undefined) =>
+  !!platform && platform.split(",").includes("windows");
+
+export const isMacOS = (platform: string | HostPlatform | undefined) => {
+  if (!platform) return false;
+  const parts = platform.split(",");
+  return parts.includes("darwin") || parts.includes("macos");
+};
+
 export const isIPadOrIPhone = (platform: string | HostPlatform) =>
   ["ios", "ipados"].includes(platform);
 
@@ -142,22 +174,46 @@ export const isAndroid = (
   platform: string | HostPlatform
 ): platform is "android" => platform === "android";
 
+export const isChrome = (platform: string | HostPlatform) =>
+  platform === "chrome";
+
 /** isMobilePlatform checks if the platform is an iPad or iPhone or Android. */
 export const isMobilePlatform = (platform: string | HostPlatform) =>
   isIPadOrIPhone(platform) || isAndroid(platform);
 
+// --- OS Settings and Disk Encryption support by Platform ---
+
+/** Linux platforms whose disk encryption status Fleet displays (host vitals, OS settings card).
+ * Display only: escrow eligibility is LUKS_ESCROW_SUPPORTED_LINUX_PLATFORMS below. */
 export const DISK_ENCRYPTION_SUPPORTED_LINUX_PLATFORMS = [
   "ubuntu", // covers Kubuntu
+  "zorin", // Zorin OS (Ubuntu-based)
   "rhel", // *included here to support Fedora systems. Necessary to cross-check with `os_versions` as well to confrim host is Fedora and not another, non-support rhel-like platform.
+  "arch", // Arch Linux
+  "archarm", // Arch Linux ARM
+  "manjaro",
+  "manjaro-arm",
+  "cachyos", // CachyOS (Arch-based)
+  "omarchy", // Omarchy (Arch-based)
+] as const;
+
+/** Linux distributions Fleet escrows LUKS keys for. Must match LUKSSupportedPlatforms on the
+ * server. Fedora reports rhel and is matched on OS version instead. */
+export const LUKS_ESCROW_SUPPORTED_LINUX_PLATFORMS = [
+  "ubuntu", // covers Kubuntu
+  "zorin",
 ] as const;
 
 export const isDiskEncryptionSupportedLinuxPlatform = (
   platform: HostPlatform,
   os_version: string
 ) => {
-  const isFedora =
-    platform === "rhel" && os_version.toLowerCase().includes("fedora");
-  return isFedora || platform === "ubuntu";
+  if (platform === "rhel") {
+    return os_version.toLowerCase().includes("fedora");
+  }
+  return LUKS_ESCROW_SUPPORTED_LINUX_PLATFORMS.includes(
+    platform as typeof LUKS_ESCROW_SUPPORTED_LINUX_PLATFORMS[number]
+  );
 };
 
 const DISK_ENCRYPTION_SUPPORTED_PLATFORMS = [
@@ -189,17 +245,73 @@ const OS_SETTINGS_DISPLAY_PLATFORMS = [
   ...DISK_ENCRYPTION_SUPPORTED_PLATFORMS,
   "ios",
   "ipados",
+  "android",
 ];
 
 export const isOsSettingsDisplayPlatform = (
   platform: HostPlatform,
   os_version: string
 ) => {
-  if (isAndroid(platform)) {
-    return false;
-  }
   if (platform === "rhel") {
     return !!os_version && os_version.toLowerCase().includes("fedora");
   }
   return OS_SETTINGS_DISPLAY_PLATFORMS.includes(platform);
 };
+
+// --- Setup Experience platforms ---
+
+export const SETUP_EXPERIENCE_PLATFORMS = [
+  "macos",
+  "windows",
+  "linux",
+  "ios",
+  "ipados",
+  "android",
+] as const;
+
+export type SetupExperiencePlatform = typeof SETUP_EXPERIENCE_PLATFORMS[number];
+
+export const isSetupExperiencePlatform = (
+  s: string | undefined
+): s is SetupExperiencePlatform => {
+  return SETUP_EXPERIENCE_PLATFORMS.includes(s as SetupExperiencePlatform);
+};
+
+// --- Disk encryption settings platforms (Controls > OS settings) ---
+
+export const DISK_ENCRYPTION_SETTINGS_PLATFORMS = [
+  "macos",
+  "windows",
+  "linux",
+] as const;
+
+export type DiskEncryptionSettingsPlatform = typeof DISK_ENCRYPTION_SETTINGS_PLATFORMS[number];
+
+export const isDiskEncryptionSettingsPlatform = (
+  s: string | undefined
+): s is DiskEncryptionSettingsPlatform => {
+  return DISK_ENCRYPTION_SETTINGS_PLATFORMS.includes(
+    s as DiskEncryptionSettingsPlatform
+  );
+};
+
+// -- Vulnerability support by platform --
+
+export const VULN_SUPPORTED_PLATFORMS: Platform[] = [
+  "darwin",
+  "windows",
+  "linux", // Added 4.73
+  "android",
+];
+export const VULN_UNSUPPORTED_PLATFORMS: Platform[] = [
+  "ipados",
+  "ios",
+  "chrome",
+];
+
+export type VulnUnsupportedPlatform = typeof VULN_UNSUPPORTED_PLATFORMS[number];
+
+export const isVulnUnsupportedPlatform = (
+  platform: string | undefined
+): platform is VulnUnsupportedPlatform =>
+  VULN_UNSUPPORTED_PLATFORMS.includes(platform as VulnUnsupportedPlatform);

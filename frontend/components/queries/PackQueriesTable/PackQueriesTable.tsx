@@ -1,13 +1,12 @@
 import React, { useState } from "react";
 
-import simpleSearch from "utilities/simple_search";
-import { IScheduledQuery } from "interfaces/scheduled_query";
-
+import Button from "components/buttons/Button";
+import EmptyState from "components/EmptyState";
 import TableContainer from "components/TableContainer";
 import { ITableQueryData } from "components/TableContainer/TableContainer";
-import Button from "components/buttons/Button";
-import EmptyTable from "components/EmptyTable";
-import Icon from "components/Icon/Icon";
+import { IScheduledQuery } from "interfaces/scheduled_query";
+import simpleSearch from "utilities/simple_search";
+
 import {
   generateTableHeaders,
   generateDataSet,
@@ -83,41 +82,46 @@ const PackQueriesTable = ({
           inputPlaceHolder="Search queries"
           onQueryChange={onTableQueryChange}
           resultsTitle="queries"
-          emptyComponent={() =>
-            EmptyTable({
-              header: "No queries match your search criteria",
-              info: "Try a different search.",
-            })
-          }
+          emptyComponent={() => (
+            <EmptyState
+              header="No queries match your search criteria"
+              info="Try a different search."
+            />
+          )}
           showMarkAllPages={false}
           actionButton={{
             name: "add query",
             buttonText: "Add query",
             iconSvg: "plus",
-            variant: "text-icon",
+            variant: "secondary",
             onClick: onAddPackQuery,
           }}
           primarySelectAction={{
             name: "remove query",
             buttonText: "Remove",
             iconSvg: "close",
-            variant: "text-icon",
+            variant: "secondary",
             onClick: onRemovePackQueries,
           }}
           searchable
           disablePagination
+          hideFooter
           isAllPagesSelected={false}
         />
       ) : (
-        <div className={`${baseClass}__no-queries`}>
-          <p>Your pack has no queries.</p>
-          <Button onClick={onAddPackQuery} variant="text-icon" iconStroke>
-            <>
-              Add query
-              <Icon name="plus" />
-            </>
-          </Button>
-        </div>
+        <EmptyState
+          header="Your pack has no reports"
+          primaryButton={
+            <Button
+              onClick={onAddPackQuery}
+              variant="secondary"
+              icon="plus"
+              iconPosition="right"
+            >
+              Add report
+            </Button>
+          }
+        />
       )}
     </div>
   );

@@ -1,28 +1,31 @@
 import React, { useContext, useState } from "react";
-import { InjectedRouter } from "react-router";
 import { useQuery } from "react-query";
+import { InjectedRouter } from "react-router";
 
+import PageDescription from "components/PageDescription";
+import PremiumFeatureMessage from "components/PremiumFeatureMessage";
+import SectionHeader from "components/SectionHeader";
+import Spinner from "components/Spinner";
 import { AppContext } from "context/app";
-
 import { IConfig } from "interfaces/config";
+import { ApplePlatform } from "interfaces/platform";
 import { ITeamConfig } from "interfaces/team";
-import { ApplePlatform, isAndroid } from "interfaces/platform";
-
+import PATHS from "router/paths";
 import configAPI from "services/entities/config";
 import teamsAPI, { ILoadTeamResponse } from "services/entities/teams";
+import { getPathWithQueryParams } from "utilities/url";
 
-import PremiumFeatureMessage from "components/PremiumFeatureMessage";
-import Spinner from "components/Spinner";
-
-import EndUserOSRequirementPreview from "./components/EndUserOSRequirementPreview";
-import TurnOnMdmMessage from "../../../components/TurnOnMdmMessage/TurnOnMdmMessage";
 import CurrentVersionSection from "./components/CurrentVersionSection";
-import TargetSection from "./components/TargetSection";
 import { parseOSUpdatesCurrentVersionsQueryParams } from "./components/CurrentVersionSection/CurrentVersionSection";
+import TargetSection from "./components/TargetSection";
 
 export type OSUpdatesSupportedPlatform = ApplePlatform | "windows";
 
-export type OSUpdatesTargetPlatform = OSUpdatesSupportedPlatform | "android"; // used for displaying "coming soon" messaging
+// "android" and "linux" only display empty-state messaging
+export type OSUpdatesTargetPlatform =
+  | OSUpdatesSupportedPlatform
+  | "android"
+  | "linux";
 
 const baseClass = "os-updates";
 
@@ -33,10 +36,11 @@ const getDefaultSelectedPlatform = (
   // This is usually when the users first comes to this page.
   if (appConfig === null) return "darwin";
 
-  // if the mac mdm is enable and configured we check the app config to see if
-  // the mdm for mac is enabled. If it is, it does not matter if windows is
-  // enabled and configured and we will always return "mac".
-  return appConfig.mdm.enabled_and_configured ? "darwin" : "windows"; // TODO(android): adjust this when android is supported
+  // Default to the first tab (macOS) unless only Windows MDM is turned on.
+  return !appConfig.mdm.enabled_and_configured &&
+    appConfig.mdm.windows_enabled_and_configured
+    ? "windows"
+    : "darwin";
 };
 
 interface IOSUpdates {
@@ -46,7 +50,13 @@ interface IOSUpdates {
 }
 
 const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
-  const { isPremiumTier, config, setConfig } = useContext(AppContext);
+  const {
+    isPremiumTier,
+    isGlobalAdmin,
+    isTeamAdmin,
+    config,
+    setConfig,
+  } = useContext(AppContext);
 
   const [
     selectedPlatformTab,
@@ -54,7 +64,6 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
   ] = useState<OSUpdatesTargetPlatform | null>(null);
 
   const {
-    isError: isErrorConfig,
     isFetching: isFetchingConfig,
     isLoading: isLoadingConfig,
     refetch: refetchAppConfig,
@@ -66,7 +75,6 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
 
   const {
     data: teamConfig,
-    isError: isErrorTeamConfig,
     isFetching: isFetchingTeamConfig,
     isLoading: isLoadingTeam,
     refetch: refetchTeamConfig,
@@ -89,18 +97,23 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
     );
   }
 
-  if (isLoadingConfig || isLoadingTeam) return <Spinner />;
+  if (!config || isLoadingConfig || isLoadingTeam || isFetchingTeamConfig) {
+    return <Spinner />;
+  }
+
+  // Only global or team admins have access to the OS updates settings.
+  // This check needs to come after the team config is loaded so that we have the correct
+  // values for isGlobalAdmin and isTeamAdmin. These values are updated after
+  // the team config is loaded.
+  if (!isGlobalAdmin && !isTeamAdmin) {
+    router.replace(
+      getPathWithQueryParams(PATHS.CONTROLS_OS_SETTINGS, {
+        fleet_id: teamIdForApi,
+      })
+    );
+  }
 
   // FIXME: Handle error states for app config and team config (need specifications for this).
-
-  // mdm is not enabled for mac or windows.
-
-  if (
-    !config?.mdm.enabled_and_configured &&
-    !config?.mdm.windows_enabled_and_configured
-  ) {
-    return <TurnOnMdmMessage router={router} />;
-  }
 
   // If the user has not selected a platform yet, we default to the platform that
   // is enabled and configured.
@@ -109,11 +122,11 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
 
   return (
     <div className={baseClass}>
-      <p className={`${baseClass}__description`}>
-        Remotely encourage the installation of software updates on hosts
-        assigned to this team.
-      </p>
-      <div className={`${baseClass}__content`}>
+      <PageDescription
+        variant="tab-panel"
+        content="Remotely enforce software updates."
+      />
+      <>
         <div className={`${baseClass}__current-version-container`}>
           <CurrentVersionSection
             router={router}
@@ -122,6 +135,10 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
           />
         </div>
         <div className={`${baseClass}__target-container`}>
+          <SectionHeader
+            title="Target"
+            wrapperCustomClass={`${baseClass}__header`}
+          />
           <TargetSection
             key={teamIdForApi} // if the team changes, remount the target section
             appConfig={config}
@@ -134,12 +151,7 @@ const OSUpdates = ({ router, teamIdForApi, queryParams }: IOSUpdates) => {
             refetchTeamConfig={refetchTeamConfig}
           />
         </div>
-        {!isAndroid(selectedPlatform) && (
-          <div className={`${baseClass}__nudge-preview`}>
-            <EndUserOSRequirementPreview platform={selectedPlatform} />
-          </div>
-        )}
-      </div>
+      </>
     </div>
   );
 };

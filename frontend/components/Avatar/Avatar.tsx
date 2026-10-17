@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from "react";
 import classnames from "classnames";
+import React, { useState, useCallback } from "react";
 
-import { DEFAULT_GRAVATAR_LINK } from "utilities/constants";
+import { COLORS } from "styles/var/colors";
 
 interface IFleetAvatarProps {
   className?: string;
@@ -21,30 +21,12 @@ const FleetAvatar = ({ className }: IFleetAvatarProps) => {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <circle cx="16" cy="16" r="15.5" fill="white" stroke="#C5C7D1" />
-      <path
-        d="M10 12C11.1046 12 12 11.1046 12 10C12 8.89543 11.1046 8 10 8C8.89543 8 8 8.89543 8 10C8 11.1046 8.89543 12 10 12Z"
-        fill="white"
-      />
-      <path
-        d="M16 12C17.1046 12 18 11.1046 18 10C18 8.89543 17.1046 8 16 8C14.8954 8 14 8.89543 14 10C14 11.1046 14.8954 12 16 12Z"
-        fill="white"
-      />
-      <path
-        d="M22 12C23.1046 12 24 11.1046 24 10C24 8.89543 23.1046 8 22 8C20.8954 8 20 8.89543 20 10C20 11.1046 20.8954 12 22 12Z"
-        fill="white"
-      />
-      <path
-        d="M10 18C11.1046 18 12 17.1046 12 16C12 14.8954 11.1046 14 10 14C8.89543 14 8 14.8954 8 16C8 17.1046 8.89543 18 10 18Z"
-        fill="white"
-      />
-      <path
-        d="M16 18C17.1046 18 18 17.1046 18 16C18 14.8954 17.1046 14 16 14C14.8954 14 14 14.8954 14 16C14 17.1046 14.8954 18 16 18Z"
-        fill="white"
-      />
-      <path
-        d="M10 24C11.1046 24 12 23.1046 12 22C12 20.8954 11.1046 20 10 20C8.89543 20 8 20.8954 8 22C8 23.1046 8.89543 24 10 24Z"
-        fill="white"
+      <circle
+        cx="16"
+        cy="16"
+        r="15"
+        stroke={COLORS["ui-fleet-black-25"]}
+        strokeWidth="2"
       />
       <path
         d="M10.75 12.5C11.7165 12.5 12.5 11.7165 12.5 10.75C12.5 9.7835 11.7165 9 10.75 9C9.7835 9 9 9.7835 9 10.75C9 11.7165 9.7835 12.5 10.75 12.5Z"
@@ -74,6 +56,88 @@ const FleetAvatar = ({ className }: IFleetAvatarProps) => {
   );
 };
 
+interface IAPIOnlyAvatar {
+  className?: string;
+}
+
+const APIOnlyAvatar = ({ className }: IAPIOnlyAvatar) => {
+  return (
+    <svg
+      data-testid="apionly-avatar"
+      className={className}
+      width="32"
+      height="32"
+      viewBox="0 0 32 32"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="16"
+        cy="16"
+        r="15"
+        fill="none"
+        stroke={COLORS["ui-fleet-black-25"]}
+        strokeWidth="2"
+      />
+      <path
+        d="M11.5 12.75L8 16L11.5 19.25"
+        stroke={COLORS["ui-fleet-black-50"]}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18 11L14.5 21"
+        stroke={COLORS["ui-fleet-black-50"]}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M21 19.25L24.5 16L21 12.75"
+        stroke={COLORS["ui-fleet-black-50"]}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+};
+
+const DefaultAvatar = ({ className }: IAPIOnlyAvatar) => {
+  return (
+    <svg
+      data-testid="default-avatar"
+      className={className}
+      width="32"
+      height="32"
+      viewBox="0 0 32 32"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="16"
+        cy="16"
+        r="15"
+        stroke={COLORS["ui-fleet-black-25"]}
+        strokeWidth="2"
+      />
+      <circle
+        cx="16"
+        cy="13"
+        r="5.25"
+        stroke={COLORS["ui-fleet-black-50"]}
+        strokeWidth="1.5"
+      />
+      <path
+        stroke={COLORS["ui-fleet-black-50"]}
+        strokeWidth="1.5"
+        d="M16 18.75c5.084 0 9.21 4.102 9.248 9.178-.01.017-.024.044-.052.08a2.945 2.945 0 0 1-.462.463c-.448.374-1.127.812-1.99 1.23-1.725.833-4.114 1.549-6.744 1.549s-5.019-.716-6.744-1.55c-.863-.417-1.542-.855-1.99-1.23a2.945 2.945 0 0 1-.462-.461c-.028-.037-.043-.064-.053-.081A9.25 9.25 0 0 1 16 18.75Z"
+      />
+    </svg>
+  );
+};
+
 interface IAvatarUserInterface {
   gravatar_url?: string;
   gravatar_url_dark?: string;
@@ -88,6 +152,8 @@ interface IAvatarProps {
    * Set this to `true` to use the fleet avatar instead of the users gravatar.
    */
   useFleetAvatar?: boolean;
+  // Set this to true to show the API Only avatar
+  useApiOnlyAvatar?: boolean;
 }
 
 const baseClass = "avatar";
@@ -97,6 +163,7 @@ const Avatar = ({
   size,
   user,
   hasWhiteBackground,
+  useApiOnlyAvatar = false,
   useFleetAvatar = false,
 }: IAvatarProps) => {
   const [isLoading, setIsLoading] = useState(true);
@@ -111,27 +178,31 @@ const Avatar = ({
 
   const avatarClasses = classnames(baseClass, className, {
     [`${baseClass}--${size?.toLowerCase()}`]: !!size,
-    "has-white-background": !!hasWhiteBackground,
+    "has-white-background": !!hasWhiteBackground && !useApiOnlyAvatar,
   });
   const { gravatar_url } = user;
 
-  return (
-    <div className="avatar-wrapper">
-      {useFleetAvatar ? (
-        <FleetAvatar className={avatarClasses} />
-      ) : (
-        <img
-          alt="User avatar"
-          className={`${avatarClasses} ${
-            isLoading || isError ? "default" : ""
-          }`}
-          src={gravatar_url || DEFAULT_GRAVATAR_LINK}
-          onError={onError}
-          onLoad={onLoad}
-        />
-      )}
-    </div>
-  );
+  let avatar;
+
+  if (useFleetAvatar) {
+    avatar = <FleetAvatar className={avatarClasses} />;
+  } else if (useApiOnlyAvatar) {
+    avatar = <APIOnlyAvatar className={avatarClasses} />;
+  } else if (gravatar_url) {
+    avatar = (
+      <img
+        alt="User avatar"
+        className={`${avatarClasses} ${isLoading || isError ? "default" : ""}`}
+        src={gravatar_url}
+        onError={onError}
+        onLoad={onLoad}
+      />
+    );
+  } else {
+    avatar = <DefaultAvatar className={avatarClasses} />;
+  }
+
+  return <div className="avatar-wrapper">{avatar}</div>;
 };
 
 export default Avatar;

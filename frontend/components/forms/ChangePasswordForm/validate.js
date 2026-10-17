@@ -1,6 +1,7 @@
 import { size } from "lodash";
-import validateEquality from "components/forms/validators/validate_equality";
+
 import validPassword from "components/forms/validators/valid_password";
+import validateEquality from "components/forms/validators/validate_equality";
 
 export default (formData) => {
   const errors = {};
@@ -10,8 +11,9 @@ export default (formData) => {
     new_password_confirmation: newPasswordConfirmation,
   } = formData;
 
-  if (newPassword && newPasswordConfirmation && !validPassword(newPassword)) {
-    errors.new_password = "Password must meet the criteria below";
+  const { isValid, error } = validPassword(newPassword);
+  if (newPassword && newPasswordConfirmation && !isValid) {
+    errors.new_password = error;
   }
 
   if (!oldPassword) {

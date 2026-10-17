@@ -11,26 +11,30 @@ import (
 	"strings"
 
 	"github.com/fleetdm/fleet/v4/server/config"
+	"github.com/fleetdm/fleet/v4/server/contexts/license"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/service/osquery_utils"
 )
 
 func main() {
-	detailQueriesMap := osquery_utils.GetDetailQueries(context.Background(),
-		config.FleetConfig{
-			Vulnerabilities: config.VulnerabilitiesConfig{
-				DisableWinOSVulnerabilities: false,
-			},
-			App: config.AppConfig{
-				EnableScheduledQueryStats: true,
-			},
+	// premium so that premium-only detail queries are documented too
+	ctx := license.NewContext(context.Background(), &fleet.LicenseInfo{Tier: fleet.TierPremium})
+	detailQueriesMap := osquery_utils.GetDetailQueries(ctx, config.FleetConfig{
+		Vulnerabilities: config.VulnerabilitiesConfig{
+			DisableWinOSVulnerabilities: false,
 		},
-		&fleet.AppConfig{MDM: fleet.MDM{EnabledAndConfigured: true}},
-		&fleet.Features{
-			EnableSoftwareInventory: true,
-			EnableHostUsers:         true,
+		App: config.AppConfig{
+			EnableScheduledQueryStats: true,
 		},
-	)
+	}, &fleet.AppConfig{MDM: fleet.MDM{
+		EnabledAndConfigured:        true,
+		WindowsEnabledAndConfigured: true,
+	}}, &fleet.Features{
+		EnableSoftwareInventory: true,
+		EnableHostUsers:         true,
+	}, osquery_utils.Integrations{
+		ConditionalAccessMicrosoft: true,
+	}, nil)
 	var b strings.Builder
 
 	b.WriteString(`<!-- DO NOT EDIT. This document is automatically generated. -->
@@ -70,7 +74,11 @@ Following is a summary of the detail queries hardcoded in Fleet used to populate
 		if q.detailQuery.Discovery != "" {
 			fmt.Fprintf(&b, "- Discovery query:\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Discovery))
 		}
-		fmt.Fprintf(&b, "- Query:\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Query))
+		if q.detailQuery.Query != "" {
+			fmt.Fprintf(&b, "- Query:\n```sql\n%s\n```\n\n", strings.TrimSpace(q.detailQuery.Query))
+		} else if q.detailQuery.QueryFunc != nil {
+			fmt.Fprintf(&b, "- Query:\n```\n<dynamically generated>\n```\n\n")
+		}
 	}
 
 	// Footnotes

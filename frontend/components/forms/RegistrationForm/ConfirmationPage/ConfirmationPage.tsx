@@ -1,9 +1,9 @@
-import React, { useEffect } from "react";
 import classnames from "classnames";
+import React, { useEffect } from "react";
 
 import Button from "components/buttons/Button";
-import { IRegistrationFormData } from "interfaces/registration_form_data";
 import Checkbox from "components/forms/fields/Checkbox";
+import { IRegistrationFormData } from "interfaces/registration_form_data";
 
 const baseClass = "confirm-user-reg";
 
@@ -99,19 +99,22 @@ const ConfirmationPage = ({
 
         {importOsqueryConfig()}
       </div>
-      <p className="help-text">
+      <p className={`${baseClass}__help-text`}>
         Fleet Device Management Inc. periodically collects information about
         your instance. Sending usage statistics from your Fleet instance is
         optional and can be disabled in settings.
       </p>
-      <Button
-        type="submit"
-        tabIndex={tabIndex}
-        disabled={!currentPage}
-        isLoading={isLoading}
-      >
-        Confirm
-      </Button>
+      <div className="button-wrap--center">
+        <Button
+          type="submit"
+          tabIndex={tabIndex}
+          disabled={!currentPage}
+          isLoading={isLoading}
+          size="wide"
+        >
+          Confirm
+        </Button>
+      </div>
     </form>
   );
 };
