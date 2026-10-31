@@ -1,224 +1,152 @@
-import {
-  APP_CONTEXT_ALL_TEAMS_ID,
-  APP_CONTEXT_NO_TEAM_ID,
-} from "interfaces/team";
-import {
-  getOptions,
-  selectedValueFromToken,
-  teamIdsFromSelectedValue,
-  updateSelectedValue,
-} from "./EditTeamsVppModal";
+import { screen, waitFor } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import React from "react";
+
+import { createMockVppToken } from "__mocks__/mdmMock";
+import { createMockTeamSummary } from "__mocks__/teamMock";
+import { IMdmVppToken } from "interfaces/mdm";
+import mockServer from "test/mock-server";
+import { baseUrl, createCustomRenderer } from "test/test-utils";
+
+import EditTeamsVppModal from "./EditTeamsVppModal";
+
+const makeToken = (teams: IMdmVppToken["teams"]): IMdmVppToken =>
+  createMockVppToken({ id: 7, teams });
+
+const availableTeams = [
+  createMockTeamSummary({ id: -1, name: "All fleets" }),
+  createMockTeamSummary({ id: 1, name: "Workstations" }),
+  createMockTeamSummary({ id: 2, name: "Personal mobile devices" }),
+  createMockTeamSummary({ id: 0, name: "Unassigned" }),
+];
+
+const render = createCustomRenderer({
+  withBackendMock: true,
+  context: { app: { availableTeams } },
+});
+
+const mockPatch = () => {
+  const bodies: unknown[] = [];
+  mockServer.use(
+    http.patch(baseUrl("/vpp_tokens/7/fleets"), async ({ request }) => {
+      bodies.push(await request.json());
+      return HttpResponse.json({});
+    })
+  );
+  return bodies;
+};
+
+const renderModal = (token: IMdmVppToken, onSuccess = jest.fn()) =>
+  render(
+    <EditTeamsVppModal
+      currentToken={token}
+      onCancel={jest.fn()}
+      onSuccess={onSuccess}
+    />
+  );
 
 describe("EditTeamsVppModal", () => {
-  const allTeamsToken = {
-    id: 1,
-    org_name: "Org 1",
-    location: "https://example.com/mdm/apple/mdm",
-    renew_date: "2024-11-29T00:00:00Z",
-    teams: [], // all teams
-  };
+  it("renders the intro and none of the one-token-per-fleet copy", () => {
+    renderModal(makeToken([]));
 
-  const unassignedToken = {
-    id: 2,
-    org_name: "Org 2",
-    location: "https://example.com/mdm/apple/mdm",
-    renew_date: "2024-11-29T00:00:00Z",
-    teams: null, // unassigned
-  };
+    expect(screen.getByText("Acme Inc.")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Each fleet can have only one VPP token/)
+    ).toBeNull();
+    expect(screen.queryByText(/If you delete a fleet/)).toBeNull();
+    expect(screen.queryByText(/You can't choose fleets because/)).toBeNull();
+  });
 
-  const noTeamToken = {
-    id: 3,
-    org_name: "Org 3",
-    location: "https://example.com/mdm/apple/mdm",
-    renew_date: "2024-11-29T00:00:00Z",
-    teams: [{ team_id: 0, name: "No team" }],
-  };
+  describe("initial radio state", () => {
+    it("selects All fleets for a token on all fleets", () => {
+      renderModal(makeToken([]));
 
-  const piratesAndNinjasToken = {
-    id: 4,
-    org_name: "Org 4",
-    location: "https://example.com/mdm/apple/mdm",
-    renew_date: "2024-11-29T00:00:00Z",
-    teams: [
-      { team_id: 2, name: "Pirates" },
-      { team_id: 1, name: "Ninjas" },
-    ],
-  };
-
-  const pandasToken = {
-    id: 5,
-    org_name: "Org 5",
-    location: "https://example.com/mdm/apple/mdm",
-    renew_date: "2024-11-29T00:00:00Z",
-    teams: [{ team_id: 3, name: "Pandas" }],
-  };
-
-  const availableTeams = [
-    { id: APP_CONTEXT_ALL_TEAMS_ID, name: "All teams" },
-    { id: APP_CONTEXT_NO_TEAM_ID, name: "No team" },
-    { id: 1, name: "Ninjas" },
-    { id: 2, name: "Pirates" },
-    { id: 3, name: "Pandas" },
-    { id: 4, name: "Penguins" },
-  ];
-
-  const allOptions = availableTeams.map((t) => ({
-    label: t.name,
-    value: t.id,
-  }));
-
-  describe("getOptions", () => {
-    it("returns no options when another token is all teams", () => {
-      const tokens = [allTeamsToken, piratesAndNinjasToken];
-      const currentToken = piratesAndNinjasToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
-      expect(options).toEqual([]);
+      expect(screen.getByRole("radio", { name: "All fleets" })).toBeChecked();
+      expect(screen.queryByRole("checkbox")).toBeNull();
     });
 
-    it("includes all options when all tokens are unassigned", () => {
-      const tokens = [
-        unassignedToken,
-        { ...unassignedToken, id: 1337 },
-        { ...unassignedToken, id: 1338 },
-      ];
-      const currentToken = unassignedToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
-      expect(options).toEqual(allOptions);
-    });
-
-    it("includes all options when current token is all teams and other tokens are unassigned", () => {
-      const tokens = [
-        allTeamsToken,
-        unassignedToken,
-        { ...unassignedToken, id: 1337 },
-        { ...unassignedToken, id: 1338 },
-      ];
-      const currentToken = allTeamsToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
-      expect(options).toEqual(allOptions);
-    });
-
-    it("excludes all teams option when any token is assigned", () => {
-      const tokens = [unassignedToken, piratesAndNinjasToken];
-      const currentToken = unassignedToken;
-      const options = getOptions(availableTeams, tokens, currentToken);
-      expect(options).toEqual(
-        options.filter((o) => o.value !== APP_CONTEXT_ALL_TEAMS_ID)
-      );
-    });
-
-    it("excludes teams assigned to other tokens", () => {
-      const tokens = [
-        piratesAndNinjasToken,
-        noTeamToken,
-        pandasToken,
-        unassignedToken,
-      ];
-
-      // test with unassignedToken
-      expect(getOptions(availableTeams, tokens, unassignedToken)).toEqual([
-        { label: "Penguins", value: 4 }, // only penguins is available
-      ]);
-
-      // test with piratesAndNinjasToken
-      let unavailableTeamIds = [
-        APP_CONTEXT_ALL_TEAMS_ID, // all teams is excluded unless current token is all teams or all tokens are unassigned
-        APP_CONTEXT_NO_TEAM_ID, // already assigned to noTeamToken
-        3, // already assigned to pandasToken
-      ];
-      expect(getOptions(availableTeams, tokens, piratesAndNinjasToken)).toEqual(
-        allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
+    it("selects Custom with the token's fleets checked", () => {
+      renderModal(
+        makeToken([
+          { team_id: 2, name: "Personal mobile devices" },
+          { team_id: 0, name: "No team" },
+        ])
       );
 
-      // test with pandasToken
-      unavailableTeamIds = [
-        APP_CONTEXT_ALL_TEAMS_ID, // all teams is excluded unless current token is all teams or all tokens are unassigned
-        APP_CONTEXT_NO_TEAM_ID, // already assigned to noTeamToken
-        1, // already assigned to piratesAndNinjasToken
-        2, // already assigned to piratesAndNinjasToken
-      ];
-      expect(getOptions(availableTeams, tokens, pandasToken)).toEqual(
-        allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
-      );
-
-      // test with noTeamToken
-      unavailableTeamIds = [
-        APP_CONTEXT_ALL_TEAMS_ID, // all teams is excluded unless current token is all teams or all tokens are unassigned
-        1, // already assigned to piratesAndNinjasToken
-        2, // already assigned to piratesAndNinjasToken
-        3, // already assigned to pandasToken
-      ];
-      expect(getOptions(availableTeams, tokens, noTeamToken)).toEqual(
-        allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
-      );
-
-      // test with allTeamsToken
-      unavailableTeamIds = [
-        APP_CONTEXT_NO_TEAM_ID, // already assigned to noTeamToken
-        1, // already assigned to piratesAndNinjasToken
-        2, // already assigned to piratesAndNinjasToken
-        3, // already assigned to pandasToken
-      ];
+      expect(screen.getByRole("radio", { name: "Custom" })).toBeChecked();
       expect(
-        getOptions(availableTeams, [...tokens, allTeamsToken], allTeamsToken)
-      ).toEqual(
-        allOptions.filter((o) => !unavailableTeamIds.includes(o.value))
-      );
-    });
-  });
-  describe("updateSelectedValue", () => {
-    it("returns next value when only one team is selected", () => {
-      const prev = "1";
-      const next = "2";
-      expect(updateSelectedValue(prev, next)).toEqual(next);
-    });
-
-    it("removes all teams when all teams was previously selected", () => {
-      const prev = "-1,2";
-      const next = "2";
-      expect(updateSelectedValue(prev, next)).toEqual(next);
-    });
-
-    it("selects all teams when all teams is newly selected", () => {
-      const prev = "2";
-      const next = "2,-1";
-      expect(updateSelectedValue(prev, next)).toEqual("-1");
-    });
-
-    it("returns next value when all teams is not selected", () => {
-      const prev = "2";
-      const next = "2,3";
-      expect(updateSelectedValue(prev, next)).toEqual(next);
-    });
-  });
-
-  describe("selectedValueFromToken", () => {
-    it("returns empty string when teams is null", () => {
-      expect(selectedValueFromToken(unassignedToken)).toEqual("");
-    });
-
-    it("returns all teams when teams is empty", () => {
-      expect(selectedValueFromToken(allTeamsToken)).toEqual("-1");
-    });
-
-    it("returns team ids when teams is not empty", () => {
-      expect(selectedValueFromToken(piratesAndNinjasToken)).toEqual("2,1");
-    });
-  });
-
-  describe("teamIdsFromSelectedValue", () => {
-    it("returns empty array when value is all teams id", () => {
+        screen.getByRole("checkbox", { name: "Personal mobile devices" })
+      ).toBeChecked();
       expect(
-        teamIdsFromSelectedValue(APP_CONTEXT_ALL_TEAMS_ID.toString())
-      ).toEqual([]);
+        screen.getByRole("checkbox", { name: "Unassigned" })
+      ).toBeChecked();
+      expect(
+        screen.getByRole("checkbox", { name: "Workstations" })
+      ).not.toBeChecked();
     });
 
-    it("returns mull when value is empty string", () => {
-      expect(teamIdsFromSelectedValue("")).toEqual(null);
+    it("selects Custom with nothing checked for an unassigned token", () => {
+      renderModal(makeToken(null));
+
+      expect(screen.getByRole("radio", { name: "Custom" })).toBeChecked();
+      screen
+        .getAllByRole("checkbox")
+        .forEach((box) => expect(box).not.toBeChecked());
+    });
+  });
+
+  it("lists a fleet that another token already holds", () => {
+    // The modal never receives other tokens, so every fleet is listed.
+    renderModal(makeToken(null));
+
+    expect(
+      screen.getByRole("checkbox", { name: "Workstations" })
+    ).toBeInTheDocument();
+  });
+
+  describe("save", () => {
+    it("sends [] for All fleets", async () => {
+      const bodies = mockPatch();
+      const onSuccess = jest.fn();
+      const { user } = renderModal(makeToken(null), onSuccess);
+
+      await user.click(screen.getByRole("radio", { name: "All fleets" }));
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+      expect(bodies).toEqual([{ fleets: [] }]);
     });
 
-    it("returns team ids when value is not all teams id", () => {
-      expect(teamIdsFromSelectedValue("2,1")).toEqual([2, 1]);
+    it("sends the checked fleet ids for Custom", async () => {
+      const bodies = mockPatch();
+      const onSuccess = jest.fn();
+      const { user } = renderModal(makeToken(null), onSuccess);
+
+      await user.click(screen.getByRole("checkbox", { name: "Workstations" }));
+      await user.click(
+        screen.getByRole("checkbox", { name: "Personal mobile devices" })
+      );
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+      expect(bodies).toEqual([{ fleets: [1, 2] }]);
+    });
+
+    it("sends null for Custom with nothing checked", async () => {
+      const bodies = mockPatch();
+      const onSuccess = jest.fn();
+      const { user } = renderModal(
+        makeToken([{ team_id: 1, name: "W" }]),
+        onSuccess
+      );
+
+      await user.click(
+        screen.getByRole("button", { name: "Remove Workstations" })
+      );
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+      expect(bodies).toEqual([{ fleets: null }]);
     });
   });
 });

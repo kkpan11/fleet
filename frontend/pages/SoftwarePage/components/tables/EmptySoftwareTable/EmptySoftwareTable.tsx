@@ -1,58 +1,56 @@
 import React from "react";
+
 import CustomLink from "components/CustomLink";
-import EmptyTable from "components/EmptyTable";
-import { IEmptyTableProps } from "interfaces/empty_table";
+import EmptyState from "components/EmptyState";
+import { IEmptyStateProps } from "interfaces/empty_state";
+import { HostPlatform, isAndroid } from "interfaces/platform";
 import {
-  getVulnFilterRenderDetails,
-  ISoftwareDropdownFilterVal,
-  ISoftwareVulnFiltersParams,
-} from "pages/SoftwarePage/SoftwareTitles/SoftwareTable/helpers";
+  getFilterRenderDetails,
+  ISoftwareFilters,
+} from "pages/SoftwarePage/SoftwareInventory/SoftwareInventoryTable/helpers";
 
 export interface IEmptySoftwareTableProps {
-  softwareFilter?: ISoftwareDropdownFilterVal;
-  vulnFilters?: ISoftwareVulnFiltersParams;
+  filters?: ISoftwareFilters;
   tableName?: string;
   isSoftwareDisabled?: boolean;
   noSearchQuery?: boolean;
   installableSoftwareExists?: boolean;
+  platform?: HostPlatform;
 }
 
-const generateTypeText = (
+/** Maps tableName to the truly-empty (no filters) info text. */
+const EMPTY_INFO_BY_TABLE: Record<string, string> = {
+  software:
+    "Recently installed software will appear after the next scheduled check-in.",
+  "operating systems":
+    "Operating system data will appear after the next scheduled check-in.",
+  vulnerabilities:
+    "Vulnerability data will appear after the next scheduled check-in.",
+};
+
+/** Returns the display name used in filtered info text (e.g. "vulnerable software"). */
+const getFilteredTypeText = (
   tableName: string,
-  softwareFilter?: ISoftwareDropdownFilterVal,
-  vulnFilters?: ISoftwareVulnFiltersParams
-) => {
-  if (softwareFilter === "installableSoftware") {
-    return "installable software";
-  }
-  if (vulnFilters?.vulnerable) {
+  filters?: ISoftwareFilters
+): string => {
+  if (filters?.vulnerable) {
     return "vulnerable software";
   }
   return tableName;
 };
 
 const EmptySoftwareTable = ({
-  softwareFilter = "allSoftware",
-  vulnFilters,
+  filters,
   tableName = "software",
   isSoftwareDisabled,
-  noSearchQuery,
+  noSearchQuery = true,
   installableSoftwareExists,
+  platform,
 }: IEmptySoftwareTableProps): JSX.Element => {
-  const softwareTypeText = generateTypeText(
-    tableName,
-    softwareFilter,
-    vulnFilters
-  );
-
-  const { filterCount: vulnFiltersCount } = getVulnFilterRenderDetails(
-    vulnFilters
-  );
-
   const isFiltered =
-    vulnFiltersCount > 0 || !noSearchQuery || softwareFilter !== "allSoftware";
+    getFilterRenderDetails(filters).isFiltered || !noSearchQuery;
 
-  const getEmptySoftwareInfo = (): IEmptyTableProps => {
+  const getEmptyStateProps = (): IEmptyStateProps => {
     if (isSoftwareDisabled) {
       return {
         header: "Software inventory disabled",
@@ -71,35 +69,40 @@ const EmptySoftwareTable = ({
     }
 
     if (!isFiltered) {
-      if (softwareFilter === "allSoftware") {
-        if (installableSoftwareExists) {
-          return {
-            header: `No ${tableName} detected`,
-            info: "Install software on your hosts to see versions.",
-          };
-        }
+      if (installableSoftwareExists) {
         return {
           header: `No ${tableName} detected`,
-          info: `Expecting to see ${softwareTypeText}? Check back later.`,
+          info: "Install software on your hosts to see versions.",
         };
       }
+
+      let info = EMPTY_INFO_BY_TABLE[tableName] ?? EMPTY_INFO_BY_TABLE.software;
+      if (isAndroid(platform || "")) {
+        info = `${info} It may take up to 24 hours for Android to report the software.`;
+      }
+
+      return {
+        header: `No ${tableName} detected`,
+        info,
+      };
+    }
+
+    // Filtered/search state: use type-aware text (e.g. "vulnerable software")
+    const typeText = getFilteredTypeText(tableName, filters);
+    let info = `Expecting to see ${typeText}? Check back later.`;
+    if (isAndroid(platform || "")) {
+      info = `${info} It may take up to 24 hours for Android to report the software.`;
     }
 
     return {
       header: "No items match the current search criteria",
-      info: `Expecting to see ${softwareTypeText}? Check back later.`,
+      info,
     };
   };
 
-  const emptySoftware = getEmptySoftwareInfo();
+  const emptyState = getEmptyStateProps();
 
-  return (
-    <EmptyTable
-      graphicName="empty-search-question"
-      header={emptySoftware.header}
-      info={emptySoftware.info}
-    />
-  );
+  return <EmptyState header={emptyState.header} info={emptyState.info} />;
 };
 
 export default EmptySoftwareTable;

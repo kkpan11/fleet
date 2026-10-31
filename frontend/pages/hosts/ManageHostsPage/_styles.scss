@@ -1,13 +1,14 @@
 .manage-hosts {
+  @include vertical-page-layout;
+
   &__header-wrap {
     @include normalize-team-header;
-    margin-bottom: $pad-medium;
+  }
 
-    .button-wrap {
-      display: flex;
-      justify-content: flex-end;
-      white-space: nowrap;
-    }
+  &__button-wrap {
+    display: flex;
+    align-items: center;
+    gap: $gap-action-elements;
   }
 
   .ace-fleet {
@@ -95,17 +96,21 @@
   }
 
   .table-container {
-    padding-top: $pad-small;
-
     &__header-left {
       .controls {
         display: flex;
         align-items: center;
 
+        .manage-hosts__table-actions {
+          display: flex;
+          align-items: center;
+          gap: $gap-table-elements; // grouping secondary buttons
+        }
+
         .manage-hosts__filter-dropdowns {
           display: flex;
           flex-direction: row;
-          margin-left: $pad-medium;
+          margin-left: $gap-table-elements;
           align-items: center;
 
           // Dropdown height matches search bar height
@@ -115,15 +120,17 @@
               height: 33px;
             }
             .Select-value {
-              line-height: 40px;
+              line-height: 36px;
             }
           }
         }
       }
     }
 
-    // table header content responsive styles
-    @media (max-width: $table-controls-break) {
+    // table header content responsive styles.
+    // Uses a wider local break than $table-controls-break so the "N hosts"
+    // count doesn't get squeezed by the toolbar between 1180-1250px.
+    @media (max-width: 1250px) {
       &__header {
         flex-direction: column;
       }
@@ -131,7 +138,6 @@
       .table-container__search {
         order: 1;
         width: 100%;
-        margin-bottom: $pad-small;
 
         .table-container__search-input {
           margin-left: 0;
@@ -158,16 +164,20 @@
 
         .controls {
           order: -2;
-          margin-bottom: $pad-small;
 
           .manage-hosts__filter-dropdowns {
             display: flex;
             flex-direction: row;
             flex: 1;
 
-            .form-field--dropdown,
+            // Ratio tuned for 768px. Label may overhang a few px between
+            // 768-778px; not worth further layout complexity.
+            .form-field--dropdown {
+              flex: 8;
+            }
+
             .manage-hosts__label-filter-dropdown {
-              flex: 1;
+              flex: 13;
             }
 
             .manage-hosts__status-filter {
@@ -181,9 +191,6 @@
     .table-container__data-table-block {
       .data-table-block {
         .data-table {
-          &__wrapper {
-            overflow-x: auto;
-          }
           &__table {
             tbody {
               .issues {
@@ -224,13 +231,11 @@
   &__status-filter {
     width: 195px;
 
-    .Select-menu-outer {
-      width: 364px;
-      max-height: min-content;
-
-      .Select-menu {
-        max-height: none;
-      }
+    // Matches .label-filter-select__menu-list so both filter menus are the
+    // same height and neither scrolls.
+    .react-select__menu-list {
+      max-height: 590px;
+      padding-bottom: 0.75rem;
     }
     .Select-value {
       padding-left: $pad-medium;
@@ -243,20 +248,17 @@
   }
 
   &__label-filter-dropdown {
-    margin-left: $pad-small;
-  }
-
-  &__enroll-hosts {
-    padding: $pad-small;
-    margin-right: $pad-small;
+    margin-left: $gap-table-elements;
   }
 
   &__info-banners {
     padding-top: $pad-xxlarge;
     padding-bottom: $pad-large;
   }
+}
 
-  &__export-btn {
-    margin-left: $pad-xsmall;
-  }
+// The tooltip renders in a portal outside .manage-hosts, so this can't be
+// nested under that selector.
+.host-table-header-tooltip {
+  text-align: left;
 }

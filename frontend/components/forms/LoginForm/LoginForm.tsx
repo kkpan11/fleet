@@ -1,23 +1,20 @@
-import React, { FormEvent, useEffect, useState } from "react";
-import { Link } from "react-router";
-import { size } from "lodash";
 import classnames from "classnames";
-import { ILoginUserData } from "interfaces/user";
+import React, { useEffect, useState } from "react";
 
-import Icon from "components/Icon";
-import StackedWhiteBoxes from "components/StackedWhiteBoxes";
 import Button from "components/buttons/Button";
-// @ts-ignore
+import CustomLink from "components/CustomLink";
+import InputField from "components/forms/fields/InputField";
 import InputFieldWithIcon from "components/forms/fields/InputFieldWithIcon";
-import paths from "router/paths";
+import { isValidEmail, isPresent } from "components/forms/validators";
+import TooltipWrapper from "components/TooltipWrapper";
+import useFormValidation, { IFormErrors } from "hooks/useFormValidation";
 import { ISSOSettings } from "interfaces/ssoSettings";
-import validatePresence from "components/forms/validators/validate_presence";
-import validateEmail from "components/forms/validators/valid_email";
+import { ILoginUserData } from "interfaces/user";
+import paths from "router/paths";
 
 const baseClass = "login-form";
 
 interface ILoginFormProps {
-  baseError?: string;
   handleSubmit: (formData: ILoginUserData) => Promise<false | void>;
   isSubmitting: boolean;
   pendingEmail: boolean;
@@ -25,10 +22,25 @@ interface ILoginFormProps {
   handleSSOSignOn?: () => void;
 }
 
+const validate = ({ email, password }: ILoginUserData): IFormErrors => {
+  const errors: IFormErrors = {};
+
+  if (!isPresent(email)) {
+    errors.email = "Enter your email";
+  } else if (!isValidEmail(email)) {
+    errors.email = "Enter a valid email";
+  }
+
+  if (!isPresent(password)) {
+    errors.password = "Enter your password";
+  }
+
+  return errors;
+};
+
 const LoginForm = ({
-  baseError,
   handleSubmit,
-  isSubmitting,
+  isSubmitting: isRequestPending,
   pendingEmail,
   ssoSettings,
   handleSSOSignOn,
@@ -41,108 +53,69 @@ const LoginForm = ({
 
   const loginFormClass = classnames(baseClass);
 
-  const [errors, setErrors] = useState<any>({});
-  const [formData, setFormData] = useState<ILoginUserData>({
-    email: "",
-    password: "",
+  const {
+    formData,
+    getTextFieldProps,
+    handleSubmit: onSubmit,
+    isSubmitting,
+  } = useFormValidation<ILoginUserData>({
+    initialFormData: { email: "", password: "" },
+    validate,
+    isSubmitting: isRequestPending,
+    skipTrim: ["password"],
   });
+
   const [showPendingEmail, setShowPendingEmail] = useState(pendingEmail);
 
   useEffect(() => {
     setShowPendingEmail(pendingEmail);
   }, [pendingEmail]);
 
-  const validate = () => {
-    const { password, email } = formData;
-
-    const validationErrors: { [key: string]: string } = {};
-
-    if (!validatePresence(email)) {
-      validationErrors.email = "Email field must be completed";
-    } else if (!validateEmail(email)) {
-      validationErrors.email = "Email must be a valid email address";
-    }
-
-    if (!validatePresence(password)) {
-      validationErrors.password = "Password field must be completed";
-    }
-
-    setErrors(validationErrors);
-    const valid = !size(validationErrors);
-
-    return valid;
-  };
-
-  const onFormSubmit = (evt: FormEvent): Promise<false | void> | boolean => {
-    evt.preventDefault();
-    const valid = validate();
-
-    if (valid) {
-      return handleSubmit(formData);
-    }
-    return false;
-  };
-
-  const showLegendWithImage = () => {
-    let legend = "Single sign-on";
-    if (idpName !== "") {
-      legend = `Sign on with ${idpName}`;
-    }
-
-    return (
-      <div>
-        <img
-          src={imageURL}
-          alt={idpName}
-          className={`${baseClass}__sso-image`}
-        />
-        <span className={`${baseClass}__sso-legend`}>{legend}</span>
-      </div>
-    );
-  };
-
   const renderSingleSignOnButton = () => {
-    let legend: string | JSX.Element = "Single sign-on";
-    if (idpName !== "") {
-      legend = `Sign on with ${idpName}`;
-    }
-    if (imageURL !== "") {
-      legend = showLegendWithImage();
-    }
-
-    return (
+    const button = (
       <Button
         className={`${baseClass}__sso-btn`}
         type="button"
-        title="Single sign-on"
-        variant="inverse"
+        variant="secondary"
         onClick={handleSSOSignOn}
+        tabIndex={0}
       >
-        <div>{legend}</div>
+        {imageURL && (
+          <img src={imageURL} alt="" className={`${baseClass}__sso-image`} />
+        )}
+        <span className={`${baseClass}__sso-legend`}>Sign in with SSO</span>
       </Button>
     );
-  };
 
-  const onInputChange = (formField: string): ((value: string) => void) => {
-    return (value: string) => {
-      setErrors({});
-      setFormData({
-        ...formData,
-        [formField]: value,
-      });
-    };
+    // The label is always the generic "Sign in with SSO"; the configured IdP's
+    // name is surfaced only on hover so a long name can't overflow the button.
+    if (!idpName) {
+      return button;
+    }
+
+    return (
+      <TooltipWrapper
+        className={`${baseClass}__sso-tooltip`}
+        tipContent={`Sign in with ${idpName}`}
+        position="top"
+        showArrow
+        underline={false}
+      >
+        {button}
+      </TooltipWrapper>
+    );
   };
 
   if (showPendingEmail) {
     return (
-      <StackedWhiteBoxes className="two-factor-check-email">
+      <div className="two-factor-check-email">
         <>
           <Button
             onClick={() => setShowPendingEmail(false)}
-            variant="text-icon"
+            variant="subdued"
             className="back-link"
+            icon="chevron-left"
           >
-            <Icon name="chevron-left" color="core-fleet-blue" />
             Back to login
           </Button>
           <h1>Check your email</h1>
@@ -151,45 +124,55 @@ const LoginForm = ({
             Please click the magic link in the email to sign in.
           </p>
         </>
-      </StackedWhiteBoxes>
+      </div>
     );
   }
 
   return (
-    <form onSubmit={onFormSubmit} className={loginFormClass}>
-      {baseError && <div className="form__base-error">{baseError}</div>}
-      <InputFieldWithIcon
-        error={errors.email}
-        autofocus
-        label="Email"
-        placeholder="Email"
-        value={formData.email}
-        onChange={onInputChange("email")}
-      />
-      <InputFieldWithIcon
-        error={errors.password}
-        label="Password"
-        placeholder="Password"
-        type="password"
-        value={formData.password}
-        onChange={onInputChange("password")}
-      />
+    <form
+      onSubmit={onSubmit(handleSubmit)}
+      className={loginFormClass}
+      noValidate
+    >
+      <div className={`${baseClass}__form`}>
+        <InputFieldWithIcon
+          {...getTextFieldProps("email")}
+          autofocus
+          type="email"
+          label="Email"
+          placeholder="Email"
+          ignore1Password={false}
+          disabled={isSubmitting}
+        />
+        <InputField
+          {...getTextFieldProps("password")}
+          label="Password"
+          placeholder="Password"
+          type="password"
+          enableShowSecret
+          ignore1password={false}
+          disabled={isSubmitting}
+        />
+      </div>
       {/* Actions displayed using CSS column-reverse to preserve tab order */}
       <div className={`${baseClass}__actions`}>
         <div className={`${baseClass}__login-actions`}>
-          <Button className="login-btn" isLoading={isSubmitting} type="submit">
+          <Button
+            className={`${baseClass}__login-btn`}
+            isLoading={isSubmitting}
+            disabled={isSubmitting}
+            type="submit"
+            tabIndex={0}
+          >
             Log in
           </Button>
           {ssoEnabled && renderSingleSignOnButton()}
         </div>
-        <div className={`${baseClass}__forgot-wrap`}>
-          <Link
-            className={`${baseClass}__forgot-link`}
-            to={paths.FORGOT_PASSWORD}
-          >
-            Forgot password?
-          </Link>
-        </div>
+        <CustomLink
+          className={`${baseClass}__forgot-link`}
+          url={paths.FORGOT_PASSWORD}
+          text="Forgot password?"
+        />
       </div>
     </form>
   );

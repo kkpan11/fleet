@@ -1,20 +1,19 @@
 import React from "react";
 import { CellProps, Column } from "react-table";
 
-import {
-  IHostSoftware,
-  SoftwareSource,
-  SOURCE_TYPE_CONVERSION,
-} from "interfaces/software";
-import { IHeaderProps, IStringCellProps } from "interfaces/datatable_config";
-
 import HeaderCell from "components/TableContainer/DataTable/HeaderCell/HeaderCell";
-import TextCell from "components/TableContainer/DataTable/TextCell";
-
-import VulnerabilitiesCell from "pages/SoftwarePage/components/tables/VulnerabilitiesCell";
-import VersionCell from "pages/SoftwarePage/components/tables/VersionCell";
-import { getVulnerabilities } from "pages/SoftwarePage/SoftwareTitles/SoftwareTable/SoftwareTitlesTableConfig";
 import SoftwareNameCell from "components/TableContainer/DataTable/SoftwareNameCell";
+import TooltipTruncatedTextCell from "components/TableContainer/DataTable/TooltipTruncatedTextCell";
+import { IHeaderProps, IStringCellProps } from "interfaces/datatable_config";
+import {
+  formatSoftwareType,
+  IHostSoftware,
+  NO_VULNERABILITIES_TOOLTIP_BY_SOURCE,
+} from "interfaces/software";
+import EmptyCellWithTooltip from "pages/SoftwarePage/components/tables/EmptyCellWithTooltip";
+import { VersionsColumnCell } from "pages/SoftwarePage/components/tables/VersionCell";
+import VulnerabilitiesCell from "pages/SoftwarePage/components/tables/VulnerabilitiesCell";
+import { getVulnerabilities } from "pages/SoftwarePage/SoftwareInventory/SoftwareInventoryTable/helpers";
 
 type ISoftwareTableConfig = Column<IHostSoftware>;
 type ITableHeaderProps = IHeaderProps<IHostSoftware>;
@@ -24,11 +23,6 @@ type IInstalledVersionsCellProps = CellProps<
   IHostSoftware["installed_versions"]
 >;
 type IVulnerabilitiesCellProps = IInstalledVersionsCellProps;
-
-const formatSoftwareType = (source: SoftwareSource) => {
-  const DICT = SOURCE_TYPE_CONVERSION;
-  return DICT[source] || "Unknown";
-};
 
 export const generateSoftwareTableData = (
   software: IHostSoftware[]
@@ -48,8 +42,23 @@ export const generateSoftwareTableHeaders = (): ISoftwareTableConfig[] => {
       disableSortBy: false,
       disableGlobalFilter: false,
       Cell: (cellProps: ITableStringCellProps) => {
-        const { name, source } = cellProps.row.original;
-        return <SoftwareNameCell name={name} source={source} myDevicePage />;
+        const {
+          name,
+          display_name,
+          bundle_identifier,
+          source,
+          icon_url,
+        } = cellProps.row.original;
+        return (
+          <SoftwareNameCell
+            name={name}
+            display_name={display_name}
+            bundle_identifier={bundle_identifier}
+            source={source}
+            iconUrl={icon_url}
+            pageContext="deviceUser"
+          />
+        );
       },
       sortType: "caseInsensitive",
     },
@@ -61,26 +70,29 @@ export const generateSoftwareTableHeaders = (): ISoftwareTableConfig[] => {
       // need to access the same data. This is not supported with a string
       // accessor.
       accessor: (originalRow) => originalRow.installed_versions,
-      Cell: (cellProps: IInstalledVersionsCellProps) => {
-        return <VersionCell versions={cellProps.cell.value} />;
-      },
+      Cell: VersionsColumnCell,
     },
     {
-      Header: (cellProps: ITableHeaderProps) => (
-        <HeaderCell value="Type" isSortedDesc={cellProps.column.isSortedDesc} />
-      ),
-      disableSortBy: false,
+      Header: "Type",
+      disableSortBy: true,
       disableGlobalFilter: true,
-      accessor: "source",
-      Cell: (cellProps: ITableStringCellProps) => (
-        <TextCell value={cellProps.cell.value} formatter={formatSoftwareType} />
-      ),
+      id: "source",
+      Cell: (cellProps: ITableStringCellProps) => {
+        const { source, extension_for } = cellProps.row.original;
+        const value = formatSoftwareType({ source, extension_for });
+        return <TooltipTruncatedTextCell value={value} />;
+      },
     },
     {
       Header: "Vulnerabilities",
       accessor: (originalRow) => originalRow.installed_versions,
       disableSortBy: true,
       Cell: (cellProps: IVulnerabilitiesCellProps) => {
+        const noVulnerabilitiesTip =
+          NO_VULNERABILITIES_TOOLTIP_BY_SOURCE[cellProps.row.original.source];
+        if (noVulnerabilitiesTip) {
+          return <EmptyCellWithTooltip tipContent={noVulnerabilitiesTip} />;
+        }
         const vulnerabilities = getVulnerabilities(cellProps.cell.value ?? []);
         return <VulnerabilitiesCell vulnerabilities={vulnerabilities} />;
       },

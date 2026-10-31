@@ -1,26 +1,26 @@
-import PATHS from "router/paths";
+import { InjectedRouter } from "react-router";
 
 import { ISideNavItem } from "pages/admin/components/SideNav/SideNav";
+import PATHS from "router/paths";
 
-import EndUserAuthentication from "./cards/EndUserAuthentication/EndUserAuthentication";
 import BootstrapPackage from "./cards/BootstrapPackage";
-import SetupAssistant from "./cards/SetupAssistant";
 import InstallSoftware from "./cards/InstallSoftware";
 import RunScript from "./cards/RunScript";
+import SetupAssistant from "./cards/SetupAssistant";
+import Users from "./cards/Users/Users";
 
-interface ISetupExperienceCardProps {
-  currentTeamId?: number;
+export interface ISetupExperienceCardProps {
+  currentTeamId: number;
+  router: InjectedRouter;
+  urlPlatformParam?: string; // not yet guaranteed to be a valid platform
 }
 
-// TODO: types
-const SETUP_EXPERIENCE_NAV_ITEMS: ISideNavItem<
-  ISetupExperienceCardProps | any
->[] = [
+const SETUP_EXPERIENCE_NAV_ITEMS: ISideNavItem<ISetupExperienceCardProps>[] = [
   {
-    title: "1. End user authentication",
-    urlSection: "end-user-auth",
-    path: PATHS.CONTROLS_END_USER_AUTHENTICATION,
-    Card: EndUserAuthentication,
+    title: "1. Users",
+    urlSection: "users",
+    path: PATHS.CONTROLS_USERS,
+    Card: Users,
   },
   {
     title: "2. Bootstrap package",
@@ -31,7 +31,7 @@ const SETUP_EXPERIENCE_NAV_ITEMS: ISideNavItem<
   {
     title: "3. Install software",
     urlSection: "install-software",
-    path: PATHS.CONTROLS_INSTALL_SOFTWARE,
+    path: PATHS.CONTROLS_INSTALL_SOFTWARE("macos"),
     Card: InstallSoftware,
   },
   {
@@ -41,9 +41,9 @@ const SETUP_EXPERIENCE_NAV_ITEMS: ISideNavItem<
     Card: RunScript,
   },
   {
-    title: "5. Setup assistant",
+    title: "5. Setup Assistant",
     urlSection: "setup-assistant",
-    path: PATHS.CONTROLS_SETUP_ASSITANT,
+    path: PATHS.CONTROLS_SETUP_ASSISTANT,
     Card: SetupAssistant,
   },
 ];

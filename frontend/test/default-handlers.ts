@@ -1,9 +1,12 @@
 import { defaultActivityHandler } from "./handlers/activity-handlers";
 import {
   defaultDeviceHandler,
-  defaultDeviceMappingHandler,
   defaultMacAdminsHandler,
 } from "./handlers/device-handler";
+import {
+  emptyDeviceSelfServiceCategoriesHandler,
+  emptySelfServiceCategoriesHandler,
+} from "./handlers/self-service-categories-handlers";
 
 export const baseUrl = (path: string) => {
   return `/api/latest/fleet${path}`;
@@ -21,9 +24,10 @@ export const baseUrl = (path: string) => {
 // method in the test file itself.
 const handlers = [
   defaultDeviceHandler,
-  defaultDeviceMappingHandler,
   defaultMacAdminsHandler,
   defaultActivityHandler,
+  emptySelfServiceCategoriesHandler,
+  emptyDeviceSelfServiceCategoriesHandler,
 ];
 
 export default handlers;

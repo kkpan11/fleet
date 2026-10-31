@@ -1,12 +1,20 @@
 package mdm
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/asn1"
+	"encoding/base64"
+	"math/big"
 	"strings"
 	"testing"
 
+	"github.com/fleetdm/fleet/v4/server/mdm/nanodep/tokenpki"
+	"github.com/smallstep/pkcs7"
 	"github.com/stretchr/testify/require"
+	"github.com/tj/assert"
 )
 
 func TestDecodeCMS(t *testing.T) {
@@ -186,13 +194,23 @@ func TestGetRawProfilePlatform(t *testing.T) {
 		},
 		{
 			name:     "DDM JSON",
-			input:    []byte(`{"foo": "bar"}`),
+			input:    []byte(`{"Type": "bar", "Payload": "test"}`),
 			expected: "darwin",
 		},
 		{
 			name:     "DDM JSON with whitespace",
-			input:    []byte(`     {"foo": "bar"}`),
+			input:    []byte(`     {"Type": "bar", "Payload": "test"}`),
 			expected: "darwin",
+		},
+		{
+			name:     "Android JSON",
+			input:    []byte(`{"foo": "bar"}`),
+			expected: "android",
+		},
+		{
+			name:     "Android JSON with whitespace",
+			input:    []byte(`     {"foo": "bar"}`),
+			expected: "android",
 		},
 	}
 
@@ -258,4 +276,175 @@ func TestGuessProfileExtension(t *testing.T) {
 			require.Equal(t, tc.expected, result, "Expected result does not match actual result")
 		})
 	}
+}
+
+func TestDetermineJSONConfigType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		profileJSON string
+		wantApple   bool
+		wantAndroid bool
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "Valid Apple declaration",
+			// Adding a bunch of nonsense keys because this function should return the right thing
+			// even in the presence of various value types and keys it does not know about
+			profileJSON: `{ "Type": "com.apple.configuration.passcode.settings", "Identifier": "com.fleetdm.config.passcode.settings", "Payload": { "RequireAlphanumericPasscode": true, "MinimumLength": 10, "MinimumComplexCharacters": 1, "MaximumFailedAttempts": 11, "MaximumGracePeriodInMinutes": 1, "MaximumInactivityInMinutes": 15 }, "AnotherKey": null, "ANumericKey": 1, "ADecimalKey": 1.23, "AList": ["1", "2"] }`,
+			wantApple:   true,
+		},
+		{
+			name: "Valid Android configuration profile",
+			// Similarly adding a bunch of nonsense here to make sure various value types don't
+			// somehow trip up the sniffing logic
+			profileJSON: `{"name": "jordan was here", "modifyAccountsDisabled": true, "maximumTimeToLock": "1234567", "something": {"else": true}, "anotherThing": null, "numeric": 12345, "decimal": 1.23, "aList": ["1", "2"]}`,
+			wantApple:   false,
+			wantAndroid: true,
+		},
+		{
+			name:        "Apple declaration minus Type",
+			profileJSON: `{ "Identifier": "com.fleetdm.config.passcode.settings", "Payload": { "RequireAlphanumericPasscode": true, "MinimumLength": 10, "MinimumComplexCharacters": 1, "MaximumFailedAttempts": 11, "MaximumGracePeriodInMinutes": 1, "MaximumInactivityInMinutes": 15 } }`,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "apple declaration missing Type",
+		},
+		{
+			name:        "Apple declaration minus Payload",
+			profileJSON: `{ "Type": "com.apple.configuration.passcode.settings", "Identifier": "com.fleetdm.config.passcode.settings" }`,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "apple declaration missing Payload",
+		},
+		{
+			name:        "Android profile but with invalid keys containing numbers",
+			profileJSON: `{"name": "jordan was here", "modifyAccountsDisabled": true, "maximumTimeToLock": "1234567", "fl33t": true}`,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "android configuration profile contains invalid keys",
+		},
+		{
+			name:        "invalid json",
+			profileJSON: `{"payload": "Yes"`,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "unexpected end of JSON input",
+		},
+		{
+			name:        "empty json",
+			profileJSON: `{}`,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "JSON is empty",
+		},
+		{
+			name:        "nearly empty json",
+			profileJSON: `{"": "something"}`,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "empty string is not a valid JSON configuration key",
+		},
+		{
+			name:        "no json",
+			profileJSON: ``,
+			wantApple:   false,
+			wantAndroid: false,
+			wantErr:     true,
+			errContains: "unexpected end of JSON input",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotApple, gotAndroid, err := DetermineJSONConfigType([]byte(tt.profileJSON))
+			assert.Equal(t, tt.wantApple, gotApple)
+			assert.Equal(t, tt.wantAndroid, gotAndroid)
+			if tt.wantErr {
+				require.ErrorContains(t, err, tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestDecryptBase64CMSWithKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	original, err := tokenpki.SelfSignedCertForKey(key, "Fleet WSTEP test", 1)
+	require.NoError(t, err)
+	renewed, err := tokenpki.SelfSignedCertForKey(key, "Fleet WSTEP test", 2)
+	require.NoError(t, err)
+
+	const recoveryKey = "123456-123456-123456-123456-123456-123456-123456-123456"
+	encrypted, err := pkcs7.Encrypt([]byte(recoveryKey), []*x509.Certificate{original})
+	require.NoError(t, err)
+	b64 := base64.StdEncoding.EncodeToString(encrypted)
+
+	// The certificate-matched decrypt is what breaks on renewal: same key, new serial, no recipient match.
+	_, err = DecryptBase64CMS(b64, renewed, key)
+	require.ErrorContains(t, err, "no enveloped recipient")
+
+	plain, err := DecryptBase64CMSWithKey(b64, key)
+	require.NoError(t, err)
+	require.Equal(t, recoveryKey, string(plain))
+
+	_, err = DecryptBase64CMSWithKey(b64, otherKey)
+	require.Error(t, err)
+
+	_, err = DecryptBase64CMSWithKey("not base64", key)
+	require.Error(t, err)
+
+	_, err = DecryptBase64CMSWithKey(base64.StdEncoding.EncodeToString(append(encrypted, 0x00)), key)
+	require.ErrorContains(t, err, "trailing data")
+
+	_, err = DecryptBase64CMSWithKey(base64.StdEncoding.EncodeToString(encrypted[:len(encrypted)/2]), key)
+	require.Error(t, err)
+
+	notEnveloped, err := asn1.Marshal(cmsContentInfo{ContentType: pkcs7.OIDData})
+	require.NoError(t, err)
+	_, err = DecryptBase64CMSWithKey(base64.StdEncoding.EncodeToString(notEnveloped), key)
+	require.ErrorIs(t, err, pkcs7.ErrNotEncryptedContent)
+
+	// Trailing elements of the enveloped data are not parsed here, and a truncated one makes the pkcs7 package panic
+	// instead of failing. The helper turns that into an error.
+	type craftedEnvelopedData struct {
+		Version        int
+		RecipientInfos []cmsRecipientInfo `asn1:"set"`
+		Extra          asn1.RawValue
+	}
+	issuer, err := asn1.Marshal(asn1.RawValue{Class: 0, Tag: 16, IsCompound: true, Bytes: make([]byte, 300)})
+	require.NoError(t, err)
+	crafted, err := asn1.Marshal(craftedEnvelopedData{
+		RecipientInfos: []cmsRecipientInfo{{IssuerAndSerialNumber: cmsIssuerAndSerial{IssuerName: asn1.RawValue{FullBytes: issuer}, SerialNumber: big.NewInt(1)}}},
+		Extra:          asn1.RawValue{FullBytes: []byte{0x3F, 0x81}},
+	})
+	require.NoError(t, err)
+	craftedMsg, err := asn1.Marshal(cmsContentInfo{ContentType: pkcs7.OIDEnvelopedData, Content: asn1.RawValue{Class: 2, Tag: 0, IsCompound: true, Bytes: crafted}})
+	require.NoError(t, err)
+	_, err = DecryptBase64CMSWithKey(base64.StdEncoding.EncodeToString(craftedMsg), key)
+	require.ErrorContains(t, err, "parse CMS message")
+
+	// A message with two recipients does not identify which one the key belongs to.
+	other, err := tokenpki.SelfSignedCertForKey(otherKey, "Fleet WSTEP test", 3)
+	require.NoError(t, err)
+	two, err := pkcs7.Encrypt([]byte(recoveryKey), []*x509.Certificate{original, other})
+	require.NoError(t, err)
+	_, err = DecryptBase64CMSWithKey(base64.StdEncoding.EncodeToString(two), key)
+	require.ErrorContains(t, err, "expected 1")
+}
+
+func TestDecodeAndDecryptRejectsShortInput(t *testing.T) {
+	const serverKey = "0123456789abcdef0123456789abcdef"
+	_, err := DecodeAndDecrypt(base64.StdEncoding.EncodeToString([]byte{0x30, 0x82, 0x00}), serverKey)
+	require.ErrorContains(t, err, "shorter than the nonce")
 }

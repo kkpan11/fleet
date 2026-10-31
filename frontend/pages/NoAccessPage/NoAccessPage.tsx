@@ -2,24 +2,18 @@
 
 import React, { useEffect } from "react";
 import { InjectedRouter } from "react-router";
-import PATHS from "router/paths";
 
-import { CONTACT_FLEET_LINK } from "utilities/constants";
-
-import Button from "components/buttons/Button/Button";
-// @ts-ignore
-import StackedWhiteBoxes from "components/StackedWhiteBoxes";
 import AuthenticationFormWrapper from "components/AuthenticationFormWrapper";
-import CustomLink from "components/CustomLink/CustomLink";
+import Button from "components/buttons/Button/Button";
+import PATHS from "router/paths";
 
 const baseClass = "no-access-page";
 
 interface INoAccessPageProps {
   router: InjectedRouter;
-  orgContactUrl?: string;
 }
 
-const NoAccessPage = ({ router, orgContactUrl }: INoAccessPageProps) => {
+const NoAccessPage = ({ router }: INoAccessPageProps) => {
   const onBackToLogin = () => {
     router.push(PATHS.LOGIN);
   };
@@ -41,25 +35,19 @@ const NoAccessPage = ({ router, orgContactUrl }: INoAccessPageProps) => {
   }, [onBackToLogin]);
 
   return (
-    <AuthenticationFormWrapper>
-      <StackedWhiteBoxes
-        router={router}
-        headerText="This account does not currently have access to Fleet."
-      >
-        <>
-          <p>
-            To get access,{" "}
-            <CustomLink
-              url={orgContactUrl || CONTACT_FLEET_LINK}
-              text="contact your administrator"
-            />
-            .
-          </p>
-          <Button onClick={onBackToLogin} className={`${baseClass}__btn`}>
-            Back to login
-          </Button>
-        </>
-      </StackedWhiteBoxes>
+    <AuthenticationFormWrapper header="Access denied" className={baseClass}>
+      <div className={`${baseClass}__description`}>
+        <p>
+          This account does not currently have access to Fleet.
+          <br />
+          To get access, contact your administrator.
+        </p>
+      </div>
+      <div className="button-wrap--center">
+        <Button onClick={onBackToLogin} size="wide">
+          Back to login
+        </Button>
+      </div>
     </AuthenticationFormWrapper>
   );
 };

@@ -1,5 +1,4 @@
 import React from "react";
-
 import type { SVGProps } from "react";
 
 const iOS = (props: SVGProps<SVGSVGElement>) => {
@@ -7,6 +6,7 @@ const iOS = (props: SVGProps<SVGSVGElement>) => {
   if (props.width === "24") {
     return (
       <svg fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
+        <path fill="#F9FAFC" d="M0 0h32v32H0z" />
         <g transform="translate(4, 4) scale(1.5)">
           <rect
             x="5"
@@ -33,6 +33,7 @@ const iOS = (props: SVGProps<SVGSVGElement>) => {
   }
   return (
     <svg fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
+      <path fill="#F9FAFC" d="M0 0h32v32H0z" />
       <g transform="translate(7, 7) scale(0.75)">
         <rect
           x="5.25"

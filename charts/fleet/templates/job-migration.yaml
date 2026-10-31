@@ -44,6 +44,9 @@ spec:
             sql_proxy_pid=$(pgrep cloud_sql_proxy) && kill -INT $sql_proxy_pid;
             {{- end }}
         image: "{{ .Values.imageRepository }}:{{ .Values.imageTag }}"
+        {{- with .Values.imagePullPolicy }}
+        imagePullPolicy: {{ . }}
+        {{- end }}
         resources:
           limits:
             cpu: {{ .Values.resources.limits.cpu }}
@@ -137,7 +140,9 @@ spec:
           {{- if .Values.fleet.securityContext.runAsUser }}
           runAsUser: {{ int64 .Values.fleet.securityContext.runAsUser }}
           {{- end }}
-          runAsNonRoot: true
+          {{- if .Values.fleet.securityContext.runAsNonRoot }}
+          runAsNonRoot: {{ .Values.fleet.securityContext.runAsNonRoot }}
+          {{- end }}
         volumeMounts:
           {{- if .Values.database.tls.enabled }}
           - name: mysql-tls
@@ -170,7 +175,9 @@ spec:
           {{- if .Values.fleet.securityContext.runAsUser }}
           runAsUser: {{ int64 .Values.fleet.securityContext.runAsUser }}
           {{- end }}
-          runAsNonRoot: true
+          {{- if .Values.fleet.securityContext.runAsNonRoot }}
+          runAsNonRoot: {{ .Values.fleet.securityContext.runAsNonRoot }}
+          {{- end }}
       {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

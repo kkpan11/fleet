@@ -9,19 +9,20 @@ import (
 // Device corresponds to the Apple DEP API "Device" structure.
 // See https://developer.apple.com/documentation/devicemanagement/device
 type Device struct {
-	SerialNumber       string    `json:"serial_number"`
-	Model              string    `json:"model"`
-	Description        string    `json:"description"`
-	Color              string    `json:"color"`
-	AssetTag           string    `json:"asset_tag,omitempty"`
-	ProfileStatus      string    `json:"profile_status"`
-	ProfileUUID        string    `json:"profile_uuid,omitempty"`
-	ProfileAssignTime  time.Time `json:"profile_assign_time,omitempty"`
-	ProfilePushTime    time.Time `json:"profile_push_time,omitempty"`
-	DeviceAssignedDate time.Time `json:"device_assigned_date,omitempty"`
-	DeviceAssignedBy   string    `json:"device_assigned_by,omitempty"`
-	OS                 string    `json:"os,omitempty"`
-	DeviceFamily       string    `json:"device_family,omitempty"`
+	SerialNumber         string     `json:"serial_number"`
+	Model                string     `json:"model"`
+	Description          string     `json:"description"`
+	Color                string     `json:"color"`
+	AssetTag             string     `json:"asset_tag,omitempty"`
+	ProfileStatus        string     `json:"profile_status"`
+	ProfileUUID          string     `json:"profile_uuid,omitempty"`
+	ProfileAssignTime    time.Time  `json:"profile_assign_time,omitempty"`
+	ProfilePushTime      time.Time  `json:"profile_push_time,omitempty"`
+	DeviceAssignedDate   time.Time  `json:"device_assigned_date,omitempty"`
+	DeviceAssignedBy     string     `json:"device_assigned_by,omitempty"`
+	OS                   string     `json:"os,omitempty"`
+	DeviceFamily         string     `json:"device_family,omitempty"`
+	MDMMigrationDeadline *time.Time `json:"mdm_migration_deadline,omitempty"`
 	// fetch/sync-only fields
 	OpType string    `json:"op_type,omitempty"`
 	OpDate time.Time `json:"op_date,omitempty"`
@@ -94,24 +95,68 @@ func (c *Client) SyncDevices(ctx context.Context, name string, opts ...DeviceReq
 	return resp, c.doWithAfterHook(ctx, name, http.MethodPost, "/devices/sync", req, resp)
 }
 
-// GetDevicesDetails uses the Apple "Get Device Details" API endpoint to
+type DeviceDetails struct {
+	Device
+	ResponseStatus string `json:"response_status"`
+}
+
+// GetDeviceDetails uses the Apple "Get Device Details" API endpoint to
 // retrieve the details (such as its assigned enrollment profile UUID) for the
 // specified device, identified by its serial number.
 // See https://developer.apple.com/documentation/devicemanagement/get_device_details
-func (c *Client) GetDeviceDetails(ctx context.Context, name, serialNumber string) (*Device, error) {
+func (c *Client) GetDeviceDetails(ctx context.Context, name, serialNumber string) (*DeviceDetails, error) {
+	devices, err := c.GetDevicesDetails(ctx, name, serialNumber)
+	if err != nil {
+		return nil, err
+	}
+	return devices[serialNumber], nil
+}
+
+// GetDevicesDetails is the multi-device form of GetDeviceDetails. Apple keys the
+// response by serial number and omits serials it has no record of, so callers
+// must not assume every requested serial comes back.
+//
+// Apple caps how many devices one request may carry; callers are responsible for
+// chunking (see apple_mdm.DEPSyncLimit).
+// See https://developer.apple.com/documentation/devicemanagement/get_device_details
+func (c *Client) GetDevicesDetails(ctx context.Context, name string, serialNumbers ...string) (map[string]*DeviceDetails, error) {
 	type request struct {
 		Devices []string `json:"devices"`
 	}
 	type response struct {
-		Devices map[string]*Device `json:"devices"`
+		Devices map[string]*DeviceDetails `json:"devices"`
 	}
 	resp := new(response)
 	if err := c.doWithAfterHook(ctx, name, http.MethodPost, "/devices", request{
-		Devices: []string{serialNumber},
+		Devices: serialNumbers,
 	}, resp); err != nil {
 		return nil, err
 	}
-	return resp.Devices[serialNumber], nil
+	return resp.Devices, nil
+}
+
+type DeviceStatusResponse struct {
+	Devices map[string]DeviceStatus `json:"devices,omitempty"`
+}
+
+type DeviceStatus string
+
+const (
+	DeviceStatusFailed        DeviceStatus = "FAILED"
+	DeviceStatusNotAccessible DeviceStatus = "NOT_ACCESSIBLE"
+	DeviceStatusSuccess       DeviceStatus = "SUCCESS"
+)
+
+// DisownDevices uses the Apple "Disown Devices" API endpoint to disown the
+// specified devices, identified by their serial numbers. Disowning a device
+// releases it from Apple Business.
+// See https://developer.apple.com/documentation/devicemanagement/disown-devices
+func (c *Client) DisownDevices(ctx context.Context, name string, serialNumbers ...string) (*DeviceStatusResponse, error) {
+	request := struct {
+		Devices []string `json:"devices"`
+	}{Devices: serialNumbers}
+	resp := new(DeviceStatusResponse)
+	return resp, c.doWithAfterHook(ctx, name, http.MethodPost, "/devices/disown", request, resp)
 }
 
 // IsCursorExhausted returns true if err is a DEP "exhausted cursor" error.

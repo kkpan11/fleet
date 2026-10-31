@@ -1,13 +1,13 @@
 import React from "react";
 
+import Card from "components/Card";
 import CustomLink from "components/CustomLink";
 
+import IOSUpdateScreenshot from "../../../../../assets/images/ios-updates-preview.png";
+import IPadOSUpdateScreenshot from "../../../../../assets/images/ipados-updates-preview.png";
+import MacOSUpdateScreenshot from "../../../../../assets/images/macos-updates-preview.png";
+import WindowsUpdateScreenshot from "../../../../../assets/images/windows-nudge-screenshot.png";
 import { OSUpdatesSupportedPlatform } from "../../OSUpdates";
-
-import MacOSUpdateScreenshot from "../../../../../../assets/images/macos-updates-preview.png";
-import WindowsUpdateScreenshot from "../../../../../../assets/images/windows-nudge-screenshot.png";
-import IOSUpdateScreenshot from "../../../../../../assets/images/ios-updates-preview.png";
-import IPadOSUpdateScreenshot from "../../../../../../assets/images/ipados-updates-preview.png";
 
 const baseClass = "os-requirement-preview";
 
@@ -21,12 +21,11 @@ const OSRequirementDescription = ({
     case "darwin":
       return (
         <>
-          <h3>End user experience on macOS</h3>
+          <h3>End user experience</h3>
           <p>
-            For macOS 14 and above, end users will see native macOS
-            notifications (DDM).
+            When a minimum version is enforced, end users see a native macOS
+            notification (DDM) once per day.
           </p>
-          <p>Everyone else will see the Nudge window.</p>
           <CustomLink
             text="Learn more"
             url="https://fleetdm.com/learn-more-about/os-updates"
@@ -37,7 +36,7 @@ const OSRequirementDescription = ({
     case "windows":
       return (
         <>
-          <h3>End user experience on Windows</h3>
+          <h3>End user experience</h3>
           <p>
             When a Windows host becomes aware of a new update, end users are
             able to defer restarts. Automatic restarts happen before 8am and
@@ -54,13 +53,13 @@ const OSRequirementDescription = ({
     case "ios":
       return (
         <>
-          <h3>End user experience on iOS</h3>
+          <h3>End user experience</h3>
         </>
       );
     case "ipados":
       return (
         <>
-          <h3>End user experience on iPadOS</h3>
+          <h3>End user experience</h3>
         </>
       );
     default:
@@ -82,7 +81,7 @@ const OSRequirementImage = ({
       case "ipados":
         return IPadOSUpdateScreenshot;
       default:
-        MacOSUpdateScreenshot;
+        return MacOSUpdateScreenshot;
     }
   };
 
@@ -102,10 +101,10 @@ const EndUserOSRequirementPreview = ({
   // mismatch between the text and the image when switching between platforms. We should load the
   // image first and then the text.
   return (
-    <div className={baseClass}>
+    <Card color="grey" paddingSize="xxlarge" className={baseClass}>
       <OSRequirementDescription platform={platform} />
       <OSRequirementImage platform={platform} />
-    </div>
+    </Card>
   );
 };
 

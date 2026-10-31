@@ -1,11 +1,12 @@
 import React from "react";
+
 import LastUpdatedText from "components/LastUpdatedText";
 
 const baseClass = "last-updated-host-count";
 
 interface ILastUpdatedHostCount {
   hostCount?: string | number | JSX.Element;
-  lastUpdatedAt?: string;
+  lastUpdatedAt?: string | null;
 }
 
 const LastUpdatedHostCount = ({
@@ -15,7 +16,7 @@ const LastUpdatedHostCount = ({
   const tooltipContent = (
     <>
       The last time host data was updated. <br />
-      Click <b>View all hosts</b> to see the most
+      Click the host count to see the most
       <br /> up-to-date host count.
     </>
   );
@@ -23,10 +24,12 @@ const LastUpdatedHostCount = ({
   return (
     <div className={baseClass}>
       <>{hostCount}</>
-      <LastUpdatedText
-        lastUpdatedAt={lastUpdatedAt}
-        customTooltipText={tooltipContent}
-      />
+      {lastUpdatedAt !== undefined && (
+        <LastUpdatedText
+          lastUpdatedAt={lastUpdatedAt}
+          customTooltipText={tooltipContent}
+        />
+      )}
     </div>
   );
 };

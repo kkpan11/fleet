@@ -1,13 +1,35 @@
 import React from "react";
 
-import ListItem from "components/ListItem";
-import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
 import Button from "components/buttons/Button";
-import Icon from "components/Icon";
+import GitOpsModeTooltipWrapper from "components/GitOpsModeTooltipWrapper";
+import ListItem from "components/ListItem";
 
-import { ICertAuthorityListData } from "../../helpers";
+import RenewDateCell from "../../../MdmSettings/components/RenewDateCell";
+import { IRenewDateCellStatusConfig } from "../../../MdmSettings/components/RenewDateCell/RenewDateCell";
+import { ICertAuthorityListData } from "../CertificateAuthorityList/CertificateAuthorityList";
 
 const baseClass = "cert-authority-list-item";
+
+const CLIENT_CERT_EXPIRY_STATUS_CONFIG: IRenewDateCellStatusConfig = {
+  warning: {
+    tooltipText: (
+      <>
+        The client certificate expires in less than 30 days. <br />
+        To renew it, edit the certificate authority and upload a new one.
+      </>
+    ),
+  },
+  error: {
+    tooltipText: (
+      <>
+        The client certificate expired. Fleet can&apos;t get certificates from
+        EJBCA until you upload a new one.
+        <br />
+        To renew it, edit the certificate authority and upload a new one.
+      </>
+    ),
+  },
+};
 
 interface IActionsProps {
   onEdit: () => void;
@@ -24,10 +46,10 @@ const Actions = ({ onEdit, onDelete }: IActionsProps) => {
             disabled={disableChildren}
             onClick={onEdit}
             className={`${baseClass}__action-button`}
-            variant="text-icon"
-          >
-            <Icon name="pencil" color="ui-fleet-black-75" />
-          </Button>
+            variant="subdued"
+            icon="pencil"
+            ariaLabel="Edit certificate authority"
+          />
         )}
       />
       <GitOpsModeTooltipWrapper
@@ -37,24 +59,14 @@ const Actions = ({ onEdit, onDelete }: IActionsProps) => {
             disabled={disableChildren}
             onClick={onDelete}
             className={`${baseClass}__action-button`}
-            variant="text-icon"
-          >
-            <Icon name="trash" color="ui-fleet-black-75" />
-          </Button>
+            variant="subdued"
+            icon="trash"
+            ariaLabel="Delete certificate authority"
+          />
         )}
       />
     </>
   );
-};
-
-const generateCertDetails = (certId: string) => {
-  if (certId.includes("ndes")) {
-    return "Microsoft Network Device Enrollment Service (NDES)";
-  } else if (certId.includes("digicert")) {
-    return "DigiCert";
-  }
-
-  return "Custom Simple Certificate Enrollment Protocol (SCEP)";
 };
 
 interface ICertAuthorityListItemProps {
@@ -73,7 +85,20 @@ const CertAuthorityListItem = ({
       className={baseClass}
       graphic="file-certificate"
       title={cert.name}
-      details={generateCertDetails(cert.id)}
+      details={
+        <>
+          {cert.description}
+          {cert.mtls_cert_expires_at && (
+            <span className={`${baseClass}__client-cert-expiry`}>
+              Client certificate expires:
+              <RenewDateCell
+                value={cert.mtls_cert_expires_at}
+                statusConfig={CLIENT_CERT_EXPIRY_STATUS_CONFIG}
+              />
+            </span>
+          )}
+        </>
+      }
       actions={<Actions onEdit={onClickEdit} onDelete={onClickDelete} />}
     />
   );

@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -19,6 +20,46 @@ type TeamIntegrations struct {
 	Jira           []*TeamJiraIntegration         `json:"jira"`
 	Zendesk        []*TeamZendeskIntegration      `json:"zendesk"`
 	GoogleCalendar *TeamGoogleCalendarIntegration `json:"google_calendar"`
+	// ConditionalAccessEnabled indicates whether the conditional access feature is enabled on this team.
+	ConditionalAccessEnabled optjson.Bool `json:"conditional_access_enabled,omitempty"`
+}
+
+// Copy returns a deep copy of TeamIntegrations
+func (ti TeamIntegrations) Copy() TeamIntegrations {
+	var result TeamIntegrations
+
+	// Deep copy Jira integrations
+	if ti.Jira != nil {
+		result.Jira = make([]*TeamJiraIntegration, len(ti.Jira))
+		for i, j := range ti.Jira {
+			if j != nil {
+				jiraCopy := *j
+				result.Jira[i] = &jiraCopy
+			}
+		}
+	}
+
+	// Deep copy Zendesk integrations
+	if ti.Zendesk != nil {
+		result.Zendesk = make([]*TeamZendeskIntegration, len(ti.Zendesk))
+		for i, z := range ti.Zendesk {
+			if z != nil {
+				zendeskCopy := *z
+				result.Zendesk[i] = &zendeskCopy
+			}
+		}
+	}
+
+	// Deep copy Google Calendar integration
+	if ti.GoogleCalendar != nil {
+		gcalCopy := *ti.GoogleCalendar
+		result.GoogleCalendar = &gcalCopy
+	}
+
+	// Copy ConditionalAccessEnabled
+	result.ConditionalAccessEnabled = ti.ConditionalAccessEnabled
+
+	return result
 }
 
 // MatchWithIntegrations matches the team integrations to their corresponding
@@ -349,73 +390,240 @@ const (
 	GoogleCalendarPrivateKey = "private_key"
 )
 
+// GoogleCalendarApiKey is a custom type for the Google Calendar API key JSON.
+// It handles JSON marshaling/unmarshaling with support for masking sensitive data.
+// When marshaled in masked state, it serializes to just "********".
+// When unmarshaled, it accepts either "********" (indicating masked/preserve) or a JSON object.
+//
+// GitOps unknown-key validation is intentionally skipped for this type: users
+// typically paste the full Google service-account JSON blob (which contains many
+// keys beyond the two Fleet uses), and ValidateGoogleCalendarIntegrations still
+// enforces that client_email and private_key are present.
+type GoogleCalendarApiKey struct {
+	// Values contains the actual API key fields when not masked
+	Values map[string]string
+	// masked indicates if this key should be serialized as masked
+	masked bool
+}
+
+// MarshalJSON implements json.Marshaler. When masked, returns "********".
+// Otherwise, returns the JSON object representation of the values.
+func (k GoogleCalendarApiKey) MarshalJSON() ([]byte, error) {
+	if k.masked {
+		return json.Marshal(MaskedPassword)
+	}
+	return json.Marshal(k.Values)
+}
+
+// UnmarshalJSON implements json.Unmarshaler. Accepts either "********" string
+// (sets masked=true) or a JSON object (populates Values).
+func (k *GoogleCalendarApiKey) UnmarshalJSON(data []byte) error {
+	// Handle null - treat as empty (will fail validation if required)
+	if string(data) == "null" {
+		k.Values = nil
+		k.masked = false
+		return nil
+	}
+
+	// Try to unmarshal as a string first (for masked value)
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		if str == MaskedPassword {
+			k.masked = true
+			k.Values = nil
+			return nil
+		}
+		// Some other string value - invalid
+		return errors.New("api_key_json must be a JSON object or the masked value")
+	}
+
+	// Try to unmarshal as a map
+	var values map[string]string
+	if err := json.Unmarshal(data, &values); err != nil {
+		return fmt.Errorf("api_key_json must be a JSON object: %w", err)
+	}
+
+	k.Values = values
+	k.masked = false
+	return nil
+}
+
+// IsMasked returns true if this API key was unmarshaled from a masked value
+// or has been explicitly marked as masked.
+func (k GoogleCalendarApiKey) IsMasked() bool {
+	return k.masked
+}
+
+// SetMasked marks this API key as masked for serialization.
+func (k *GoogleCalendarApiKey) SetMasked() {
+	k.masked = true
+}
+
+// IsEmpty returns true if there are no values in the API key.
+func (k GoogleCalendarApiKey) IsEmpty() bool {
+	return len(k.Values) == 0
+}
+
 type GoogleCalendarIntegration struct {
-	Domain string            `json:"domain"`
-	ApiKey map[string]string `json:"api_key_json"`
+	Domain string               `json:"domain"`
+	ApiKey GoogleCalendarApiKey `json:"api_key_json"`
 }
 
-type DigiCertIntegration struct {
-	Name                          string   `json:"name"`
-	URL                           string   `json:"url"`
-	APIToken                      string   `json:"api_token"`
-	ProfileID                     string   `json:"profile_id"`
-	CertificateCommonName         string   `json:"certificate_common_name"`
-	CertificateUserPrincipalNames []string `json:"certificate_user_principal_names"`
-	CertificateSeatID             string   `json:"certificate_seat_id"`
-}
-
-func (d *DigiCertIntegration) Equals(other *DigiCertIntegration) bool {
-	return d.Name == other.Name &&
-		d.URL == other.URL &&
-		(d.APIToken == "" || d.APIToken == MaskedPassword || d.APIToken == other.APIToken) &&
-		d.ProfileID == other.ProfileID &&
-		d.CertificateCommonName == other.CertificateCommonName &&
-		slices.Equal(d.CertificateUserPrincipalNames, other.CertificateUserPrincipalNames) &&
-		d.CertificateSeatID == other.CertificateSeatID
-}
-
-func (d *DigiCertIntegration) NeedToVerify(other *DigiCertIntegration) bool {
-	return d.Name != other.Name ||
-		d.URL != other.URL ||
-		!(d.APIToken == "" || d.APIToken == MaskedPassword || d.APIToken == other.APIToken) ||
-		d.ProfileID != other.ProfileID
-}
-
-// NDESSCEPProxyIntegration configures SCEP proxy for NDES SCEP server. Premium feature.
-type NDESSCEPProxyIntegration struct {
-	URL      string `json:"url"`
-	AdminURL string `json:"admin_url"`
-	Username string `json:"username"`
-	Password string `json:"password"` // not stored here -- encrypted in DB
-}
-
-type SCEPConfigService interface {
-	ValidateNDESSCEPAdminURL(ctx context.Context, proxy NDESSCEPProxyIntegration) error
-	GetNDESSCEPChallenge(ctx context.Context, proxy NDESSCEPProxyIntegration) (string, error)
-	ValidateSCEPURL(ctx context.Context, url string) error
-}
-
-type CustomSCEPProxyIntegration struct {
-	Name      string `json:"name"`
-	URL       string `json:"url"`
-	Challenge string `json:"challenge"`
-}
-
-func (s *CustomSCEPProxyIntegration) Equals(other *CustomSCEPProxyIntegration) bool {
-	return s.Name == other.Name &&
-		s.URL == other.URL &&
-		(s.Challenge == "" || s.Challenge == MaskedPassword || s.Challenge == other.Challenge)
+// GoogleWorkspaceIntegration configures syncing IdP host vitals (users, groups,
+// and departments) from Google Workspace via the Admin SDK Directory API, using a
+// service account with domain-wide delegation. Unlike SCIM — which is a push from
+// the IdP into Fleet — this is a periodic pull performed by Fleet on a schedule.
+type GoogleWorkspaceIntegration struct {
+	// Domain is the Google Workspace primary domain whose directory is synced.
+	Domain string `json:"domain"`
+	// ImpersonatedUserEmail is the Google Workspace admin user that the service
+	// account impersonates via domain-wide delegation. The Admin SDK Directory API
+	// only accepts requests on behalf of a real admin user (the JWT Subject).
+	ImpersonatedUserEmail string `json:"impersonated_user_email"`
+	// ApiKey holds the service account JSON (client_email, private_key). It reuses
+	// the GoogleCalendarApiKey masking type because the credential format and the
+	// masking/preserve-on-update behavior are identical.
+	ApiKey GoogleCalendarApiKey `json:"api_key_json"`
 }
 
 // Integrations configures the integrations with external systems.
 type Integrations struct {
-	Jira           []*JiraIntegration                 `json:"jira"`
-	Zendesk        []*ZendeskIntegration              `json:"zendesk"`
-	GoogleCalendar []*GoogleCalendarIntegration       `json:"google_calendar"`
-	DigiCert       optjson.Slice[DigiCertIntegration] `json:"digicert"`
-	// NDESSCEPProxy settings. In JSON, not specifying this field means keep current setting, null means clear settings.
-	NDESSCEPProxy   optjson.Any[NDESSCEPProxyIntegration]     `json:"ndes_scep_proxy"`
-	CustomSCEPProxy optjson.Slice[CustomSCEPProxyIntegration] `json:"custom_scep_proxy"`
+	Jira            []*JiraIntegration            `json:"jira"`
+	Zendesk         []*ZendeskIntegration         `json:"zendesk"`
+	GoogleCalendar  []*GoogleCalendarIntegration  `json:"google_calendar"`
+	GoogleWorkspace []*GoogleWorkspaceIntegration `json:"google_workspace,omitempty"`
+	// CertificatesIdPIntrospectionURLs allowlists the OAuth 2.0 token introspection endpoints permitted
+	// to vouch for certificate requests. Closed by default: while empty, no IdP credentials are
+	// accepted. Once populated, credentials are mandatory and the endpoint must be listed. URLs are
+	// stored as given and matched exactly, as Jira and Zendesk URLs are.
+	CertificatesIdPIntrospectionURLs optjson.Slice[string] `json:"certificates_idp_introspection_urls"`
+	// CertificatesIdPClientIDs optionally constrains the client ID as well. Meaningless without URLs.
+	CertificatesIdPClientIDs optjson.Slice[string] `json:"certificates_idp_client_ids"`
+	// CertificatesDisableHostEndUserBinding turns off the requirement that device-authenticated
+	// certificate requests match the calling host's recorded end-user identity. The binding is on by
+	// default and fails closed on a host with no recorded identity.
+	CertificatesDisableHostEndUserBinding optjson.Bool `json:"certificates_disable_host_end_user_binding"`
+	// ConditionalAccessEnabled indicates whether conditional access is enabled/disabled for "No team".
+	ConditionalAccessEnabled optjson.Bool `json:"conditional_access_enabled"`
+}
+
+// CheckCertIdPIntrospection enforces the IdP allowlists against one request whose credentials have
+// already passed RequestCertificatePayload.IdPCredentialsProvided, so the pointers are both set
+// or both nil.
+//
+// Closed by default: an introspection endpoint is only contacted if it is allowlisted, so with no
+// URLs configured any supplied credentials are refused. Once URLs are configured, credentials
+// become mandatory rather than merely constrained, otherwise a caller omits them and skips the
+// check. The client ID list is an optional further constraint.
+func (i Integrations) CheckCertIdPIntrospection(introspectionURL, clientID *string) error {
+	urls := i.CertificatesIdPIntrospectionURLs.Value
+	if introspectionURL == nil || clientID == nil {
+		if len(urls) > 0 {
+			return &BadRequestError{Message: "IdP verification is required by this Fleet server."}
+		}
+		return nil
+	}
+	if !slices.Contains(urls, *introspectionURL) {
+		return NewPermissionError("IdP introspection endpoint is not permitted.")
+	}
+	if clientIDs := i.CertificatesIdPClientIDs.Value; len(clientIDs) > 0 && !slices.Contains(clientIDs, *clientID) {
+		return NewPermissionError("IdP client ID is not permitted.")
+	}
+	return nil
+}
+
+// ValidateCertIdPIntrospectionAllowlists trims entries in place and reports empty, malformed, or
+// duplicate ones.
+func ValidateCertIdPIntrospectionAllowlists(intgs *Integrations, invalid *InvalidArgumentError) {
+	// Entries are trimmed in place as they are visited, so everything before index i is already
+	// canonical and scanning that prefix finds duplicates without separate bookkeeping. These
+	// lists hold a handful of entries, so the quadratic scan beats building a set.
+	urls := intgs.CertificatesIdPIntrospectionURLs.Value
+	for i := range urls {
+		urls[i] = strings.TrimSpace(urls[i])
+		u := urls[i]
+		switch {
+		case u == "":
+			invalid.Append("integrations.certificates_idp_introspection_urls", "url cannot be empty")
+		case !isAbsoluteHTTPSURL(u):
+			invalid.Append("integrations.certificates_idp_introspection_urls", fmt.Sprintf("%q must be an absolute https URL", u))
+		case slices.Contains(urls[:i], u):
+			invalid.Append("integrations.certificates_idp_introspection_urls", fmt.Sprintf("duplicate url %s", u))
+		}
+	}
+
+	clientIDs := intgs.CertificatesIdPClientIDs.Value
+	for i := range clientIDs {
+		clientIDs[i] = strings.TrimSpace(clientIDs[i])
+		id := clientIDs[i]
+		switch {
+		case id == "":
+			invalid.Append("integrations.certificates_idp_client_ids", "client ID cannot be empty")
+		case slices.Contains(clientIDs[:i], id):
+			invalid.Append("integrations.certificates_idp_client_ids", fmt.Sprintf("duplicate client ID %s", id))
+		}
+	}
+	// No endpoint is ever permitted without URLs, so client IDs on their own can never be satisfied.
+	if len(clientIDs) > 0 && len(urls) == 0 {
+		invalid.Append("integrations.certificates_idp_client_ids", "requires integrations.certificates_idp_introspection_urls to be set")
+	}
+}
+
+func isAbsoluteHTTPSURL(rawURL string) bool {
+	parsed, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsed == nil {
+		return false
+	}
+	// Userinfo is refused: the allowlist is stored unmasked, and a credential there would be
+	// sent with every introspection call.
+	return parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil
+}
+
+// IsGoogleWorkspaceConfigured reports whether a Google Workspace IdP integration
+// is fully set up: an entry exists with a domain and a non-empty service-account
+// API key.
+func (i Integrations) IsGoogleWorkspaceConfigured() bool {
+	return len(i.GoogleWorkspace) > 0 &&
+		i.GoogleWorkspace[0].Domain != "" &&
+		!i.GoogleWorkspace[0].ApiKey.IsEmpty()
+}
+
+// ValidateConditionalAccessIntegration validates "Conditional access" can be enabled on a team/"No team".
+// It checks the global setup of the feature has been made (either Microsoft Entra or Okta).
+func ValidateConditionalAccessIntegration(
+	ctx context.Context,
+	g interface {
+		ConditionalAccessMicrosoftGet(context.Context) (*ConditionalAccessMicrosoftIntegration, error)
+	},
+	conditionalAccessSettings *ConditionalAccessSettings,
+	currentConditionalAccessEnabled bool,
+	newConditionalAccessEnabled bool,
+) error {
+	switch {
+	case currentConditionalAccessEnabled == newConditionalAccessEnabled:
+		// No change, nothing to do.
+	case currentConditionalAccessEnabled && !newConditionalAccessEnabled:
+		// Disabling feature on team/no-team, nothing to do.
+	case !currentConditionalAccessEnabled && newConditionalAccessEnabled:
+		// Enabling feature on team/no-team.
+		// Check that at least one integration is configured (Microsoft Entra or Okta)
+		conditionalAccessIntegration, err := g.ConditionalAccessMicrosoftGet(ctx)
+		if err != nil {
+			return fmt.Errorf("load conditional access microsoft: %w", err)
+		}
+		entraConfigured := conditionalAccessIntegration != nil && conditionalAccessIntegration.SetupDone
+
+		// Check Okta configuration from ConditionalAccessSettings
+		oktaConfigured := conditionalAccessSettings.OktaConfigured()
+
+		if !entraConfigured && !oktaConfigured {
+			return NewInvalidArgumentError(
+				"integrations.conditional_access_enabled",
+				"Couldn't enable because no conditional access integration is configured",
+			)
+		}
+	}
+	return nil
 }
 
 func ValidateEnabledActivitiesWebhook(webhook ActivitiesWebhookSettings, invalid *InvalidArgumentError) {
@@ -430,6 +638,24 @@ func ValidateEnabledActivitiesWebhook(webhook ActivitiesWebhookSettings, invalid
 			} else if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 				invalid.Append(
 					"webhook_settings.activities_webhook.destination_url", "destination_url must be https or http, and have a host",
+				)
+			}
+		}
+	}
+}
+
+func ValidateEnabledHostActivitiesWebhook(webhook HostActivitiesWebhookSettings, invalid *InvalidArgumentError) {
+	if webhook.Enable {
+		if webhook.DestinationURL == "" {
+			invalid.Append(
+				"webhook_settings.host_activities_webhook.destination_url", "destination_url is required to enable the host activities webhook",
+			)
+		} else {
+			if u, err := url.ParseRequestURI(webhook.DestinationURL); err != nil {
+				invalid.Append("webhook_settings.host_activities_webhook.destination_url", err.Error())
+			} else if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				invalid.Append(
+					"webhook_settings.host_activities_webhook.destination_url", "destination_url must be https or http, and have a host",
 				)
 			}
 		}
@@ -459,14 +685,14 @@ func ValidateGoogleCalendarIntegrations(intgs []*GoogleCalendarIntegration, inva
 		invalid.Append("integrations.google_calendar", "integrating with >1 Google Workspace service account is not yet supported.")
 	}
 	for _, intg := range intgs {
-		if email, ok := intg.ApiKey[GoogleCalendarEmail]; !ok {
+		if email, ok := intg.ApiKey.Values[GoogleCalendarEmail]; !ok {
 			invalid.Append(
 				fmt.Sprintf("integrations.google_calendar.api_key_json.%s", GoogleCalendarEmail),
 				fmt.Sprintf("%s is required", GoogleCalendarEmail),
 			)
 		} else {
 			email = strings.TrimSpace(email)
-			intg.ApiKey[GoogleCalendarEmail] = email
+			intg.ApiKey.Values[GoogleCalendarEmail] = email
 			if email == "" {
 				invalid.Append(
 					fmt.Sprintf("integrations.google_calendar.api_key_json.%s", GoogleCalendarEmail),
@@ -474,14 +700,14 @@ func ValidateGoogleCalendarIntegrations(intgs []*GoogleCalendarIntegration, inva
 				)
 			}
 		}
-		if privateKey, ok := intg.ApiKey["private_key"]; !ok {
+		if privateKey, ok := intg.ApiKey.Values[GoogleCalendarPrivateKey]; !ok {
 			invalid.Append(
 				fmt.Sprintf("integrations.google_calendar.api_key_json.%s", GoogleCalendarPrivateKey),
 				fmt.Sprintf("%s is required", GoogleCalendarPrivateKey),
 			)
 		} else {
 			privateKey = strings.TrimSpace(privateKey)
-			intg.ApiKey[GoogleCalendarPrivateKey] = privateKey
+			intg.ApiKey.Values[GoogleCalendarPrivateKey] = privateKey
 			if privateKey == "" {
 				invalid.Append(
 					fmt.Sprintf("integrations.google_calendar.api_key_json.%s", GoogleCalendarPrivateKey),
@@ -492,6 +718,57 @@ func ValidateGoogleCalendarIntegrations(intgs []*GoogleCalendarIntegration, inva
 		intg.Domain = strings.TrimSpace(intg.Domain)
 		if intg.Domain == "" {
 			invalid.Append("integrations.google_calendar.domain", "domain is required")
+		}
+	}
+}
+
+// ValidateGoogleWorkspaceIntegrations validates the Google Workspace IdP
+// integrations. It enforces a single integration and the presence of the service
+// account credentials (client_email, private_key), the Workspace domain, and the
+// admin user email to impersonate (required for domain-wide delegation). Any error
+// found is appended to invalid, to be checked by the caller via invalid.HasErrors.
+func ValidateGoogleWorkspaceIntegrations(intgs []*GoogleWorkspaceIntegration, invalid *InvalidArgumentError) {
+	if len(intgs) > 1 {
+		invalid.Append("integrations.google_workspace", "integrating with >1 Google Workspace service account is not yet supported.")
+	}
+	for _, intg := range intgs {
+		if email, ok := intg.ApiKey.Values[GoogleCalendarEmail]; !ok {
+			invalid.Append(
+				fmt.Sprintf("integrations.google_workspace.api_key_json.%s", GoogleCalendarEmail),
+				fmt.Sprintf("%s is required", GoogleCalendarEmail),
+			)
+		} else {
+			email = strings.TrimSpace(email)
+			intg.ApiKey.Values[GoogleCalendarEmail] = email
+			if email == "" {
+				invalid.Append(
+					fmt.Sprintf("integrations.google_workspace.api_key_json.%s", GoogleCalendarEmail),
+					fmt.Sprintf("%s cannot be blank", GoogleCalendarEmail),
+				)
+			}
+		}
+		if privateKey, ok := intg.ApiKey.Values[GoogleCalendarPrivateKey]; !ok {
+			invalid.Append(
+				fmt.Sprintf("integrations.google_workspace.api_key_json.%s", GoogleCalendarPrivateKey),
+				fmt.Sprintf("%s is required", GoogleCalendarPrivateKey),
+			)
+		} else {
+			privateKey = strings.TrimSpace(privateKey)
+			intg.ApiKey.Values[GoogleCalendarPrivateKey] = privateKey
+			if privateKey == "" {
+				invalid.Append(
+					fmt.Sprintf("integrations.google_workspace.api_key_json.%s", GoogleCalendarPrivateKey),
+					fmt.Sprintf("%s cannot be blank", GoogleCalendarPrivateKey),
+				)
+			}
+		}
+		intg.Domain = strings.TrimSpace(intg.Domain)
+		if intg.Domain == "" {
+			invalid.Append("integrations.google_workspace.domain", "domain is required")
+		}
+		intg.ImpersonatedUserEmail = strings.TrimSpace(intg.ImpersonatedUserEmail)
+		if intg.ImpersonatedUserEmail == "" {
+			invalid.Append("integrations.google_workspace.impersonated_user_email", "impersonated_user_email is required")
 		}
 	}
 }

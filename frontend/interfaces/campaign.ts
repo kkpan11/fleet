@@ -1,4 +1,5 @@
 import PropTypes from "prop-types";
+
 import { IHost } from "./host";
 
 export default PropTypes.shape({
@@ -12,6 +13,7 @@ export default PropTypes.shape({
 });
 
 export interface ICampaignError {
+  host_id: number;
   host_display_name: string;
   osquery_version: string;
   error: string;

@@ -10,6 +10,7 @@ import (
 	"github.com/WatchBeam/clock"
 	"github.com/fleetdm/fleet/v4/server/config"
 	"github.com/fleetdm/fleet/v4/server/datastore/mysql"
+	"github.com/fleetdm/fleet/v4/server/datastore/mysql/mysqltest"
 	"github.com/fleetdm/fleet/v4/server/datastore/redis"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	"github.com/fleetdm/fleet/v4/server/mock"
@@ -134,7 +135,7 @@ func testCollectScheduledQueryStats(t *testing.T, ds *mysql.Datastore, pool flee
 
 	selectRows := func(t *testing.T) []hostSQStats {
 		var rows []hostSQStats
-		mysql.ExecAdhocSQL(t, ds, func(tx sqlx.ExtContext) error {
+		mysqltest.ExecAdhocSQL(t, ds, func(tx sqlx.ExtContext) error {
 			return sqlx.SelectContext(ctx, tx, &rows, `SELECT host_id, scheduled_query_id, executions FROM scheduled_query_stats ORDER BY 1, 2`)
 		})
 		return rows
@@ -144,13 +145,15 @@ func testCollectScheduledQueryStats(t *testing.T, ds *mysql.Datastore, pool flee
 		func() {
 			t.Log("test name: ", c.name)
 
-			task := NewTask(ds, pool, clock.C, config.OsqueryConfig{
-				EnableAsyncHostProcessing:   "true",
-				AsyncHostInsertBatch:        batchSizes,
-				AsyncHostUpdateBatch:        batchSizes,
-				AsyncHostDeleteBatch:        batchSizes,
-				AsyncHostRedisPopCount:      batchSizes,
-				AsyncHostRedisScanKeysCount: 10,
+			task := NewTask(ds, pool, clock.C, &config.FleetConfig{
+				Osquery: config.OsqueryConfig{
+					EnableAsyncHostProcessing:   "true",
+					AsyncHostInsertBatch:        batchSizes,
+					AsyncHostUpdateBatch:        batchSizes,
+					AsyncHostDeleteBatch:        batchSizes,
+					AsyncHostRedisPopCount:      batchSizes,
+					AsyncHostRedisScanKeysCount: 10,
+				},
 			})
 			wantStats := setupTest(t, task, c.hostStats)
 
@@ -175,7 +178,7 @@ func testRecordScheduledQueryStatsSync(t *testing.T, ds *mock.Store, pool fleet.
 	stats := []fleet.PackStats{{PackName: "p1", QueryStats: []fleet.ScheduledQueryStats{{ScheduledQueryName: "sq1"}}}}
 	hashKey := fmt.Sprintf(scheduledQueryStatsHostQueriesKey, host.ID)
 
-	task := NewTask(ds, pool, clock.C, config.OsqueryConfig{})
+	task := NewTask(ds, pool, clock.C, nil)
 
 	err := task.RecordScheduledQueryStats(ctx, host.TeamID, host.ID, stats, now)
 	require.NoError(t, err)
@@ -215,11 +218,13 @@ func testRecordScheduledQueryStatsAsync(t *testing.T, ds *mock.Store, pool fleet
 	}
 	hashKey := fmt.Sprintf(scheduledQueryStatsHostQueriesKey, host.ID)
 
-	task := NewTask(ds, pool, clock.C, config.OsqueryConfig{
-		EnableAsyncHostProcessing:   "true",
-		AsyncHostInsertBatch:        3,
-		AsyncHostRedisPopCount:      3,
-		AsyncHostRedisScanKeysCount: 10,
+	task := NewTask(ds, pool, clock.C, &config.FleetConfig{
+		Osquery: config.OsqueryConfig{
+			EnableAsyncHostProcessing:   "true",
+			AsyncHostInsertBatch:        3,
+			AsyncHostRedisPopCount:      3,
+			AsyncHostRedisScanKeysCount: 10,
+		},
 	})
 
 	err := task.RecordScheduledQueryStats(ctx, host.TeamID, host.ID, stats, now)

@@ -1,0 +1,101 @@
+name: Test Fleet Maintained Apps - Darwin
+
+on:
+  # Note: PR triggers removed - use test-fma-darwin-pr-only.yml for PRs
+  # This workflow is kept for manual testing of all FMAs via workflow_dispatch
+  workflow_dispatch: # Manual trigger
+    inputs:
+      log_level:
+        description: "Log level (debug, info, warn, error)"
+        required: false
+        default: "info"
+        type: choice
+        options:
+          - debug
+          - info
+          - warn
+          - error
+      shard_size:
+        description: "Maximum number of apps per validation job (shards run in parallel)"
+        required: false
+        default: "20"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  # Shard every darwin app in apps.json on a cheap Linux runner, then fan out
+  # to macOS runners that validate the shards in parallel. Note that GitHub
+  # caps concurrent macOS jobs well below Linux/Windows, so shards beyond the
+  # cap queue and run in waves.
+  partition:
+    runs-on: ubuntu-latest
+    outputs:
+      has_darwin_apps: ${{ steps.partition.outputs.has_apps }}
+      matrix: ${{ steps.partition.outputs.matrix }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout Fleet
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Shard all Darwin apps
+        id: partition
+        env:
+          SHARD_SIZE: ${{ github.event.inputs.shard_size || '25' }}
+        run: |
+          ALL_DARWIN_SLUGS=$(jq -c '[.apps[].slug | select(endswith("/darwin"))]' ee/maintained-apps/outputs/apps.json)
+          bash .github/scripts/partition-fma-apps.sh darwin "$ALL_DARWIN_SLUGS" "$SHARD_SIZE"
+
+  validate:
+    needs: partition
+    if: needs.partition.outputs.has_darwin_apps == 'true'
+    name: ${{ matrix.name }}
+    strategy:
+      # Keep validating the remaining shards even if one fails so a full run
+      # reports every broken app, not just the first.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.partition.outputs.matrix) }}
+    uses: ./.github/workflows/test-fma-darwin-validate.yml
+    permissions:
+      contents: read
+    with:
+      runner: ${{ matrix.runner }}
+      slugs: ${{ matrix.slugs }}
+      log_level: ${{ github.event.inputs.log_level || 'info' }}
+
+  # Stable-named summary job aggregating the per-shard results.
+  test-fma:
+    needs: [partition, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Check validation results
+        env:
+          PARTITION_RESULT: ${{ needs.partition.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+        run: |
+          echo "partition: $PARTITION_RESULT"
+          echo "validate: $VALIDATE_RESULT"
+          if [ "$PARTITION_RESULT" != "success" ]; then
+            echo "Sharding apps failed"
+            exit 1
+          fi
+          if [ "$VALIDATE_RESULT" != "success" ] && [ "$VALIDATE_RESULT" != "skipped" ]; then
+            echo "Validation failed"
+            exit 1
+          fi
+          echo "All Darwin FMA validations passed"

@@ -1,4 +1,5 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 import { ICON_SIZES, IconSizes } from "styles/var/icon_sizes";
 
@@ -7,7 +8,7 @@ interface IInfoProps {
   size?: IconSizes;
 }
 
-const Info = ({ size = "small", color = "core-fleet-blue" }: IInfoProps) => {
+const Info = ({ size = "small", color = "ui-fleet-black-75" }: IInfoProps) => {
   return (
     <svg
       width={ICON_SIZES[size]}

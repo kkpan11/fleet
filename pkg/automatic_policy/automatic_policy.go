@@ -4,6 +4,7 @@ package automatic_policy
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // PolicyData contains generated data for a policy to trigger installation of a software package.
@@ -78,7 +79,7 @@ func (m MacInstallerMetadata) PolicyQuery() (string, error) {
 	if m.BundleIdentifier == "" {
 		return "", ErrMissingBundleIdentifier
 	}
-	return fmt.Sprintf("SELECT 1 FROM apps WHERE bundle_identifier = '%s';", m.BundleIdentifier), nil
+	return fmt.Sprintf("SELECT 1 FROM apps WHERE bundle_identifier = '%s';", escapeSQLLiteral(m.BundleIdentifier)), nil
 }
 
 func (m MacInstallerMetadata) PolicyPlatform() (string, error) {
@@ -97,6 +98,9 @@ type FullInstallerMetadata struct {
 
 	// PackageIDs contains the product code for 'msi' packages.
 	PackageIDs []string
+
+	// UpgradeCode is the upgrade code for 'msi' packages.
+	UpgradeCode string
 }
 
 func (m FullInstallerMetadata) PolicyName() (string, error) {
@@ -134,20 +138,24 @@ func (m FullInstallerMetadata) PolicyQuery() (string, error) {
 		if m.BundleIdentifier == "" {
 			return "", ErrMissingBundleIdentifier
 		}
-		return fmt.Sprintf("SELECT 1 FROM apps WHERE bundle_identifier = '%s';", m.BundleIdentifier), nil
+		return fmt.Sprintf("SELECT 1 FROM apps WHERE bundle_identifier = '%s';", escapeSQLLiteral(m.BundleIdentifier)), nil
 	case "msi":
-		if len(m.PackageIDs) == 0 || m.PackageIDs[0] == "" {
-			return "", ErrMissingProductCode
+		// Use the upgrade code if we have it. Otherwise, fall back to the product code.
+		if m.UpgradeCode != "" {
+			return fmt.Sprintf("SELECT 1 FROM programs WHERE upgrade_code = '%s';", escapeSQLLiteral(m.UpgradeCode)), nil
 		}
-		return fmt.Sprintf("SELECT 1 FROM programs WHERE identifying_number = '%s';", m.PackageIDs[0]), nil
+		if len(m.PackageIDs) == 0 || m.PackageIDs[0] == "" {
+			return "", ErrMissingProductAndUpgradeCode
+		}
+		return fmt.Sprintf("SELECT 1 FROM programs WHERE identifying_number = '%s';", escapeSQLLiteral(m.PackageIDs[0])), nil
 	case "deb":
 		return fmt.Sprintf(
 			// First inner SELECT will mark the policies as successful on non-DEB-based hosts.
 			`SELECT 1 WHERE EXISTS (
 	SELECT 1 WHERE (SELECT COUNT(*) FROM deb_packages) = 0
 ) OR EXISTS (
-	SELECT 1 FROM deb_packages WHERE name = '%s'
-);`, m.Title,
+	SELECT 1 FROM deb_packages WHERE name = '%s' AND status = 'install ok installed'
+);`, escapeSQLLiteral(m.Title),
 		), nil
 	case "rpm":
 		return fmt.Sprintf(
@@ -156,7 +164,7 @@ func (m FullInstallerMetadata) PolicyQuery() (string, error) {
 	SELECT 1 WHERE (SELECT COUNT(*) FROM rpm_packages) = 0
 ) OR EXISTS (
 	SELECT 1 FROM rpm_packages WHERE name = '%s'
-);`, m.Title), nil
+);`, escapeSQLLiteral(m.Title)), nil
 	default:
 		return "", ErrExtensionNotSupported
 	}
@@ -177,13 +185,20 @@ func (m FullInstallerMetadata) PolicyPlatform() (string, error) {
 	}
 }
 
+// escapeSQLLiteral escapes s for use inside a single-quoted osquery (SQLite) string
+// literal. Installer metadata is attacker-controllable, so it must never be able to
+// terminate the literal.
+func escapeSQLLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
 var (
 	// ErrExtensionNotSupported is returned if the extension is not supported to generate automatic policies.
 	ErrExtensionNotSupported = errors.New("extension not supported")
 	// ErrMissingBundleIdentifier is returned if the software extension is "pkg" and a bundle identifier was not extracted from the installer.
 	ErrMissingBundleIdentifier = errors.New("missing bundle identifier")
-	// ErrMissingProductCode is returned if the software extension is "msi" and a product code was not extracted from the installer.
-	ErrMissingProductCode = errors.New("missing product code")
+	// ErrMissingProductAndUpgradeCode is returned if the software extension is "msi" and a product code was not extracted from the installer.
+	ErrMissingProductAndUpgradeCode = errors.New("missing product and upgrade code")
 	// ErrMissingTitle is returned if a title was not extracted from the installer.
 	ErrMissingTitle = errors.New("missing title")
 )

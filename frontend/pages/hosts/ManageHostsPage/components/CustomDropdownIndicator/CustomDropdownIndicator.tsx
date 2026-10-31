@@ -1,8 +1,8 @@
 import React from "react";
 import { DropdownIndicatorProps, components } from "react-select-5";
 
-import { ILabel } from "interfaces/label";
 import Icon from "components/Icon";
+import { ILabel } from "interfaces/label";
 
 import { IEmptyOption, IGroupOption } from "../LabelFilterSelect/helpers";
 
@@ -16,8 +16,8 @@ const CustomDropdownIndicator = (
   // file of LabelFilterSelect.
   const color =
     isFocused || selectProps.menuIsOpen
-      ? "core-fleet-blue"
-      : "core-fleet-black";
+      ? "core-fleet-black"
+      : "ui-fleet-black-75";
 
   return (
     <components.DropdownIndicator {...props} className={baseClass}>

@@ -1,11 +1,18 @@
-import { getErrorReason } from "interfaces/errors";
+import { IConfigOverrideParamsOnTeamChange } from "hooks/useTeamIdParam";
+import { HostStatusFilter } from "interfaces/host";
+import { APP_CONTEXT_ALL_TEAMS_ID } from "interfaces/team";
+import { FLEET_SCOPED_HOST_FILTER_PARAMS } from "services/entities/hosts";
 
-export const isAcceptableStatus = (filter: string): boolean => {
+export const isAcceptableStatus = (
+  filter?: string
+): filter is HostStatusFilter => {
   return (
     filter === "new" ||
     filter === "online" ||
     filter === "offline" ||
-    filter === "missing"
+    filter === "missing" ||
+    filter === "pending" ||
+    filter === "enrolled"
   );
 };
 
@@ -24,24 +31,10 @@ export const isValidPemCertificate = (cert: string): boolean => {
   return regexPemHeader.test(cert) && regexPemFooter.test(cert);
 };
 
-export const hasStatusKey = (value: unknown): value is { status: number } => {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "status" in value &&
-    typeof (value as any).status === "number"
-  );
-};
+const isAllFleets = (newTeamId?: number) =>
+  newTeamId === APP_CONTEXT_ALL_TEAMS_ID;
 
-export const getDeleteLabelErrorMessages = (error: unknown): string => {
-  // unprocessable content status. Label is used in a custom profile
-  // or software target. we have to check that status exists on the error object
-  // before we can access it.
-  if (hasStatusKey(error) && error.status === 422) {
-    return getErrorReason(error).includes("built-in")
-      ? "Built-in labels can't be modified or deleted."
-      : "Couldn't delete. Software uses this label as a custom target. Remove the label from the software target and try again.";
-  }
-
-  return "Could not delete label. Please try again.";
-};
+export const STRIP_FLEET_SCOPED_FILTERS_ON_ALL_FLEETS = FLEET_SCOPED_HOST_FILTER_PARAMS.reduce<IConfigOverrideParamsOnTeamChange>(
+  (config, param) => ({ ...config, [param]: isAllFleets }),
+  {}
+);

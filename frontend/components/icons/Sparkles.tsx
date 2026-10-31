@@ -1,11 +1,12 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 
 interface ISparklesProps {
   color?: Colors;
 }
 
-const Sparkles = ({ color = "core-fleet-blue" }: ISparklesProps) => {
+const Sparkles = ({ color = "ui-fleet-black-75" }: ISparklesProps) => {
   return (
     <svg
       width="16"

@@ -15,7 +15,9 @@ import (
 
 const (
 	mediaType = "application/json;charset=UTF8"
-	userAgent = "nanodep-godep/0"
+	// Apple blocks the default nanodep user agent with newer protocol versions
+	// cf https://github.com/micromdm/nanodep/issues/42
+	userAgent = "fleetdm/nanodep"
 )
 
 // HTTPError encapsulates an HTTP response error from the DEP requests.
@@ -62,6 +64,25 @@ func httpErrorContains(err error, status int, s string) bool {
 func authErrorContains(err error, status int, s string) bool {
 	var authErr *depclient.AuthError
 	if errors.As(err, &authErr) && authErr.StatusCode == status && bytes.Contains(authErr.Body, []byte(s)) {
+		return true
+	}
+	return false
+}
+
+// IsServerError returns true if err is a DEP HTTPError or AuthError with a
+// 5xx status code, indicating a problem on Apple's end rather than with the
+// request itself. do() only ever constructs AuthError with StatusCode 401,
+// but DoAuth's /session handshake (client/auth.go) constructs AuthError with
+// whatever status Apple actually returns, which can be a genuine 5xx if
+// Apple's auth endpoint itself is down -- so both error types are checked
+// here.
+func IsServerError(err error) bool {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode >= http.StatusInternalServerError {
+		return true
+	}
+	var authErr *depclient.AuthError
+	if errors.As(err, &authErr) && authErr.StatusCode >= http.StatusInternalServerError {
 		return true
 	}
 	return false

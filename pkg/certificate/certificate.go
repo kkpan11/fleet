@@ -3,8 +3,10 @@ package certificate
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -236,4 +238,36 @@ func parseFullClientCertificate(crt, key []byte) (tls.Certificate, error) {
 	}
 	cert.Leaf = parsedLeaf
 	return cert, nil
+}
+
+// EncodeCertPEM returns PEM-endcoded certificate data.
+func EncodeCertPEM(cert *x509.Certificate) []byte {
+	block := pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	}
+	return pem.EncodeToMemory(&block)
+}
+
+// FirstCertificateFromPEM returns the first CERTIFICATE block of the PEM data. It returns nil if there is no CERTIFICATE block.
+func FirstCertificateFromPEM(pemData []byte) (*x509.Certificate, error) {
+	for {
+		var block *pem.Block
+		block, pemData = pem.Decode(pemData)
+		if block == nil {
+			return nil, nil
+		}
+		if block.Type == "CERTIFICATE" {
+			return x509.ParseCertificate(block.Bytes)
+		}
+	}
+}
+
+// EncodePrivateKeyPEM returns PEM-encoded private key data
+func EncodePrivateKeyPEM(key *rsa.PrivateKey) []byte {
+	block := pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}
+	return pem.EncodeToMemory(&block)
 }

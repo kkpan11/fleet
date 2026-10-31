@@ -1,41 +1,68 @@
 import React from "react";
+import { CellProps } from "react-table";
 
 import TextCell from "components/TableContainer/DataTable/TextCell";
+import TooltipTruncatedTextCell from "components/TableContainer/DataTable/TooltipTruncatedTextCell";
 import TooltipWrapper from "components/TooltipWrapper";
+import {
+  formatSoftwareVersion,
+  NO_VERSION_TOOLTIP_BY_SOURCE,
+  SoftwareSource,
+} from "interfaces/software";
 
-const generateText = <T extends { version: string }>(versions: T[] | null) => {
-  if (!versions) {
-    return <TextCell value="---" grey />;
-  }
-  const text =
-    versions.length !== 1 ? `${versions.length} versions` : versions[0].version;
-  return <TextCell value={text} italic={versions.length !== 1} />;
-};
+import EmptyCellWithTooltip from "../EmptyCellWithTooltip";
 
-interface IVersionCellProps<T extends { version: string }> {
-  versions: T[] | null;
+interface IVersionEntry {
+  version: string;
+  release?: string;
 }
 
-const VersionCell = <T extends { version: string }>({
+interface IVersionCellProps<T extends IVersionEntry> {
+  versions: T[] | null | undefined;
+  /** Source of the software these versions belong to. */
+  source: SoftwareSource;
+}
+
+const VersionCell = <T extends IVersionEntry>({
   versions,
+  source,
 }: IVersionCellProps<T>) => {
-  // only one version, no need for tooltip
-  const cellText = generateText(versions);
-  if (!versions || versions.length <= 1) {
-    return <>{cellText}</>;
+  if (!versions || versions.length === 0 || versions[0].version === "") {
+    return (
+      <EmptyCellWithTooltip tipContent={NO_VERSION_TOOLTIP_BY_SOURCE[source]} />
+    );
   }
 
+  const displayedVersions = versions.map((v) =>
+    formatSoftwareVersion({ ...v, source })
+  );
+
+  if (displayedVersions.length === 1) {
+    return <TooltipTruncatedTextCell value={displayedVersions[0]} />;
+  }
+
+  // Multiple versions: show count, tooltip with versions list
   return (
     <TooltipWrapper
-      tipContent={<>{versions.map((version) => version.version).join(", ")}</>}
+      tipContent={<>{displayedVersions.join(", ")}</>}
       tipOffset={14}
       position="top"
       showArrow
       underline={false}
+      fixedPositionStrategy
     >
-      {cellText}
+      <TextCell value={`${displayedVersions.length} versions`} italic />
     </TooltipWrapper>
   );
 };
+
+/** react-table `Cell` for a column whose value is a row's version list. Version
+ * entries carry no source of their own, so this reads the row's. */
+export const VersionsColumnCell = <T extends { source: SoftwareSource }>({
+  cell,
+  row,
+}: CellProps<T, IVersionEntry[] | null | undefined>) => (
+  <VersionCell versions={cell.value} source={row.original.source} />
+);
 
 export default VersionCell;

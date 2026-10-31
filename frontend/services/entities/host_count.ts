@@ -1,12 +1,13 @@
 /* eslint-disable  @typescript-eslint/explicit-module-boundary-types */
-import sendRequest from "services";
-import endpoints from "utilities/endpoints";
+
+import { HostStatus } from "interfaces/host";
 import {
   DiskEncryptionStatus,
   BootstrapPackageStatus,
   MdmProfileStatus,
 } from "interfaces/mdm";
-import { HostStatus } from "interfaces/host";
+import sendRequest from "services";
+import endpoints from "utilities/endpoints";
 import {
   buildQueryStringFromParams,
   getLabelParam,
@@ -14,7 +15,7 @@ import {
   reconcileMutuallyInclusiveHostParams,
 } from "utilities/url";
 
-import { MacSettingsStatusQueryParam } from "./hosts";
+import { DEPDeviceStatus, MacSettingsStatusQueryParam } from "./hosts";
 
 export interface ISortOption {
   key: string;
@@ -43,6 +44,7 @@ export interface IHostCountLoadOptions {
   softwareTitleId?: number;
   softwareVersionId?: number;
   softwareStatus?: string;
+  appStoreAppVersionId?: number;
   lowDiskSpaceHosts?: number;
   mdmId?: number;
   mdmEnrollmentStatus?: string;
@@ -56,6 +58,10 @@ export interface IHostCountLoadOptions {
   bootstrapPackageStatus?: BootstrapPackageStatus;
   configProfileStatus?: string;
   configProfileUUID?: string;
+  scriptBatchExecutionStatus?: string;
+  scriptBatchExecutionId?: string;
+  depProfileError?: boolean;
+  depAssignProfileResponse?: DEPDeviceStatus;
 }
 
 export default {
@@ -71,6 +77,7 @@ export default {
     const softwareTitleId = options?.softwareTitleId;
     const softwareVersionId = options?.softwareVersionId;
     const softwareStatus = options?.softwareStatus;
+    const appStoreAppVersionId = options?.appStoreAppVersionId;
     const macSettingsStatus = options?.macSettingsStatus;
     const status = options?.status;
     const mdmId = options?.mdmId;
@@ -87,6 +94,10 @@ export default {
     const bootstrapPackageStatus = options?.bootstrapPackageStatus;
     const configProfileStatus = options?.configProfileStatus;
     const configProfileUUID = options?.configProfileUUID;
+    const scriptBatchExecutionStatus = options?.scriptBatchExecutionStatus;
+    const scriptBatchExecutionId = options?.scriptBatchExecutionId;
+    const depProfileError = options?.depProfileError;
+    const depAssignProfileResponse = options?.depAssignProfileResponse;
 
     const queryParams = {
       query: globalFilter,
@@ -108,6 +119,7 @@ export default {
         softwareId,
         softwareTitleId,
         softwareStatus,
+        appStoreAppVersionId,
         softwareVersionId,
         lowDiskSpaceHosts,
         osName,
@@ -119,6 +131,10 @@ export default {
         bootstrapPackageStatus,
         configProfileStatus,
         configProfileUUID,
+        scriptBatchExecutionStatus,
+        scriptBatchExecutionId,
+        depProfileError,
+        depAssignProfileResponse,
       }),
       label_id: label,
       status,

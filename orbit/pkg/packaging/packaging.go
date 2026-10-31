@@ -5,13 +5,17 @@
 package packaging
 
 import (
-	_ "embed"
+	"crypto/sha512"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/fleetdm/fleet/v4/orbit/pkg/cabundle"
 	"github.com/fleetdm/fleet/v4/orbit/pkg/constant"
 	"github.com/fleetdm/fleet/v4/orbit/pkg/update"
 	"github.com/fleetdm/fleet/v4/orbit/pkg/update/filestore"
@@ -61,6 +65,12 @@ type Options struct {
 	FleetDesktopAlternativeBrowserHost string
 	// DisableUpdates disables auto updates on the generated package.
 	DisableUpdates bool
+	// DisableSetupExperience disables setup experience for Linux hosts
+	DisableSetupExperience bool
+	// BypassEndUserAuth configures fleetd to skip end-user authentication during enrollment by not
+	// advertising the end-user auth capability to the Fleet server. On Windows it sets the default of the
+	// BYPASS_END_USER_AUTH MSI property, which can be overridden at install time.
+	BypassEndUserAuth bool
 	// OrbitChannel is the update channel to use for Orbit.
 	OrbitChannel string
 	// OsquerydChannel is the update channel to use for Osquery (osqueryd).
@@ -122,15 +132,24 @@ type Options struct {
 	// EndUserEmail is the email address of the end user that uses the host on
 	// which the agent is going to be installed.
 	EndUserEmail string
+	// EnableEUATokenProperty is a boolean indicating whether to enable EUA_TOKEN property in Windows MSI package.
+	EnableEUATokenProperty bool
 	// DisableKeystore disables the use of the keychain on macOS and Credentials Manager on Windows
 	DisableKeystore bool
 	// OsqueryDB is the directory to use for the osquery database.
 	// If not set, then the default is `$ORBIT_ROOT_DIR/osquery.db`.
 	OsqueryDB string
+	// CPUQuota is the systemd CPUQuota percentage applied to the orbit service
+	// (Linux only). Zero means the default of 20%.
+	CPUQuota uint
 	// Architecture that the package is being built for. (amd64, arm64)
 	Architecture string
 	// TUF platform name. windows, windows-arm64, linux, linux-arm64, darwin
 	NativePlatform string
+	// CustomOutfile is the custom output file name for the package.
+	CustomOutfile string
+	// FleetManagedHostIdentityCertificate configures fleetd to use TPM-backed key to sign HTTP requests.
+	FleetManagedHostIdentityCertificate bool
 }
 
 const (
@@ -179,6 +198,7 @@ func InitializeUpdates(updateOpt update.Options) (*UpdatesData, error) {
 		return nil, fmt.Errorf("failed to create local metadata store: %w", err)
 	}
 	updateOpt.LocalStore = localStore
+	updateOpt.SkipCrossArchExecCheck = true
 
 	updater, err := update.NewUpdater(updateOpt)
 	if err != nil {
@@ -203,6 +223,14 @@ func InitializeUpdates(updateOpt update.Options) (*UpdatesData, error) {
 	var osquerydCustom custom
 	if err := json.Unmarshal(*osquerydMeta.Custom, &osquerydCustom); err != nil {
 		return nil, fmt.Errorf("failed to get %s version: %w", constant.OsqueryTUFTargetName, err)
+	}
+
+	// Save hash and remove osqueryd tar.gz to prevent it from being included in the package
+	// (on macOS, osqueryd comes as osqueryd.app.tar.gz)
+	if strings.HasSuffix(osquerydLocalTarget.Path, ".tar.gz") {
+		if err := saveHashAndRemoveTarGz(osquerydLocalTarget.Path); err != nil {
+			log.Error().Err(err).Str("path", osquerydLocalTarget.Path).Msg("failed to save hash and remove osqueryd tar.gz")
+		}
 	}
 
 	orbitLocalTarget, err := updater.Get(constant.OrbitTUFTargetName)
@@ -236,6 +264,14 @@ func InitializeUpdates(updateOpt update.Options) (*UpdatesData, error) {
 		if err := json.Unmarshal(*desktopMeta.Custom, &desktopCustom); err != nil {
 			return nil, fmt.Errorf("failed to get %s version: %w", constant.DesktopTUFTargetName, err)
 		}
+
+		// Save hash and remove the tar.gz file to prevent it from being included in the package
+		// (fixes duplicate fleet-desktop in .deb and .pkg packages)
+		if strings.HasSuffix(desktopLocalTarget.Path, ".tar.gz") {
+			if err := saveHashAndRemoveTarGz(desktopLocalTarget.Path); err != nil {
+				log.Error().Err(err).Str("path", desktopLocalTarget.Path).Msg("failed to save hash and remove desktop tar.gz")
+			}
+		}
 	}
 
 	// Copy the new metadata file to the old location (pre-migration) to
@@ -261,6 +297,45 @@ func InitializeUpdates(updateOpt update.Options) (*UpdatesData, error) {
 	}, nil
 }
 
+// saveHashAndRemoveTarGz calculates the SHA512 hash of a tar.gz file,
+// saves it to a .sha512 file, then removes the tar.gz.
+// This allows orbit to verify integrity on first run without keeping duplicate tar.gz files.
+func saveHashAndRemoveTarGz(tarGzPath string) error {
+	// Open the tar.gz file
+	f, err := os.Open(tarGzPath)
+	if err != nil {
+		return fmt.Errorf("open tar.gz for hashing: %w", err)
+	}
+	defer f.Close()
+
+	// Calculate SHA512 (currently the only hash algorithm used by Fleet TUF)
+	sha512Hash := sha512.New()
+	if _, err := io.Copy(sha512Hash, f); err != nil {
+		return fmt.Errorf("hash tar.gz: %w", err)
+	}
+
+	// Save SHA512 hash
+	sha512Path := tarGzPath + ".sha512"
+	sha512Hex := hex.EncodeToString(sha512Hash.Sum(nil))
+	if err := os.WriteFile(sha512Path, []byte(sha512Hex), constant.DefaultFileMode); err != nil {
+		return fmt.Errorf("write sha512 file: %w", err)
+	}
+
+	// Remove the tar.gz file
+	if err := os.Remove(tarGzPath); err != nil {
+		// Clean up hash file if we fail to remove tar.gz
+		_ = os.Remove(sha512Path)
+		return fmt.Errorf("remove tar.gz: %w", err)
+	}
+
+	log.Debug().
+		Str("path", tarGzPath).
+		Str("sha512", sha512Hex).
+		Msg("saved hash and removed tar.gz")
+
+	return nil
+}
+
 // writeSecret writes the orbit enroll secret to the designated file.
 //
 // This implementation is very similar to the one in orbit/cmd/orbit but
@@ -279,17 +354,24 @@ func writeSecret(opt Options, orbitRoot string) error {
 	return nil
 }
 
-func writeOsqueryFlagfile(opt Options, orbitRoot string) error {
-	path := filepath.Join(orbitRoot, "osquery.flags")
-
-	if opt.OsqueryFlagfile == "" {
-		// Write empty flagfile
-		if err := os.WriteFile(path, []byte(""), constant.DefaultFileMode); err != nil {
-			return fmt.Errorf("write empty flagfile: %w", err)
-		}
-
+// writeMacOSSecret writes the enroll secret file unless the secret is empty.
+// An empty secret happens with --use-system-configuration, where the secret is
+// resolved at runtime from a configuration profile or the keystore. Writing an
+// empty secret.txt causes it to be read on the device as an empty enroll secret,
+// producing confusing keystore errors during ABM enrollment.
+func writeMacOSSecret(opt Options, orbitRoot string) error {
+	if opt.EnrollSecret == "" {
 		return nil
 	}
+	return writeSecret(opt, orbitRoot)
+}
+
+func writeOsqueryFlagfile(opt Options, orbitRoot string) error {
+	if opt.OsqueryFlagfile == "" {
+		return nil
+	}
+
+	path := filepath.Join(orbitRoot, "osquery.flags")
 
 	if err := file.Copy(opt.OsqueryFlagfile, path, constant.DefaultFileMode); err != nil {
 		return fmt.Errorf("copy flagfile: %w", err)
@@ -298,14 +380,11 @@ func writeOsqueryFlagfile(opt Options, orbitRoot string) error {
 	return nil
 }
 
-// Embed the certs file that osquery uses so that we can drop it into our installation packages.
-// This file is generated and updated by .github/workflows/update-certs.yml.
-//
-//go:embed certs.pem
-var OsqueryCerts []byte
+// OsqueryCerts is the CA bundle that osquery uses, dropped into our installation packages.
+var OsqueryCerts = cabundle.Bundle
 
 func writeOsqueryCertPEM(opt Options, orbitRoot string) error {
-	path := filepath.Join(orbitRoot, "certs.pem")
+	path := filepath.Join(orbitRoot, cabundle.FileName)
 	if err := secure.MkdirAll(filepath.Dir(path), constant.DefaultDirMode); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}

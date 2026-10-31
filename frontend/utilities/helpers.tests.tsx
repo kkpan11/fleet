@@ -1,8 +1,12 @@
+import type { IRegistrationFormData } from "interfaces/registration_form_data";
 import { getPastDate, getFutureDate } from "test/test-utils";
-import {
+
+import helpers, {
   removeOSPrefix,
   compareVersions,
   willExpireWithinXDays,
+  humanLastSeen,
+  internationalTimeOnlyFormat,
 } from "./helpers";
 
 describe("helpers utilities", () => {
@@ -75,6 +79,104 @@ describe("helpers utilities", () => {
 
       const fiftyDaysAgo = getPastDate(50);
       expect(willExpireWithinXDays(fiftyDaysAgo, 30)).toEqual(false);
+    });
+  });
+
+  describe("humanLastSeen function", () => {
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date("2026-06-15T12:00:00Z"));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("uses days below the month threshold", () => {
+      expect(humanLastSeen(getPastDate(5))).toEqual("5 days ago");
+      expect(humanLastSeen(getPastDate(89))).toEqual("89 days ago");
+    });
+
+    it("uses months at or beyond 90 days", () => {
+      expect(humanLastSeen(getPastDate(90))).toEqual("3 months ago");
+      expect(humanLastSeen(getPastDate(100))).toEqual("3 months ago");
+    });
+  });
+
+  describe("setupData function", () => {
+    it("excludes the org logo file from the JSON setup payload", () => {
+      const formData: IRegistrationFormData = {
+        email: "admin@example.com",
+        name: "Admin",
+        password: "password123",
+        password_confirmation: "password123",
+        org_name: "Fleet",
+        org_web_url: "",
+        org_logo_file: new File(["x"], "logo.png", { type: "image/png" }),
+        fleet_web_address: "",
+        server_url: "https://fleet.example.com",
+      };
+
+      const result = helpers.setupData(formData);
+
+      expect(result.org_info).toEqual({ org_name: "Fleet" });
+    });
+  });
+
+  describe("internationalTimeOnlyFormat function", () => {
+    const setLanguage = (lang: string) => {
+      Object.defineProperty(window.navigator, "languages", {
+        value: [lang],
+        configurable: true,
+      });
+    };
+
+    let originalLanguages: readonly string[];
+    beforeAll(() => {
+      originalLanguages = window.navigator.languages;
+    });
+    afterAll(() => {
+      Object.defineProperty(window.navigator, "languages", {
+        value: originalLanguages,
+        configurable: true,
+      });
+    });
+
+    it("renders 24-hour source times in 12-hour form for US locale", () => {
+      setLanguage("en-US");
+      // A narrow no-break space (U+202F) or NBSP (U+00A0) may appear
+      // between the number and AM/PM in some ICU versions; match any
+      // whitespace via \\s? to stay portable across Node/ICU versions.
+      expect(internationalTimeOnlyFormat("02:00")).toMatch(/2:00\s?AM/i);
+      expect(internationalTimeOnlyFormat("14:30")).toMatch(/2:30\s?PM/i);
+    });
+
+    it("keeps 24-hour form for a 24-hour locale (de-DE)", () => {
+      setLanguage("de-DE");
+      // German locale uses 24-hour; either 02:00 or 2:00 is acceptable
+      // depending on ICU version, but always without AM/PM.
+      expect(internationalTimeOnlyFormat("02:00")).toMatch(/^0?2:00$/);
+      expect(internationalTimeOnlyFormat("14:30")).toMatch(/^14:30$/);
+    });
+
+    it("passes through an unparseable string unchanged", () => {
+      setLanguage("en-US");
+      expect(internationalTimeOnlyFormat("nope")).toBe("nope");
+      expect(internationalTimeOnlyFormat("")).toBe("");
+      expect(internationalTimeOnlyFormat("2:")).toBe("2:");
+    });
+
+    it("passes through out-of-range times unchanged", () => {
+      setLanguage("en-US");
+      // These would otherwise silently wrap via Date.setHours (24:00 -> next day).
+      // Passthrough keeps the tooltip honest about bad data instead of hiding it.
+      expect(internationalTimeOnlyFormat("24:00")).toBe("24:00");
+      expect(internationalTimeOnlyFormat("10:60")).toBe("10:60");
+    });
+
+    it("handles edge times 00:00 and 23:59", () => {
+      setLanguage("en-US");
+      expect(internationalTimeOnlyFormat("00:00")).toMatch(/12:00\s?AM/i);
+      expect(internationalTimeOnlyFormat("23:59")).toMatch(/11:59\s?PM/i);
     });
   });
 });

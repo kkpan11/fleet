@@ -118,6 +118,7 @@ type Vulnerability interface {
 	Key() string
 }
 
+// VulnerabilitySource identifies which data source produced a vulnerability.
 type VulnerabilitySource int
 
 const (
@@ -128,6 +129,11 @@ const (
 	MacOfficeReleaseNotesSource
 	CustomSource
 	GovalDictionarySource
+	WinOfficeSource
+	UbuntuOSVSource
+	RHELOSVSource
+	AndroidOSVSource
+	GoVulnDBSource
 )
 
 type VulnerabilityWithMetadata struct {
@@ -138,12 +144,19 @@ type VulnerabilityWithMetadata struct {
 	Source              VulnerabilitySource `db:"source" json:"-"`
 }
 
+// OSVulnerabilitiesWithCount holds vulnerabilities and their total count for an OS version.
+// This is used when limiting the number of vulnerabilities returned while still providing the total count.
+type OSVulnerabilitiesWithCount struct {
+	Vulnerabilities []CVE
+	Count           int
+}
+
 type VulnListOptions struct {
 	// ListOptions cannot be embedded in order to unmarshall with validation.
 	ListOptions      ListOptions `url:"list_options"`
 	IsEE             bool
 	ValidSortColumns []string
-	TeamID           *uint `query:"team_id,optional"`
+	TeamID           *uint `query:"team_id,optional" renameto:"fleet_id"`
 	KnownExploit     bool  `query:"exploit,optional"`
 }
 

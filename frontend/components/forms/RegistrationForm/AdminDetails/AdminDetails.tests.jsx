@@ -1,9 +1,8 @@
-import React from "react";
 import { render, screen } from "@testing-library/react";
-
-import { renderWithSetup } from "test/test-utils";
+import React from "react";
 
 import AdminDetails from "components/forms/RegistrationForm/AdminDetails";
+import { renderWithSetup } from "test/test-utils";
 
 describe("AdminDetails - form", () => {
   const onSubmitSpy = jest.fn();
@@ -65,13 +64,37 @@ describe("AdminDetails - form", () => {
     ).toBeInTheDocument();
   });
 
+  it("validates the password is not too long", async () => {
+    const { user } = renderWithSetup(
+      <AdminDetails handleSubmit={onSubmitSpy} currentPage />
+    );
+
+    await user.type(
+      screen.getByLabelText("Password"),
+      "asasasasasasasasasasasasasasasasasasasasasasasas1!"
+    );
+    await user.type(
+      screen.getByLabelText("Confirm password"),
+      "asasasasasasasasasasasasasasasasasasasasasasasas1!"
+    );
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    // then
+    expect(onSubmitSpy).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Password is over the character limit")
+    ).toBeInTheDocument();
+  });
+
   it("validates the password field", async () => {
     const { user } = renderWithSetup(
       <AdminDetails handleSubmit={onSubmitSpy} currentPage />
     );
 
-    await user.type(screen.getByLabelText("Password"), "passw0rd");
-    await user.type(screen.getByLabelText("Confirm password"), "passw0rd");
+    await user.type(screen.getByLabelText("Password"), "invalidpassw0rd");
+    await user.type(
+      screen.getByLabelText("Confirm password"),
+      "invalidpassw0rd"
+    );
     await user.click(screen.getByRole("button", { name: "Next" }));
     // then
     expect(onSubmitSpy).not.toHaveBeenCalled();

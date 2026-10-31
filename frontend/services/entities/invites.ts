@@ -1,14 +1,14 @@
 /* eslint-disable  @typescript-eslint/explicit-module-boundary-types */
-import sendRequest from "services";
-import endpoints from "utilities/endpoints";
-import helpers from "utilities/helpers";
-import { buildQueryStringFromParams } from "utilities/url";
 
 import {
   IInvite,
   ICreateInviteFormData,
   IEditInviteFormData,
 } from "interfaces/invite";
+import sendRequest from "services";
+import endpoints from "utilities/endpoints";
+import helpers from "utilities/helpers";
+import { buildQueryStringFromParams } from "utilities/url";
 
 export interface ISortOption {
   id: number;
@@ -22,7 +22,7 @@ interface IInviteSearchOptions {
   sortBy?: ISortOption[];
 }
 
-export interface IValidateInviteResp {
+export interface IValidateInviteResponse {
   invite: IInvite;
 }
 
@@ -46,7 +46,7 @@ export default {
 
     return sendRequest("DELETE", path);
   },
-  verify: (token: string): Promise<IValidateInviteResp> => {
+  verify: (token: string): Promise<IValidateInviteResponse> => {
     return sendRequest("GET", endpoints.INVITE_VERIFY(token));
   },
   loadAll: ({ globalFilter = "" }: IInviteSearchOptions) => {

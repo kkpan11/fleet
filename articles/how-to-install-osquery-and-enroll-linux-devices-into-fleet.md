@@ -39,7 +39,7 @@ Once the installer has been created, you can bring it over to the host you want 
 
 ## Generate the installer
 
-You can generate an osquery installer using `fleetctl` for Windows, macOS, and Linux distributions. For this article, we will assume you are enrolling a Linux device. To generate an osquery installer for a different OS, check out the guides for [macOS](https://fleetdm.com//guides/how-to-install-osquery-and-enroll-macos-devices-into-fleet) and [Windows](https://fleetdm.com//guides/how-to-install-osquery-and-enroll-windows-devices-into-fleet).
+You can generate an osquery installer using `fleetctl` for Windows, macOS, and Linux distributions. For this article, we will assume you are enrolling a Linux device. To generate an osquery installer for a different OS, check out the guides for [macOS](https://fleetdm.com/guides/how-to-install-osquery-and-enroll-macos-devices-into-fleet) and [Windows](https://fleetdm.com/guides/how-to-install-osquery-and-enroll-windows-devices-into-fleet).
 
 Installers are generated using the fleetctl package command. The full command looks like this:
 
@@ -88,8 +88,8 @@ The installer created by `fleetctl` isn’t specific to one host. If you have mu
 If you’re managing an enterprise environment, you will likely have a deployment tool like Munki, Jamf Pro, Chef, Ansible, or Puppet to deliver software to your devices. Using your software management tool of choice, you can distribute your osquery installer and add all your devices to Fleet.
 
 <meta name="category" value="guides">
-<meta name="authorFullName" value="Kathy Satterlee">
-<meta name="authorGitHubUsername" value="ksatter">
+<meta name="authorFullName" value="Ryn Satterlee">
+<meta name="authorGitHubUsername" value="rynsatterlee">
 <meta name="publishedOn" value="2022-03-19">
 <meta name="articleTitle" value="How to install osquery and enroll Linux devices into Fleet">
 <meta name="articleImageUrl" value="../website/assets/images/articles/install-osquery-and-enroll-linux-devices-into-fleet-cover-1600x900@2x.jpg">

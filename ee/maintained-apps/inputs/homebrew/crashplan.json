@@ -1,0 +1,9 @@
+{
+  "name": "CrashPlan",
+  "unique_identifier": "com.crashplan.desktop",
+  "token": "crashplan",
+  "installer_format": "dmg",
+  "slug": "crashplan/darwin",
+  "default_categories": ["Productivity"],
+  "uninstall_script_path": "ee/maintained-apps/inputs/homebrew/scripts/crashplan-uninstall.sh"
+}

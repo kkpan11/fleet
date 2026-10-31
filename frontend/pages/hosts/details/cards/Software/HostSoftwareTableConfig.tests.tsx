@@ -1,142 +1,106 @@
-import { createMockHostSoftwarePackage } from "__mocks__/hostMock";
+import { render, screen, waitFor } from "@testing-library/react";
+import { noop } from "lodash";
+import React from "react";
 
-import {
-  generateActions,
-  DEFAULT_ACTION_OPTIONS,
-  generateActionsProps,
-} from "./HostSoftwareTableConfig";
+import { createMockHostSoftware } from "__mocks__/hostMock";
+import { createMockRouter, renderWithSetup } from "test/test-utils";
+import { DEFAULT_EMPTY_CELL_VALUE } from "utilities/constants";
 
-describe("generateActions", () => {
-  const defaultProps: generateActionsProps = {
-    userHasSWWritePermission: true,
-    hostScriptsEnabled: true,
-    hostCanWriteSoftware: true,
-    softwareIdActionPending: null,
-    softwareId: 1,
-    status: null,
-    software_package: null,
-    app_store_app: null,
-    hostMDMEnrolled: false,
-  };
+import { generateSoftwareTableHeaders } from "./HostSoftwareTableConfig";
 
-  const defaultPackage = createMockHostSoftwarePackage();
+const mockRouter = createMockRouter();
 
-  it("returns only view details when software does not have software package or app store app", () => {
-    const actions = generateActions(defaultProps);
-    expect(actions).toEqual([DEFAULT_ACTION_OPTIONS[0]]);
+describe("HostSoftwareTableConfig", () => {
+  const headers = generateSoftwareTableHeaders({
+    router: mockRouter,
+    teamId: 1,
+    onShowInventoryVersions: noop,
   });
 
-  it("returns default actions for software package when user has write permission and scripts are enabled", () => {
-    const actions = generateActions({
-      ...defaultProps,
-      software_package: defaultPackage,
+  describe("Last opened column", () => {
+    const lastOpenedColumn = headers.find((h) => h.id === "Last opened") as any;
+
+    if (!lastOpenedColumn || typeof lastOpenedColumn.accessor !== "function") {
+      throw new Error("Last opened column or accessor not found");
+    }
+
+    const Cell = lastOpenedColumn.Cell as React.ElementType;
+
+    it("renders the date when a valid date string is provided", () => {
+      render(
+        <Cell cell={{ value: "2023-01-01T00:00:00Z" }} row={{ original: {} }} />
+      );
+      // HumanTimeDiffWithDateTip will render something like "2 years ago" or similar depending on current date
+      // but it definitely won't be "Never" or "Not supported"
+      expect(screen.queryByText("Never")).not.toBeInTheDocument();
+      expect(screen.queryByText("Not supported")).not.toBeInTheDocument();
     });
-    expect(actions).toEqual(DEFAULT_ACTION_OPTIONS);
+
+    it("renders 'Never' when the value is an empty string", () => {
+      render(<Cell cell={{ value: "" }} row={{ original: {} }} />);
+      expect(screen.getByText("Never")).toBeInTheDocument();
+    });
+
+    it("renders 'Not supported' when the value is undefined", () => {
+      render(<Cell cell={{ value: undefined }} row={{ original: {} }} />);
+      expect(screen.getByText("Not supported")).toBeInTheDocument();
+    });
   });
 
-  it("removes install and uninstall actions when user has no write permission", () => {
-    const props = {
-      ...defaultProps,
-      software_package: defaultPackage,
-      userHasSWWritePermission: false,
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")).toBeUndefined();
-    expect(actions.find((a) => a.value === "uninstall")).toBeUndefined();
+  // installed_versions[] entries carry no source; the cell must read the row's.
+  describe("Installed version column", () => {
+    const versionColumn = headers.find((h) => h.id === "version") as
+      | { Cell?: React.ElementType }
+      | undefined;
+    const Cell = versionColumn?.Cell as React.ElementType;
+
+    it("appends the Go toolchain version for a go_binaries row", () => {
+      render(
+        <Cell
+          cell={{ value: [{ version: "v0.21.1", release: "go1.26.1" }] }}
+          row={{ original: createMockHostSoftware({ source: "go_binaries" }) }}
+        />
+      );
+
+      expect(screen.getAllByText("v0.21.1 (go1.26.1)")[0]).toBeInTheDocument();
+    });
+
+    it("renders the plain version for a source that also populates release", () => {
+      render(
+        <Cell
+          cell={{ value: [{ version: "1.2.3", release: "30.el7" }] }}
+          row={{ original: createMockHostSoftware({ source: "rpm_packages" }) }}
+        />
+      );
+
+      expect(screen.getAllByText("1.2.3")[0]).toBeInTheDocument();
+    });
   });
 
-  it("disables install and uninstall actions when host scripts are disabled", () => {
-    const props = {
-      ...defaultProps,
-      software_package: defaultPackage,
-      hostScriptsEnabled: false,
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")?.disabled).toBe(true);
-    expect(actions.find((a) => a.value === "uninstall")?.disabled).toBe(true);
-  });
+  describe("Vulnerabilities column", () => {
+    const vulnColumn = headers.find(
+      (h) => typeof h.Header === "string" && h.Header === "Vulnerabilities"
+    ) as { Cell?: React.ElementType } | undefined;
+    const Cell = vulnColumn?.Cell as React.ElementType;
 
-  it("disables install and uninstall actions when locally pending (waiting for API response)", () => {
-    const props = {
-      ...defaultProps,
-      softwareIdActionPending: 1,
-      softwareId: 1,
-      software_package: defaultPackage,
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")?.disabled).toBe(true);
-    expect(actions.find((a) => a.value === "uninstall")?.disabled).toBe(true);
-  });
+    // The tooltip copy per source is covered in SoftwareInventoryTableConfig.
+    it("explains the empty value for MCP servers on hover", async () => {
+      const { user } = renderWithSetup(
+        <Cell
+          cell={{ value: [{ version: "", vulnerabilities: [] }] }}
+          row={{ original: createMockHostSoftware({ source: "mcp_servers" }) }}
+        />
+      );
 
-  it("disables install and uninstall actions when pending install status", () => {
-    const props: generateActionsProps = {
-      ...defaultProps,
-      software_package: defaultPackage,
-      status: "pending_install",
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")?.disabled).toBe(true);
-    expect(actions.find((a) => a.value === "uninstall")?.disabled).toBe(true);
-  });
+      await user.hover(screen.getByText(DEFAULT_EMPTY_CELL_VALUE));
 
-  it("disables install and uninstall actions when pending uninstall status", () => {
-    const props: generateActionsProps = {
-      ...defaultProps,
-      software_package: defaultPackage,
-      status: "pending_uninstall",
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")?.disabled).toBe(true);
-    expect(actions.find((a) => a.value === "uninstall")?.disabled).toBe(true);
-  });
-
-  it("removes uninstall action for VPP apps", () => {
-    const props: generateActionsProps = {
-      ...defaultProps,
-      app_store_app: {
-        app_store_id: "1",
-        self_service: false,
-        icon_url: "",
-        version: "",
-        last_install: { command_uuid: "", installed_at: "" },
-      },
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "uninstall")).toBeUndefined();
-  });
-
-  it("allows to install VPP apps even if scripts are disabled", () => {
-    const props: generateActionsProps = {
-      ...defaultProps,
-      hostMDMEnrolled: true,
-      hostScriptsEnabled: false,
-      app_store_app: {
-        app_store_id: "1",
-        self_service: false,
-        icon_url: "",
-        version: "",
-        last_install: { command_uuid: "", installed_at: "" },
-      },
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")?.disabled).toBe(false);
-    expect(actions.find((a) => a.value === "uninstall")).toBeUndefined();
-  });
-
-  it("disables installing VPP app if host is not MDM enrolled", () => {
-    const props: generateActionsProps = {
-      ...defaultProps,
-      hostScriptsEnabled: false,
-      app_store_app: {
-        app_store_id: "1",
-        self_service: false,
-        icon_url: "",
-        version: "",
-        last_install: { command_uuid: "", installed_at: "" },
-      },
-    };
-    const actions = generateActions(props);
-    expect(actions.find((a) => a.value === "install")?.disabled).toBe(true);
-    expect(actions.find((a) => a.value === "uninstall")).toBeUndefined();
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            "Currently, Fleet doesn't detect vulnerabilities for MCP servers."
+          )
+        ).toBeInTheDocument();
+      });
+    });
   });
 });

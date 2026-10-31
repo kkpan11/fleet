@@ -1,11 +1,12 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 
 interface IArrowProps {
   color?: Colors;
 }
 
-const Arrow = ({ color = "core-fleet-blue" }: IArrowProps) => {
+const Arrow = ({ color = "ui-fleet-black-75" }: IArrowProps) => {
   return (
     <svg
       width="16"

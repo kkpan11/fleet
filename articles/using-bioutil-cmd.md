@@ -1,6 +1,6 @@
 # Using bioutil to verify Touch ID/biometric utilization
 
-![Apple TouchID](../website/assets/images/articles/bioutil@2x.png)
+![Apple TouchID](../website/assets/images/articles/bioutil-1600x900@2x.png)
 
 ## Intro
 
@@ -61,7 +61,7 @@ echo "JSON written to $OUTPUT_FILE."
 
 ## Deploying the script via Fleet
 
-In this example, we just want to check a 'snapshot' of our fleet's configuration, but this script could also be added to a crobtab to generate refreshed data on a set interval.
+In this example, we just want to check a 'snapshot' of our fleet's configuration, but this script could also be added to a crontab to generate refreshed data on a set interval.
 
 From the Fleet UI, select **Controls** > **Scripts** and upload the script from the previous step.
 
@@ -79,7 +79,7 @@ At this point, we know that the file we want to read, `biometric_config.json` ex
 
 `SELECT * FROM parse_json WHERE path = '/opt/orbit/biometric_config.json'`
 
-![bioutil example query](../website/assets/images/articles/bioutil-command.png)
+![bioutil example query](../website/assets/images/articles/bioutil-command-1459x192@2x.png)
 
 If you just wanted to return the number of enrolled fingerprints, use a query like such:
 
@@ -106,4 +106,4 @@ For more tips and detailed guides, don’t forget to check out the Fleet
 <meta name="category" value="guides">
 <meta name="publishedOn" value="2024-12-29">
 <meta name="description" value="Streamline Biometric Security with bioutil and Fleet">
-<meta name="articleImageUrl" value="../website/assets/images/articles/bioutil@2x.png">
+<meta name="articleImageUrl" value="../website/assets/images/articles/bioutil-1600x900@2x.png">

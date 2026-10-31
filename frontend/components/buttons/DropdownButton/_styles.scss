@@ -1,5 +1,4 @@
 .dropdown-button {
-  padding: 8px 0;
   &__wrapper {
     display: flex;
     position: relative;
@@ -21,7 +20,7 @@
     display: none;
     z-index: 99;
     border-radius: 2px;
-    background-color: $core-white;
+    background-color: $core-fleet-white;
     box-shadow: 0 4px 10px rgba(52, 59, 96, 0.15);
     animation: fade-in 150ms ease-out;
     &--opened {
@@ -32,8 +31,15 @@
   &__option {
     display: block;
 
+    // A GitOps-wrapped option renders a wrapper span around its button. Stretch
+    // it to the full item width so the row hover highlight is unchanged.
+    .gitops-mode-tooltip-wrapper {
+      display: block;
+      width: 100%;
+    }
+
     .button {
-      color: $core-fleet-blue;
+      color: $core-fleet-black;
       text-transform: none;
       text-align: left;
       font-weight: $regular;
@@ -42,14 +48,14 @@
       padding: 0 10px;
       white-space: nowrap;
       width: 100%;
-      font-size: 15px;
-      height: 38px;
+      font-size: 14px;
+      height: 32px;
       letter-spacing: -0.5px;
 
       &:hover,
       &:focus {
-        background-color: $ui-vibrant-blue-10;
-        color: $core-fleet-blue;
+        background-color: $ui-fleet-black-10;
+        color: $core-fleet-black;
       }
     }
   }
@@ -61,7 +67,7 @@
 
 .downcaret {
   &::after {
-    content: url("../assets/images/icon-chevron-white-16x16@2x.png");
+    content: url("./assets/images/icon-chevron-white-16x16@2x.png");
     transform: scale(0.5);
     width: 16px;
     border-radius: 0px;
@@ -69,4 +75,10 @@
     padding-left: 2px;
     margin-top: 1px;
   }
+}
+
+// Override the chevron icon stroke to inherit the button's text color
+// so it adapts correctly in dark mode
+.dropdown-button .icon svg path {
+  stroke: currentColor;
 }

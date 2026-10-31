@@ -3,11 +3,13 @@
  * More can be learnt about React Select custom components here:
  * https://react-select.com/components
  */
+
+import React, { useRef } from "react";
+import { components, GroupHeadingProps } from "react-select-5";
+
 import Button from "components/buttons/Button";
 import Icon from "components/Icon/Icon";
 import { ILabel } from "interfaces/label";
-import React, { useRef } from "react";
-import { components, GroupHeadingProps } from "react-select-5";
 
 import { IEmptyOption, IGroupOption } from "../LabelFilterSelect/helpers";
 
@@ -45,16 +47,6 @@ const CustomLabelGroupHeading = (
     <components.GroupHeading {...props}>
       <div className={`${baseClass}__labels-header`}>
         <span className={`${baseClass}__label-title`}>{props.children}</span>
-        <div className={`${baseClass}__add_new_label`}>
-          {canAddNewLabels && (
-            <Button variant="text-icon" onClick={onAddLabel} iconStroke>
-              <>
-                Add label
-                <Icon name="plus" />
-              </>
-            </Button>
-          )}
-        </div>
       </div>
       <div className={`${baseClass}__field`}>
         <input
@@ -63,7 +55,7 @@ const CustomLabelGroupHeading = (
           value={labelQuery}
           name="label-search-input"
           type="text"
-          placeholder="Filter labels by name..."
+          placeholder="Filter by label name"
           onKeyDown={(event) => {
             // Stops the parent dropdown from picking up on input keypresses
             event.stopPropagation();
@@ -73,6 +65,15 @@ const CustomLabelGroupHeading = (
           onBlur={onBlurLabelSearchInput}
         />
         <Icon name="search" />
+        {canAddNewLabels && (
+          <Button
+            className={`${baseClass}__add-label-button`}
+            variant="secondary"
+            onClick={onAddLabel}
+            icon="plus"
+            ariaLabel="Add label"
+          />
+        )}
       </div>
     </components.GroupHeading>
   );

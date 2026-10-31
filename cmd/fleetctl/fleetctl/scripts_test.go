@@ -2,6 +2,7 @@ package fleetctl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -29,6 +30,8 @@ func TestRunScriptCommand(t *testing.T) {
 			HTTPServerConfig: &http.Server{WriteTimeout: 90 * time.Second}, // nolint:gosec
 		},
 	)
+	adminUserByID := ds.UserByIDFunc
+	technician := &fleet.User{GlobalRole: new(fleet.RoleTechnician)}
 
 	ds.LoadHostSoftwareFunc = func(ctx context.Context, host *fleet.Host, includeCVEScores bool) error {
 		return nil
@@ -40,6 +43,9 @@ func TestRunScriptCommand(t *testing.T) {
 		return nil, nil
 	}
 	ds.ListPoliciesForHostFunc = func(ctx context.Context, host *fleet.Host) ([]*fleet.HostPolicy, error) {
+		return nil, nil
+	}
+	ds.GetHostCustomHostVitalsFunc = func(ctx context.Context, hostID uint) ([]fleet.HostCustomHostVital, error) {
 		return nil, nil
 	}
 	ds.ListHostBatteriesFunc = func(ctx context.Context, hid uint) ([]*fleet.HostBattery, error) {
@@ -84,6 +90,7 @@ hello world
 
 	type testCase struct {
 		name                string
+		user                *fleet.User
 		scriptPath          func() string
 		scriptName          string
 		teamID              *uint
@@ -113,12 +120,12 @@ hello world
 		{
 			name:         "invalid hashbang",
 			scriptPath:   func() string { return writeTmpScriptContents(t, "#! /foo/bar", ".sh") },
-			expectErrMsg: `Interpreter not supported. Shell scripts must run in "#!/bin/sh", "#!/bin/bash", or "#!/bin/zsh."`,
+			expectErrMsg: `Interpreter not supported. Supported interpreters are "#!/bin/sh", "#!/bin/bash", "#!/bin/zsh", "#!/usr/bin/env python3", or an absolute path to "python" / "python3".`,
 		},
 		{
 			name:         "unsupported hashbang",
 			scriptPath:   func() string { return writeTmpScriptContents(t, "#!/bin/ksh", ".sh") },
-			expectErrMsg: `Interpreter not supported. Shell scripts must run in "#!/bin/sh", "#!/bin/bash", or "#!/bin/zsh."`,
+			expectErrMsg: `Interpreter not supported. Supported interpreters are "#!/bin/sh", "#!/bin/bash", "#!/bin/zsh", "#!/usr/bin/env python3", or an absolute path to "python" / "python3".`,
 		},
 		{
 			name:       "posix shell hashbang",
@@ -208,7 +215,7 @@ hello world
 			name:         "script-path and team disallowed",
 			scriptPath:   generateValidPath,
 			teamID:       ptr.Uint(1),
-			expectErrMsg: `Only one of '--script-path' or '--team' is allowed.`,
+			expectErrMsg: `Only one of '--script-path' or '--fleet' is allowed.`,
 		},
 		{
 			name:         "script empty",
@@ -320,9 +327,38 @@ Fleet records the last 10,000 characters to prevent downtime.
 		//	expectErrMsg: fleet.RunScriptHostTimeoutErrMsg,
 		// },
 		{name: "disabled scripts globally", scriptPath: generateValidPath, expectErrMsg: fleet.RunScriptScriptsDisabledGloballyErrMsg},
+		{
+			name:         "technician cannot run script from path",
+			user:         technician,
+			scriptPath:   generateValidPath,
+			expectErrMsg: fleet.RunScriptForbiddenErrMsg,
+		},
+		{
+			name:         "technician cannot run script from path async",
+			user:         technician,
+			scriptPath:   generateValidPath,
+			async:        true,
+			expectErrMsg: fleet.RunScriptForbiddenErrMsg,
+		},
+		{
+			name:       "technician can run saved script",
+			user:       technician,
+			scriptName: "foo",
+			scriptResult: &fleet.HostScriptResult{
+				ExitCode: new(int64(0)),
+				Output:   "hello world",
+			},
+			expectOutput: expectedOutputSuccess,
+		},
 	}
 
 	setupDS := func(t *testing.T, c testCase) {
+		ds.UserByIDFunc = adminUserByID
+		if c.user != nil {
+			ds.UserByIDFunc = func(ctx context.Context, id uint) (*fleet.User, error) {
+				return c.user, nil
+			}
+		}
 		ds.HostByIdentifierFunc = func(ctx context.Context, ident string) (*fleet.Host, error) {
 			if ident != "host1" || c.expectNotFound {
 				return nil, &notFoundError{}
@@ -357,12 +393,22 @@ Fleet records the last 10,000 characters to prevent downtime.
 		}
 		ds.NewHostScriptExecutionRequestFunc = func(ctx context.Context, req *fleet.HostScriptRequestPayload) (*fleet.HostScriptResult, error) {
 			require.Equal(t, uint(42), req.HostID)
+			// Otherwise a wrongly queued script makes fleetctl poll forever for a result.
+			if c.expectErrMsg != "" {
+				return nil, errors.New("unexpected script execution request")
+			}
 			return &fleet.HostScriptResult{
 				Hostname:       "host1",
 				HostID:         req.HostID,
 				ScriptContents: req.ScriptContents,
 				ExecutionID:    "123",
 			}, nil
+		}
+		ds.IsHostDiskEncryptionKeyArchivedFunc = func(ctx context.Context, hostID uint) (bool, error) {
+			return false, nil
+		}
+		ds.ConditionalAccessBypassedAtFunc = func(ctx context.Context, hostID uint) (*time.Time, error) {
+			return nil, nil
 		}
 		if c.name == "disabled scripts globally" {
 			ds.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
@@ -414,10 +460,10 @@ Fleet records the last 10,000 characters to prevent downtime.
 			}
 
 			if c.teamID != nil {
-				args = append(args, "--team", fmt.Sprintf("%d", *c.teamID))
+				args = append(args, "--fleet", fmt.Sprintf("%d", *c.teamID))
 			}
 
-			b, err := RunAppNoChecks(args)
+			b, err := runAppNoChecks(args)
 			if c.expectErrMsg != "" {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), c.expectErrMsg)

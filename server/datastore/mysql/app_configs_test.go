@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/fleetdm/fleet/v4/pkg/optjson"
-	"github.com/fleetdm/fleet/v4/server/contexts/ctxdb"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 
 	"github.com/fleetdm/fleet/v4/server/fleet"
@@ -36,7 +35,6 @@ func TestAppConfig(t *testing.T) {
 		{"Backwards Compatibility", testAppConfigBackwardsCompatibility},
 		{"GetConfigEnableDiskEncryption", testGetConfigEnableDiskEncryption},
 		{"IsEnrollSecretAvailable", testIsEnrollSecretAvailable},
-		{"NDESSCEPProxyPassword", testNDESSCEPProxyPassword},
 		{"YaraRulesRoundtrip", testYaraRulesRoundtrip},
 	}
 	for _, c := range cases {
@@ -85,7 +83,6 @@ func testAppConfigOrgInfo(t *testing.T, ds *Datastore) {
 	info2.SSOSettings.EnableSSO = true
 	info2.SSOSettings.EntityID = "test"
 	info2.SSOSettings.MetadataURL = "https://idp.com/metadata.xml"
-	info2.SSOSettings.IssuerURI = "https://idp.issuer.com"
 	info2.SSOSettings.IDPName = "My IDP"
 	info2.Features.EnableSoftwareInventory = true
 
@@ -159,6 +156,19 @@ func testAppConfigEnrollSecrets(t *testing.T, ds *Datastore) {
 	secret, err := ds.VerifyEnrollSecret(ctx, "missing")
 	assert.Error(t, err)
 	assert.Nil(t, secret)
+
+	// An empty or whitespace-only secret is rejected as not-found before
+	// matching, even when an empty secret exists in storage (e.g. a row created
+	// before the create/update validation existed).
+	require.NoError(t, ds.ApplyEnrollSecrets(ctx, &team1.ID, []*fleet.EnrollSecret{{Secret: "", TeamID: &team1.ID}}))
+	for _, in := range []string{"", "   ", "\t\n"} {
+		secret, err = ds.VerifyEnrollSecret(ctx, in)
+		require.Error(t, err)
+		require.True(t, fleet.IsNotFound(err))
+		require.Nil(t, secret)
+	}
+	// remove the empty secret so the rest of the test starts from a clean slate
+	require.NoError(t, ds.ApplyEnrollSecrets(ctx, &team1.ID, []*fleet.EnrollSecret{}))
 
 	err = ds.ApplyEnrollSecrets(ctx, &team1.ID,
 		[]*fleet.EnrollSecret{
@@ -448,42 +458,100 @@ func testGetConfigEnableDiskEncryption(t *testing.T, ds *Datastore) {
 	ac, err := ds.AppConfig(ctx)
 	require.NoError(t, err)
 	require.False(t, ac.MDM.EnableDiskEncryption.Value)
+	require.False(t, ac.MDM.RequireBitLockerPIN.Value)
 
-	enabled, err := ds.GetConfigEnableDiskEncryption(ctx, nil)
+	diskEncryptionConfig, err := ds.GetConfigEnableDiskEncryption(ctx, nil)
 	require.NoError(t, err)
-	require.False(t, enabled)
+	require.Equal(t, fleet.DiskEncryptionConfig{}, diskEncryptionConfig)
 
-	// Enable disk encryption for no team
-	ac.MDM.EnableDiskEncryption = optjson.SetBool(true)
+	// Enable disk encryption for no team. The flat toggle is virtual so
+	// the per-platform fields are what gets written.
+	ac.MDM.MacOSSettings.EnableDiskEncryption = optjson.SetBool(true)
+	ac.MDM.MacOSSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(true)
+	ac.MDM.WindowsSettings.EnableDiskEncryption = optjson.SetBool(true)
+	ac.MDM.LinuxSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(true)
+	ac.MDM.RequireBitLockerPIN = optjson.SetBool(true)
+	ac.MDM.WindowsSettings.RequireBitLockerPIN = optjson.SetBool(true)
 	err = ds.SaveAppConfig(ctx, ac)
 	require.NoError(t, err)
 	ac, err = ds.AppConfig(ctx)
 	require.NoError(t, err)
 	require.True(t, ac.MDM.EnableDiskEncryption.Value)
+	require.True(t, ac.MDM.RequireBitLockerPIN.Value)
 
-	enabled, err = ds.GetConfigEnableDiskEncryption(ctx, nil)
+	diskEncryptionConfig, err = ds.GetConfigEnableDiskEncryption(ctx, nil)
 	require.NoError(t, err)
-	require.True(t, enabled)
+	require.Equal(t, fleet.DiskEncryptionConfig{
+		MacOSEnabled:         true,
+		MacOSEscrowEnabled:   true,
+		WindowsEnabled:       true,
+		BitLockerPINRequired: true,
+		LinuxEscrowEnabled:   true,
+	}, diskEncryptionConfig)
+
+	// a mixed state reads the flat toggle as false
+	ac.MDM.LinuxSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(false)
+	err = ds.SaveAppConfig(ctx, ac)
+	require.NoError(t, err)
+	ac, err = ds.AppConfig(ctx)
+	require.NoError(t, err)
+	require.False(t, ac.MDM.EnableDiskEncryption.Value)
+	require.True(t, ac.MDM.MacOSSettings.EnableDiskEncryption.Value)
+
+	// the per-platform read reflects the mixed state as-is
+	diskEncryptionConfig, err = ds.GetConfigEnableDiskEncryption(ctx, nil)
+	require.NoError(t, err)
+	require.Equal(t, fleet.DiskEncryptionConfig{
+		MacOSEnabled:         true,
+		MacOSEscrowEnabled:   true,
+		WindowsEnabled:       true,
+		BitLockerPINRequired: true,
+		LinuxEscrowEnabled:   false,
+	}, diskEncryptionConfig)
+
+	// restore the uniform state for the assertions below
+	ac.MDM.LinuxSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(true)
+	require.NoError(t, ds.SaveAppConfig(ctx, ac))
 
 	// Create team
 	team1, err := ds.NewTeam(ctx, &fleet.Team{Name: "team1"})
 	require.NoError(t, err)
 
-	tm, err := ds.Team(ctx, team1.ID)
+	tm, err := ds.TeamWithExtras(ctx, team1.ID) // TODO replace with TeamLite (will require a new save DS method)
 	require.NoError(t, err)
 	require.NotNil(t, tm)
 	require.False(t, tm.Config.MDM.EnableDiskEncryption)
+	require.False(t, tm.Config.MDM.RequireBitLockerPIN)
 
-	enabled, err = ds.GetConfigEnableDiskEncryption(ctx, &team1.ID)
+	diskEncryptionConfig, err = ds.GetConfigEnableDiskEncryption(ctx, &team1.ID)
 	require.NoError(t, err)
-	require.False(t, enabled)
+	require.Equal(t, fleet.DiskEncryptionConfig{}, diskEncryptionConfig)
 
 	// Enable disk encryption for the team
-	tm.Config.MDM.EnableDiskEncryption = true
+	tm.Config.MDM.MacOSSettings.EnableDiskEncryption = optjson.SetBool(true)
+	tm.Config.MDM.MacOSSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(true)
+	tm.Config.MDM.WindowsSettings.EnableDiskEncryption = optjson.SetBool(true)
+	tm.Config.MDM.LinuxSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(true)
+	tm.Config.MDM.RequireBitLockerPIN = true
+	tm.Config.MDM.WindowsSettings.RequireBitLockerPIN = optjson.SetBool(true)
 	tm, err = ds.SaveTeam(ctx, tm)
 	require.NoError(t, err)
 	require.NotNil(t, tm)
+	require.True(t, tm.Config.MDM.RequireBitLockerPIN)
+
+	tm, err = ds.TeamWithExtras(ctx, team1.ID)
+	require.NoError(t, err)
 	require.True(t, tm.Config.MDM.EnableDiskEncryption)
+
+	diskEncryptionConfig, err = ds.GetConfigEnableDiskEncryption(ctx, &team1.ID)
+	require.NoError(t, err)
+	require.Equal(t, fleet.DiskEncryptionConfig{
+		MacOSEnabled:         true,
+		MacOSEscrowEnabled:   true,
+		WindowsEnabled:       true,
+		BitLockerPINRequired: true,
+		LinuxEscrowEnabled:   true,
+	}, diskEncryptionConfig)
 }
 
 func testIsEnrollSecretAvailable(t *testing.T, ds *Datastore) {
@@ -534,78 +602,6 @@ func testIsEnrollSecretAvailable(t *testing.T, ds *Datastore) {
 			},
 		)
 	}
-}
-
-func testNDESSCEPProxyPassword(t *testing.T, ds *Datastore) {
-	ctx := context.Background()
-	ctx = ctxdb.BypassCachedMysql(ctx, true)
-	defer TruncateTables(t, ds)
-
-	ac, err := ds.AppConfig(ctx)
-	require.NoError(t, err)
-
-	adminURL := "https://localhost:8080/mscep_admin/"
-	username := "admin"
-	url := "https://localhost:8080/mscep/mscep.dll"
-	password := "password"
-
-	ac.Integrations.NDESSCEPProxy = optjson.Any[fleet.NDESSCEPProxyIntegration]{
-		Valid: true,
-		Set:   true,
-		Value: fleet.NDESSCEPProxyIntegration{
-			AdminURL: adminURL,
-			Username: username,
-			Password: password,
-			URL:      url,
-		},
-	}
-
-	err = ds.SaveAppConfig(ctx, ac)
-	require.NoError(t, err)
-
-	checkProxyConfig := func() {
-		result, err := ds.AppConfig(ctx)
-		require.NoError(t, err)
-		require.NotNil(t, result.Integrations.NDESSCEPProxy)
-		assert.Equal(t, url, result.Integrations.NDESSCEPProxy.Value.URL)
-		assert.Equal(t, adminURL, result.Integrations.NDESSCEPProxy.Value.AdminURL)
-		assert.Equal(t, username, result.Integrations.NDESSCEPProxy.Value.Username)
-		assert.Equal(t, fleet.MaskedPassword, result.Integrations.NDESSCEPProxy.Value.Password)
-	}
-
-	checkProxyConfig()
-
-	checkPassword := func() {
-		assets, err := ds.GetAllMDMConfigAssetsByName(ctx, []fleet.MDMAssetName{fleet.MDMAssetNDESPassword}, nil)
-		require.NoError(t, err)
-		require.Len(t, assets, 1)
-		assert.Equal(t, password, string(assets[fleet.MDMAssetNDESPassword].Value))
-	}
-	checkPassword()
-
-	// Set password to masked password -- should not update
-	ac.Integrations.NDESSCEPProxy.Value.Password = fleet.MaskedPassword
-	err = ds.SaveAppConfig(ctx, ac)
-	require.NoError(t, err)
-	checkProxyConfig()
-	checkPassword()
-
-	// Set password to empty -- password should not update
-	url = "https://newurl.com"
-	ac.Integrations.NDESSCEPProxy.Value.Password = ""
-	ac.Integrations.NDESSCEPProxy.Value.URL = url
-	err = ds.SaveAppConfig(ctx, ac)
-	require.NoError(t, err)
-	checkProxyConfig()
-	checkPassword()
-
-	// Set password to a new value
-	password = "newpassword"
-	ac.Integrations.NDESSCEPProxy.Value.Password = password
-	err = ds.SaveAppConfig(ctx, ac)
-	require.NoError(t, err)
-	checkProxyConfig()
-	checkPassword()
 }
 
 func testYaraRulesRoundtrip(t *testing.T, ds *Datastore) {
@@ -696,6 +692,100 @@ func testYaraRulesRoundtrip(t *testing.T, ds *Datastore) {
 	require.NoError(t, err)
 	assert.Equal(t, &expectedRules[1], rule)
 
+	// Apply the same rules again - this should be a no-op due to optimization
+	// (rules haven't changed, so no DELETE/INSERT should occur)
+	err = ds.ApplyYaraRules(ctx, expectedRules)
+	require.NoError(t, err)
+	rules, err = ds.GetYaraRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, expectedRules, rules)
+
+	// Test edge case: Apply same rules but in different order
+	reorderedRules := []fleet.YaraRule{expectedRules[1], expectedRules[0]}
+	err = ds.ApplyYaraRules(ctx, reorderedRules)
+	require.NoError(t, err)
+	// Verify both rules still exist
+	rule, err = ds.YaraRuleByName(ctx, expectedRules[0].Name)
+	require.NoError(t, err)
+	assert.Equal(t, &expectedRules[0], rule)
+	rule, err = ds.YaraRuleByName(ctx, expectedRules[1].Name)
+	require.NoError(t, err)
+	assert.Equal(t, &expectedRules[1], rule)
+
+	// Test: Modify only the content of one rule (same name, different content)
+	modifiedContentRules := []fleet.YaraRule{
+		{
+			Name: "wildcard.yar",
+			Contents: `rule WildcardExampleModified
+{
+    strings:
+        $hex_string = { E2 34 ?? C8 A? FB FF }
+
+    condition:
+        $hex_string
+}`,
+		},
+		{
+			Name: "jump-modified.yar",
+			Contents: `rule JumpExample
+{
+    strings:
+        $hex_string = true
+
+    condition:
+        $hex_string
+}`,
+		},
+	}
+	err = ds.ApplyYaraRules(ctx, modifiedContentRules)
+	require.NoError(t, err)
+	// Verify the content was actually updated
+	rule, err = ds.YaraRuleByName(ctx, "wildcard.yar")
+	require.NoError(t, err)
+	assert.Contains(t, rule.Contents, "WildcardExampleModified")
+	assert.Contains(t, rule.Contents, "E2 34 ?? C8 A? FB FF")
+
+	// Test: Mixed operations - add new, keep one unchanged, delete one
+	mixedRules := []fleet.YaraRule{
+		{
+			Name: "wildcard.yar",
+			Contents: `rule WildcardExampleModified
+{
+    strings:
+        $hex_string = { E2 34 ?? C8 A? FB FF }
+
+    condition:
+        $hex_string
+}`,
+		}, // unchanged from previous
+		// jump-modified.yar is deleted
+		{
+			Name:     "new-rule.yar",
+			Contents: `rule NewRule { condition: true }`,
+		}, // new rule
+	}
+	err = ds.ApplyYaraRules(ctx, mixedRules)
+	require.NoError(t, err)
+
+	// Verify mixed operation results
+	rules, err = ds.GetYaraRules(ctx)
+	require.NoError(t, err)
+	require.Len(t, rules, 2)
+
+	// Check wildcard.yar is unchanged
+	rule, err = ds.YaraRuleByName(ctx, "wildcard.yar")
+	require.NoError(t, err)
+	assert.Contains(t, rule.Contents, "WildcardExampleModified")
+
+	// Check jump-modified.yar is deleted
+	_, err = ds.YaraRuleByName(ctx, "jump-modified.yar")
+	require.Error(t, err)
+
+	// Check new-rule.yar is added
+	rule, err = ds.YaraRuleByName(ctx, "new-rule.yar")
+	require.NoError(t, err)
+	assert.Equal(t, `rule NewRule { condition: true }`, rule.Contents)
+
 	// Clear rules
 	expectedRules = []fleet.YaraRule{}
 	err = ds.ApplyYaraRules(ctx, expectedRules)
@@ -707,4 +797,24 @@ func testYaraRulesRoundtrip(t *testing.T, ds *Datastore) {
 	// Get rule that doesn't exist
 	_, err = ds.YaraRuleByName(ctx, "wildcard.yar")
 	require.Error(t, err)
+}
+
+// setAppConfigDiskEncryptionForTest sets the deprecated flat toggle and every
+// per-platform disk encryption setting.
+func setAppConfigDiskEncryptionForTest(ac *fleet.AppConfig, enabled bool) {
+	ac.MDM.EnableDiskEncryption = optjson.SetBool(enabled)
+	ac.MDM.MacOSSettings.EnableDiskEncryption = optjson.SetBool(enabled)
+	ac.MDM.MacOSSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(enabled)
+	ac.MDM.WindowsSettings.EnableDiskEncryption = optjson.SetBool(enabled)
+	ac.MDM.LinuxSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(enabled)
+}
+
+// setTeamMDMDiskEncryptionForTest is the TeamMDM twin of
+// setAppConfigDiskEncryptionForTest.
+func setTeamMDMDiskEncryptionForTest(tm *fleet.TeamMDM, enabled bool) {
+	tm.EnableDiskEncryption = enabled
+	tm.MacOSSettings.EnableDiskEncryption = optjson.SetBool(enabled)
+	tm.MacOSSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(enabled)
+	tm.WindowsSettings.EnableDiskEncryption = optjson.SetBool(enabled)
+	tm.LinuxSettings.EnableEscrowDiskEncryptionKey = optjson.SetBool(enabled)
 }

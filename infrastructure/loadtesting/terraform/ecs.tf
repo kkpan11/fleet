@@ -113,7 +113,8 @@ resource "aws_ecs_task_definition" "backend" {
             awslogs-stream-prefix = "fleet"
           }
         },
-        secrets = [
+        command = ["fleet", "serve", "--dev"]
+        secrets = concat([
           {
             name      = "FLEET_MYSQL_PASSWORD"
             valueFrom = aws_secretsmanager_secret.database_password_secret.arn
@@ -130,7 +131,7 @@ resource "aws_ecs_task_definition" "backend" {
             name      = "FLEET_SERVER_PRIVATE_KEY"
             valueFrom = aws_secretsmanager_secret.fleet_server_private_key.arn
           }
-        ]
+        ], local.secrets)
         environment = concat([
           {
             name  = "FLEET_LOGGING_JSON"
@@ -150,7 +151,7 @@ resource "aws_ecs_task_definition" "backend" {
           },
           {
             name  = "FLEET_MYSQL_MAX_OPEN_CONNS"
-            value = "10"
+            value = tostring(var.mysql_max_open_conns)
           },
           {
             name  = "FLEET_MYSQL_READ_REPLICA_USERNAME"
@@ -166,7 +167,7 @@ resource "aws_ecs_task_definition" "backend" {
           },
           {
             name  = "FLEET_MYSQL_READ_REPLICA_MAX_OPEN_CONNS"
-            value = "10"
+            value = tostring(var.mysql_max_open_conns)
           },
           {
             name  = "FLEET_REDIS_ADDRESS"

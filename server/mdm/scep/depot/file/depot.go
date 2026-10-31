@@ -22,7 +22,8 @@ import (
 
 // NewFileDepot returns a new cert depot.
 func NewFileDepot(path string) (*fileDepot, error) {
-	f, err := os.OpenFile(fmt.Sprintf("%s/index.txt", path),
+	f, err := os.OpenFile( // nolint:gosec // G302
+		fmt.Sprintf("%s/index.txt", path),
 		os.O_RDONLY|os.O_CREATE, 0o666)
 	if err != nil {
 		return nil, err
@@ -244,11 +245,7 @@ func (d *fileDepot) HasCN(_ string, allowTime int, cert *x509.Certificate, revok
 		return false, err
 	}
 	if revokeOldCertificate {
-		file, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, dbPerm)
-		if err != nil {
-			return false, err
-		}
-		if _, err := file.Write(addDB.Bytes()); err != nil {
+		if err := os.WriteFile(name, addDB.Bytes(), dbPerm); err != nil {
 			return false, err
 		}
 	}

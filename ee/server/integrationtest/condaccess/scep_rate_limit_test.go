@@ -1,0 +1,74 @@
+package condaccess
+
+import (
+	"errors"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/fleetdm/fleet/v4/server/config"
+	"github.com/fleetdm/fleet/v4/server/datastore/mysql/mysqltest"
+	"github.com/fleetdm/fleet/v4/server/fleet"
+	scepserver "github.com/fleetdm/fleet/v4/server/mdm/scep/server"
+	"github.com/fleetdm/fleet/v4/server/ptr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSCEPRateLimit(t *testing.T) {
+	// Set up suite with rate limiting configuration
+	cooldown := 5 * time.Minute
+	s := SetUpSuiteWithConfig(t, "integrationtest.ConditionalAccessSCEPRateLimit", func(cfg *config.FleetConfig) {
+		cfg.Osquery.EnrollCooldown = cooldown
+	})
+
+	defer mysqltest.TruncateTables(t, s.BaseSuite.DS, []string{
+		"conditional_access_scep_serials", "conditional_access_scep_certificates",
+	}...)
+
+	t.Run("RateLimitSameHost", func(t *testing.T) {
+		ctx := t.Context()
+
+		// Create enrollment secret
+		err := s.DS.ApplyEnrollSecrets(ctx, nil, []*fleet.EnrollSecret{{Secret: testEnrollmentSecret}})
+		require.NoError(t, err)
+
+		// Create a test host
+		host, err := s.DS.NewHost(ctx, &fleet.Host{
+			OsqueryHostID:   ptr.String("test-host-rate-limit"),
+			NodeKey:         ptr.String("test-node-key-rate-limit"),
+			UUID:            "test-uuid-rate-limit",
+			Hostname:        "test-hostname-rate-limit",
+			Platform:        "darwin",
+			DetailUpdatedAt: time.Now(),
+		})
+		require.NoError(t, err)
+
+		// First certificate request - should succeed
+		cert1 := requestSCEPCertificate(t, s, host.UUID, testEnrollmentSecret)
+		require.NotNil(t, cert1, "First certificate request should succeed")
+		assert.Equal(t, "urn:device:apple:uuid:"+host.UUID, cert1.URIs[0].String())
+
+		// Second certificate request immediately after - should fail due to rate limit
+		cert2, err := requestSCEPCertificateWithChallenge(t, s, host.UUID, testEnrollmentSecret)
+		statusErr, ok := errors.AsType[scepserver.ResponseStatusError](err)
+		require.True(t, ok, "Should return HTTP 429 for rate limit, got %v", err)
+		require.Equal(t, http.StatusTooManyRequests, statusErr.Code, "Should return HTTP 429 for rate limit")
+		require.Nil(t, cert2, "Second certificate request should fail due to rate limit")
+
+		// Different host should be able to get certificate
+		differentHost, err := s.DS.NewHost(ctx, &fleet.Host{
+			OsqueryHostID:   ptr.String("test-host-different"),
+			NodeKey:         ptr.String("test-node-key-different"),
+			UUID:            "test-uuid-different",
+			Hostname:        "test-hostname-different",
+			Platform:        "darwin",
+			DetailUpdatedAt: time.Now(),
+		})
+		require.NoError(t, err)
+
+		certDifferent := requestSCEPCertificate(t, s, differentHost.UUID, testEnrollmentSecret)
+		require.NotNil(t, certDifferent, "Different host should be able to get certificate")
+		assert.Equal(t, "urn:device:apple:uuid:"+differentHost.UUID, certDifferent.URIs[0].String())
+	})
+}

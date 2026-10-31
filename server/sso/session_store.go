@@ -2,27 +2,84 @@ package sso
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/crewjam/saml"
 	"github.com/fleetdm/fleet/v4/server/datastore/redis"
 	"github.com/fleetdm/fleet/v4/server/fleet"
 	redigo "github.com/gomodule/redigo/redis"
 )
 
-// Session stores state for the lifetime of a single sign on session
+// ErrSessionNotFound reports that an SSO session is no longer in the store.
+// Sessions are written with a TTL and deleted once fulfilled, so in practice
+// this means the user took longer to sign in than the configured window.
+var ErrSessionNotFound = errors.New("sso session not found")
+
+// ErrAssertionAlreadyUsed reports that a SAML assertion was already used to
+// log in, i.e. the SAMLResponse is being replayed.
+var ErrAssertionAlreadyUsed = errors.New("saml assertion already used")
+
+const (
+	consumedAssertionKeyPrefix = "sso:assertion:"
+	sessionKeyPrefix           = "sso:session:"
+	// sessionIDRawLen is the number of random bytes in a session ID, which is
+	// transported as standard base64 (sessionIDEncodedLen characters).
+	sessionIDRawLen     = 24
+	sessionIDEncodedLen = 32
+)
+
+// sessionKey maps a session ID to its Redis key. Only the canonical
+// server-generated ID format resolves to a key; anything else is treated as
+// an unknown session. The round-trip re-encode rejects non-canonical
+// encodings (base64 decoding ignores whitespace, for one).
+func sessionKey(sessionID string) (string, bool) {
+	if len(sessionID) != sessionIDEncodedLen {
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(sessionID)
+	if err != nil || len(decoded) != sessionIDRawLen || base64.StdEncoding.EncodeToString(decoded) != sessionID {
+		return "", false
+	}
+	return sessionKeyPrefix + sessionID, true
+}
+
+// sessionNotFoundError keeps the AuthRequiredError behaviour callers already
+// depend on -- the authz middleware matches on that type -- while letting the
+// SSO callbacks recognise an expired session with errors.Is.
+type sessionNotFoundError struct {
+	authRequired error
+}
+
+func (e *sessionNotFoundError) Error() string { return e.authRequired.Error() }
+
+func (e *sessionNotFoundError) Unwrap() []error {
+	return []error{e.authRequired, ErrSessionNotFound}
+}
+
+type SSORequestData struct {
+	HostUUID  string `json:"host_uuid,omitempty"`
+	Initiator string `json:"initiator,omitempty"`
+	// DeviceSerial and DeviceUDID identify the device that started an mdm_sso
+	// flow, from the deviceinfo it presented. Unlike HostUUID, they come from
+	// the deviceinfo Fleet parsed and verified at initiation.
+	DeviceSerial string `json:"device_serial,omitempty"`
+	DeviceUDID   string `json:"device_udid,omitempty"`
+}
+
+// Session stores state for the lifetime of a single sign on session.
 type Session struct {
+	// RequestID is the SAMLRequest ID that must match "InResponseTo" in the SAMLResponse.
+	RequestID string `json:"request_id"`
+	// Metadata is the IdP's Metadata used to validate the response.
+	Metadata string `json:"metadata"`
 	// OriginalURL is the resource being accessed when login request was triggered
 	OriginalURL string `json:"original_url"`
-	// UserName is only assigned from the IDP auth response, if present it
-	// indicates the that user has authenticated against the IDP.
-	UserName string `json:"user_name"`
-	// ExpiresAt session will be removed after this time.
-	ExpiresAt time.Time `json:"expires_at"`
-	Metadata  string    `json:"metadata"`
+	// Additional request data that may be needed to complete the SSO process.
+	RequestData SSORequestData `json:"request_data,omitempty"`
 }
 
 // SessionStore persists state of a sso session across process boundries and
@@ -31,10 +88,14 @@ type Session struct {
 // is constrained in the backing store (Redis) so if the sso process is not completed in
 // a reasonable amount of time, it automatically expires and is removed.
 type SessionStore interface {
-	create(requestID, originalURL, metadata string, lifetimeSecs uint) error
-	get(requestID string) (*Session, error)
-	expire(requestID string) error
-	Fullfill(requestID string) (*Session, *Metadata, error)
+	create(sessionID, requestID, originalURL, metadata string, lifetimeSecs uint, requestData SSORequestData) error
+	get(sessionID string) (*Session, error)
+	expire(sessionID string) error
+	// Fullfill loads a session with the given session ID, deletes it and returns it.
+	Fullfill(sessionID string) (*Session, error)
+	// ConsumeAssertion marks a verified SAML assertion as used until it expires,
+	// returning ErrAssertionAlreadyUsed if it was consumed before.
+	ConsumeAssertion(assertionID string, notOnOrAfter time.Time) error
 }
 
 // NewSessionStore creates a SessionStore
@@ -46,32 +107,43 @@ type store struct {
 	pool fleet.RedisPool
 }
 
-func (s *store) create(requestID, originalURL, metadata string, lifetimeSecs uint) error {
-	if len(requestID) < 8 {
-		return errors.New("request id must be 8 or more characters in length")
+func (s *store) create(sessionID, requestID, originalURL, metadata string, lifetimeSecs uint, requestData SSORequestData) error {
+	key, ok := sessionKey(sessionID)
+	if !ok {
+		return errors.New("invalid session ID format")
 	}
 	conn := redis.ConfigureDoer(s.pool, s.pool.Get())
 	defer conn.Close()
-	sess := Session{OriginalURL: originalURL, Metadata: metadata}
+
+	session := Session{
+		RequestID:   requestID,
+		Metadata:    metadata,
+		OriginalURL: originalURL,
+		RequestData: requestData,
+	}
 	var writer bytes.Buffer
-	err := json.NewEncoder(&writer).Encode(sess)
+	err := json.NewEncoder(&writer).Encode(session)
 	if err != nil {
 		return err
 	}
-	_, err = conn.Do("SETEX", requestID, lifetimeSecs, writer.String())
+	_, err = conn.Do("SETEX", key, lifetimeSecs, writer.String())
 	return err
 }
 
-func (s *store) get(requestID string) (*Session, error) {
+func (s *store) get(sessionID string) (*Session, error) {
+	key, ok := sessionKey(sessionID)
+	if !ok {
+		return nil, &sessionNotFoundError{authRequired: fleet.NewAuthRequiredError("session not found")}
+	}
 	// not reading from a replica here as this gets called in close succession
 	// in the auth flow, with initiate SSO writing and callback SSO having to
 	// read that write.
 	conn := redis.ConfigureDoer(s.pool, s.pool.Get())
 	defer conn.Close()
-	val, err := redigo.String(conn.Do("GET", requestID))
+	val, err := redigo.String(conn.Do("GET", key))
 	if err != nil {
 		if err == redigo.ErrNil {
-			return nil, fleet.NewAuthRequiredError("session not found")
+			return nil, &sessionNotFoundError{authRequired: fleet.NewAuthRequiredError("session not found")}
 		}
 		return nil, err
 	}
@@ -85,29 +157,48 @@ func (s *store) get(requestID string) (*Session, error) {
 	return &sess, nil
 }
 
-func (s *store) expire(requestID string) error {
+func (s *store) expire(sessionID string) error {
+	key, ok := sessionKey(sessionID)
+	if !ok {
+		// A session with this ID cannot exist, nothing to expire.
+		return nil
+	}
 	conn := redis.ConfigureDoer(s.pool, s.pool.Get())
 	defer conn.Close()
-	_, err := conn.Do("DEL", requestID)
+	_, err := conn.Do("DEL", key)
 	return err
 }
 
-func (s *store) Fullfill(requestID string) (*Session, *Metadata, error) {
-	session, err := s.get(requestID)
+func (s *store) Fullfill(sessionID string) (*Session, error) {
+	session, err := s.get(sessionID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sso request invalid: %w", err)
+		return nil, fmt.Errorf("sso request invalid: %w", err)
 	}
-
 	// Remove session so that it can't be reused before it expires.
-	err = s.expire(requestID)
+	err = s.expire(sessionID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("remove sso request: %w", err)
+		return nil, fmt.Errorf("remove sso request: %w", err)
 	}
+	return session, nil
+}
 
-	var metadata *Metadata
-	if err := xml.Unmarshal([]byte(session.Metadata), &metadata); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal sso request metadata: %w", err)
+func (s *store) ConsumeAssertion(assertionID string, notOnOrAfter time.Time) error {
+	if assertionID == "" {
+		return errors.New("missing assertion ID")
 	}
+	// The assertion is accepted by the SAML library up to MaxClockSkew past its
+	// expiry, so the key must outlive it by the same margin. A negative or zero
+	// expiry is an invalid argument, so make sure it is at least a second.
+	ttl := max(time.Until(notOnOrAfter.Add(saml.MaxClockSkew)), time.Second)
 
-	return session, metadata, nil
+	conn := redis.ConfigureDoer(s.pool, s.pool.Get())
+	defer conn.Close()
+	_, err := redigo.String(conn.Do("SET", consumedAssertionKeyPrefix+assertionID, "1", "PX", ttl.Milliseconds(), "NX"))
+	if err != nil {
+		if errors.Is(err, redigo.ErrNil) {
+			return ErrAssertionAlreadyUsed
+		}
+		return fmt.Errorf("mark assertion as used: %w", err)
+	}
+	return nil
 }

@@ -1,6 +1,9 @@
 /* eslint-disable react/prop-types */
 // disable this rule as it was throwing an error in Header and Cell component
 // definitions for the selection row for some reason when we dont really need it.
+
+import classnames from "classnames";
+import { kebabCase, noop } from "lodash";
 import React, {
   useMemo,
   useEffect,
@@ -8,7 +11,6 @@ import React, {
   useContext,
   useRef,
 } from "react";
-import classnames from "classnames";
 import {
   Column,
   HeaderGroup,
@@ -20,16 +22,15 @@ import {
   useSortBy,
   useTable,
 } from "react-table";
-import { kebabCase, noop } from "lodash";
 import { useDebouncedCallback } from "use-debounce";
 
+import Button from "components/buttons/Button";
+import Pagination from "components/Pagination";
+import Spinner from "components/Spinner";
+import { AppContext } from "context/app";
 import useDeepEffect from "hooks/useDeepEffect";
 import sort from "utilities/sort";
-import { AppContext } from "context/app";
 
-import Button from "components/buttons/Button";
-import Spinner from "components/Spinner";
-import Pagination from "components/Pagination";
 import ActionButton from "./ActionButton";
 import { IActionButtonProps } from "./ActionButton/ActionButton";
 
@@ -50,9 +51,15 @@ interface IDataTableProps {
   isAllPagesSelected: boolean; // TODO: make dependent on showMarkAllPages
   toggleAllPagesSelected?: any; // TODO: an event type and make it dependent on showMarkAllPages
   resultsTitle?: string;
+  totalCount?: number;
   defaultPageSize: number;
   defaultPageIndex?: number;
   defaultSelectedRows?: Record<string, boolean>;
+  /** Default: true (same as useTable default)
+   *  False prevents unnecessary page resets when a column ordering changes
+   *  e.g. when clicking on an action that modifies the data
+   */
+  autoResetPage?: boolean;
   primarySelectAction?: IActionButtonProps;
   secondarySelectActions?: IActionButtonProps[];
   isClientSidePagination?: boolean;
@@ -62,19 +69,30 @@ interface IDataTableProps {
   searchQuery?: string;
   searchQueryColumn?: string;
   selectedDropdownFilter?: string;
-  /** Set to true to persist the row selections across table data filters */
+  /** Set to true to persist row selection across client-side filters and pagination */
   persistSelectedRows?: boolean;
   /** Set to `true` to not display the footer section of the table */
   hideFooter?: boolean;
   onSelectSingleRow?: (value: Row) => void;
+  canClickRow?: (row: any) => boolean;
   onClickRow?: (value: any) => void;
   onResultsCountChange?: (value: number) => void;
+  /** When set and the table has zero rows (and is not loading), the empty tbody is replaced with
+   * faded ghost skeleton rows and this content is centered over them. Used when the real headers
+   * must stay interactive (e.g. per-column filter inputs) so a traditional empty state can't
+   * replace the whole table. */
+  renderNoResultsInBody?: () => React.ReactNode;
   /** Optional help text to render on bottom-left of the table. Hidden when table is loading and no
    * rows of data are present. */
   renderTableHelpText?: () => JSX.Element | null;
   renderPagination?: () => JSX.Element | null;
   setExportRows?: (rows: Row[]) => void;
   onClearSelection?: () => void;
+  suppressHeaderActions?: boolean;
+  /** Optional override for react-table's row ID derivation.
+   *  Note: avoid index-only row IDs in server-side paginated or selectable tables,
+   *  as IDs would collide across pages. */
+  getRowId?: (row: any, index: number) => string;
 }
 
 interface IHeaderGroup extends HeaderGroup {
@@ -99,9 +117,11 @@ const DataTable = ({
   isAllPagesSelected,
   toggleAllPagesSelected,
   resultsTitle = "results",
+  totalCount,
   defaultPageSize,
   defaultPageIndex,
   defaultSelectedRows = {},
+  autoResetPage = true,
   primarySelectAction,
   secondarySelectActions,
   isClientSidePagination,
@@ -114,12 +134,16 @@ const DataTable = ({
   persistSelectedRows = false,
   hideFooter = false,
   onSelectSingleRow,
+  canClickRow,
   onClickRow,
   onResultsCountChange,
+  renderNoResultsInBody,
   renderTableHelpText,
   renderPagination,
   setExportRows,
   onClearSelection = noop,
+  suppressHeaderActions,
+  getRowId: getRowIdProp,
 }: IDataTableProps): JSX.Element => {
   // used to track the initial mount of the component.
   const isInitialRender = useRef(true);
@@ -138,6 +162,12 @@ const DataTable = ({
   const initialSortBy = useMemo(() => {
     return [{ id: sortHeader, desc: sortDirection === "desc" }];
   }, [sortHeader, sortDirection]);
+
+  // Decide the page index value to pass to useTable
+  const controlledPageIndex =
+    isClientSidePagination && !!onClientSidePaginationChange
+      ? defaultPageIndex ?? 0
+      : undefined; // undefined lets react-table manage internally (Keeps internal mode working)
 
   const {
     headerGroups,
@@ -166,16 +196,30 @@ const DataTable = ({
     {
       columns,
       data,
+      // Use a stable row ID when available (row.id), otherwise fall back to the index-based ID (default of react-table)
+      getRowId:
+        getRowIdProp ??
+        ((row: any, index: number) =>
+          row && row.id != null ? String(row.id) : String(index)),
       initialState: {
         sortBy: initialSortBy,
         pageIndex: defaultPageIndex,
         selectedRowIds: defaultSelectedRows,
       },
+      // For onClientSidePaginationChange (URL-controlled mode) we inject pageIndex, otherwise leave undefined so it's internal
+      // NOTE: This specifically prevents quick flicker of incorrect page data for clientside pagination with
+      // external source of truth (URL bar) such as the self-service page when searching or changing categories
+      // TODO: Figure out flickering on self-service page internal sort buttons
+      state:
+        controlledPageIndex !== undefined
+          ? { pageIndex: controlledPageIndex }
+          : undefined,
       disableMultiSort: true,
       disableSortRemove: true,
       manualSortBy,
-      // Resets row selection on (server-side) pagination
-      autoResetSelectedRows: true,
+      autoResetPage,
+      // Resets row selection on pagination
+      autoResetSelectedRows: !persistSelectedRows,
       // Expands the enumerated `filterTypes` for react-table
       // (see https://github.com/TanStack/react-table/blob/alpha/packages/react-table/src/filterTypes.ts)
       // with custom `filterTypes` defined for this `useTable` instance
@@ -232,6 +276,11 @@ const DataTable = ({
             b: { values: Record<string, unknown[]> },
             id: string
           ) => sort.hostPolicyStatus(a.values[id], b.values[id]),
+          version: (
+            a: { values: Record<string, unknown> },
+            b: { values: Record<string, unknown> },
+            id: string
+          ) => sort.versionAsc(a.values[id], b.values[id]),
         }),
         []
       ),
@@ -301,10 +350,20 @@ const DataTable = ({
     }
   }, [selectedDropdownFilter]);
 
+  // track previous sort state
+  const prevSort = useRef<{ id?: string; desc?: boolean }>({
+    id: undefined,
+    desc: undefined, // desc as in descending
+  });
+
   // This is used to listen for changes to sort. If there is a change
   // Then the sortHandler change is fired.
   useEffect(() => {
     const column = sortBy[0];
+    const prev = prevSort.current;
+    const newId = column?.id;
+    const newDesc = column?.desc;
+
     if (column !== undefined) {
       if (
         column.id !== sortHeader ||
@@ -315,10 +374,43 @@ const DataTable = ({
     } else {
       onSort(undefined);
     }
-    if (isClientSidePagination) {
-      gotoPage(0); // Return to page 0 after changing sort clientside
+
+    // Only reset to page 0 if sort column/direction actually changes
+    // Prevents unnecessary page resets when a column ordering changes
+    // e.g. when clicking on an action that modifies the data
+    const hasSortChanged =
+      (!prev && (newId || newDesc !== undefined)) ||
+      (prev && (prev.id !== newId || prev.desc !== newDesc));
+
+    if (isClientSidePagination && hasSortChanged) {
+      gotoPage(0); // Just this, no defaultPageIndex/etc!
     }
-  }, [sortBy, sortHeader, onSort, sortDirection]);
+    prevSort.current = column
+      ? { id: newId, desc: newDesc }
+      : { id: undefined, desc: undefined };
+  }, [sortBy, sortHeader, onSort, sortDirection, isClientSidePagination]);
+
+  /** For onClientSidePaginationChange only:
+   * Prevents bug where URL page + table page mismatch
+   * Whenever defaultPageIndex (the value from props, e.g. queryParams.page) changes,
+   * ensure we call gotoPage so react-table reflects the correct visible page.
+   */
+  useEffect(() => {
+    if (
+      isClientSidePagination &&
+      !!onClientSidePaginationChange &&
+      typeof defaultPageIndex === "number" &&
+      pageIndex !== defaultPageIndex
+    ) {
+      gotoPage(defaultPageIndex);
+    }
+  }, [
+    isClientSidePagination,
+    onClientSidePaginationChange,
+    defaultPageIndex,
+    gotoPage,
+    pageIndex,
+  ]);
 
   useEffect(() => {
     if (isAllPagesSelected) {
@@ -376,8 +468,10 @@ const DataTable = ({
     return (
       <p>
         <span>
-          {selectedCount}
-          {isAllPagesSelected && "+"}
+          {isAllPagesSelected && totalCount !== undefined
+            ? totalCount
+            : selectedCount}
+          {isAllPagesSelected && totalCount === undefined && "+"}
         </span>{" "}
         selected
       </p>
@@ -445,11 +539,70 @@ const DataTable = ({
 
   const pageOrRows = isClientSidePagination ? page : rows;
 
+  const showGhostNoResults =
+    !!renderNoResultsInBody && !isLoading && !rows.length;
+
   const tableStyles = classnames({
     "data-table__table": true,
     "data-table__no-rows": !rows.length,
     "is-observer": isOnlyObserver,
   });
+
+  const GHOST_ROW_COUNT = 6;
+  const ghostColumnCount = headerGroups[0]?.headers?.length ?? 1;
+  // Deterministic jitter so skeletons don't align into vertical stripes.
+  const ghostWidthOffsets = [0, 14, -8, 22, -4, 18, -12, 26, 6, -10];
+  const varyGhostWidth = (base: number, index: number) =>
+    base + ghostWidthOffsets[index % ghostWidthOffsets.length];
+
+  const renderHeaderWithActions = () => (
+    <thead className="active-selection">
+      <tr {...headerGroups[0].getHeaderGroupProps()}>
+        <th
+          className="active-selection__checkbox"
+          {...headerGroups[0].headers[0].getHeaderProps(
+            headerGroups[0].headers[0].getSortByToggleProps({
+              title: null,
+            })
+          )}
+        >
+          {headerGroups[0].headers[0].render("Header")}
+        </th>
+        <th className="active-selection__container">
+          <div className="active-selection__inner">
+            {renderSelectedCount()}
+            <div className="active-selection__inner-left">
+              {secondarySelectActions && renderSecondarySelectActions()}
+            </div>
+            <div className="active-selection__inner-right">
+              {primarySelectAction && renderPrimarySelectAction()}
+            </div>
+            {toggleAllPagesSelected && renderAreAllSelected()}
+            {shouldRenderToggleAllPages && (
+              <Button onClick={onToggleAllPagesClick} variant="link">
+                <>Select all matching {resultsTitle}</>
+              </Button>
+            )}
+            <Button onClick={onClearSelectionClick} variant="link">
+              Clear selection
+            </Button>
+          </div>
+        </th>
+      </tr>
+    </thead>
+  );
+
+  const shouldShowFooter =
+    // footer is not explicitly hidden
+    !hideFooter &&
+    // and any of:
+
+    // table is client-side paginated with more than 1 page of rows
+    ((isClientSidePagination && (canNextPage || canPreviousPage)) ||
+      // table's pagination is externally controlled
+      renderPagination?.() != null ||
+      // there is help text and at least 1 row of data
+      (renderTableHelpText?.() != null && !!rows?.length));
 
   return (
     <div className={baseClass}>
@@ -458,48 +611,15 @@ const DataTable = ({
           <Spinner />
         </div>
       )}
-      <div className="data-table data-table__wrapper">
+      <div
+        className={classnames("data-table", "data-table__wrapper", {
+          "data-table__wrapper--no-rows": !rows.length && !showGhostNoResults,
+        })}
+      >
         <table className={tableStyles}>
-          {Object.keys(selectedRowIds).length !== 0 && (
-            <thead className="active-selection">
-              <tr {...headerGroups[0].getHeaderGroupProps()}>
-                <th
-                  className="active-selection__checkbox"
-                  {...headerGroups[0].headers[0].getHeaderProps(
-                    headerGroups[0].headers[0].getSortByToggleProps({
-                      title: null,
-                    })
-                  )}
-                >
-                  {headerGroups[0].headers[0].render("Header")}
-                </th>
-                <th className="active-selection__container">
-                  <div className="active-selection__inner">
-                    {renderSelectedCount()}
-                    <div className="active-selection__inner-left">
-                      {secondarySelectActions && renderSecondarySelectActions()}
-                    </div>
-                    <div className="active-selection__inner-right">
-                      {primarySelectAction && renderPrimarySelectAction()}
-                    </div>
-                    {toggleAllPagesSelected && renderAreAllSelected()}
-                    {shouldRenderToggleAllPages && (
-                      <Button
-                        onClick={onToggleAllPagesClick}
-                        variant="text-link"
-                        className="light-text"
-                      >
-                        <>Select all matching {resultsTitle}</>
-                      </Button>
-                    )}
-                    <Button onClick={onClearSelectionClick} variant="text-link">
-                      Clear selection
-                    </Button>
-                  </div>
-                </th>
-              </tr>
-            </thead>
-          )}
+          {!suppressHeaderActions &&
+            Object.keys(selectedRowIds).length !== 0 &&
+            renderHeaderWithActions()}
           <thead>
             {headerGroups.map((headerGroup) => (
               <tr {...headerGroup.getHeaderGroupProps()}>
@@ -507,83 +627,144 @@ const DataTable = ({
                   return (
                     <th
                       className={column.id ? `${column.id}__header` : ""}
-                      {...column.getHeaderProps(
-                        column.getSortByToggleProps({ title: null })
-                      )}
+                      {...column.getHeaderProps()}
                     >
-                      {renderColumnHeader(column)}
+                      {column.canSort ? (
+                        <Button
+                          variant="unstyled"
+                          {...column.getSortByToggleProps({ title: null })}
+                          aria-label={`Sort by ${column.Header} ${
+                            column.isSortedDesc ? "descending" : "ascending"
+                          }`}
+                          tabIndex={0}
+                          className="sortable-header"
+                        >
+                          {renderColumnHeader(column)}
+                          {/* add arrow/icon as needed */}
+                        </Button>
+                      ) : (
+                        renderColumnHeader(column)
+                      )}
                     </th>
                   );
                 })}
               </tr>
             ))}
           </thead>
-          <tbody>
-            {pageOrRows.map((row: Row) => {
-              prepareRow(row);
-
-              const rowStyles = classnames({
-                "single-row": disableMultiRowSelect,
-                "disable-highlight": disableHighlightOnHover,
-                "clickable-row": !!onClickRow,
-              });
-              return (
-                <tr
-                  className={rowStyles}
-                  {...row.getRowProps({
-                    // @ts-ignore // TS complains about prop not existing
-                    onClick: () => {
-                      (onSelectRowClick &&
-                        disableMultiRowSelect &&
-                        onSelectRowClick(row)) ||
-                        (disableMultiRowSelect &&
-                          onClickRow &&
-                          onClickRow(row));
-                    },
-                    // For accessibility when tabable
-                    onKeyDown: (e: KeyboardEvent) => {
-                      if (e.key === "Enter") {
-                        e.stopPropagation();
-                        (onSelectRowClick &&
-                          disableMultiRowSelect &&
-                          onSelectRowClick(row)) ||
-                          (disableMultiRowSelect &&
-                            onClickRow &&
-                            onClickRow(row));
-                      }
-                    },
-                  })}
-                  // Can tab onto an entire row if a child element does not have the same onClick functionality as clicking the whole row
-                  tabIndex={keyboardSelectableRows ? 0 : -1}
-                >
-                  {row.cells.map((cell: any, index: number) => {
-                    // Only allow row click behavior on first cell
-                    // if the first cell is not a checkbox
-                    const cellProps = cell.getCellProps();
-                    const multiRowSelectEnabled = !disableMultiRowSelect;
-
-                    return (
-                      <td
-                        key={cell.column.id}
-                        className={
-                          cell.column.id ? `${cell.column.id}__cell` : ""
-                        }
-                        style={
-                          multiRowSelectEnabled ? { cursor: "initial" } : {}
-                        }
-                        {...cellProps}
-                      >
-                        {cell.render("Cell")}
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
+          <tbody
+            className={classnames({
+              "data-table__ghost-tbody": showGhostNoResults,
             })}
+          >
+            {showGhostNoResults &&
+              Array.from({ length: GHOST_ROW_COUNT }).map((_, rowIdx) => (
+                <tr
+                  // eslint-disable-next-line react/no-array-index-key
+                  key={`ghost-${rowIdx}`}
+                  className="data-table__ghost-row"
+                  style={{
+                    // Match EmptyState's mask fade: top row at 0.5, bottom at ~0.
+                    opacity: 0.5 * (1 - rowIdx / (GHOST_ROW_COUNT - 1)),
+                  }}
+                  aria-hidden
+                >
+                  {Array.from({ length: ghostColumnCount }).map(
+                    (__, colIdx) => (
+                      <td
+                        // eslint-disable-next-line react/no-array-index-key
+                        key={`ghost-${rowIdx}-${colIdx}`}
+                      >
+                        <div
+                          className="data-table__ghost-skeleton"
+                          style={{
+                            width: varyGhostWidth(
+                              80,
+                              rowIdx * ghostColumnCount + colIdx
+                            ),
+                          }}
+                        />
+                      </td>
+                    )
+                  )}
+                </tr>
+              ))}
+            {!showGhostNoResults &&
+              pageOrRows.map((row: Row) => {
+                prepareRow(row);
+
+                const rowStyles = classnames({
+                  "single-row": disableMultiRowSelect,
+                  "disable-highlight": disableHighlightOnHover,
+                  "clickable-row":
+                    !!onClickRow && (!canClickRow || canClickRow(row)),
+                });
+                return (
+                  <tr
+                    className={rowStyles}
+                    {...row.getRowProps({
+                      // @ts-ignore // TS complains about prop not existing
+                      onClick: () => {
+                        if (!canClickRow || canClickRow(row)) {
+                          (onSelectRowClick &&
+                            disableMultiRowSelect &&
+                            onSelectRowClick(row)) ||
+                            (disableMultiRowSelect &&
+                              onClickRow &&
+                              onClickRow(row));
+                        }
+                      },
+                      // For accessibility when tabable
+                      onKeyDown: (e: KeyboardEvent) => {
+                        if (e.key === "Enter") {
+                          e.stopPropagation();
+                          (onSelectRowClick &&
+                            disableMultiRowSelect &&
+                            onSelectRowClick(row)) ||
+                            (disableMultiRowSelect &&
+                              (!canClickRow || canClickRow(row)) &&
+                              onClickRow &&
+                              onClickRow(row));
+                        }
+                      },
+                    })}
+                    // Can tab onto an entire row if a child element does not have the same onClick functionality as clicking the whole row
+                    tabIndex={keyboardSelectableRows ? 0 : -1}
+                  >
+                    {row.cells.map((cell: any, index: number) => {
+                      // Only allow row click behavior on first cell
+                      // if the first cell is not a checkbox
+                      const cellProps = cell.getCellProps();
+                      const multiRowSelectEnabled = !disableMultiRowSelect;
+
+                      return (
+                        <td
+                          key={cell.column.id}
+                          className={
+                            cell.column.id ? `${cell.column.id}__cell` : ""
+                          }
+                          style={
+                            multiRowSelectEnabled ? { cursor: "initial" } : {}
+                          }
+                          {...cellProps}
+                        >
+                          {cell.render("Cell")}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
       </div>
-      {!hideFooter && (
+      <div className="data-table__no-match-overlay" role="status">
+        {showGhostNoResults && (
+          <div className="data-table__no-match-content">
+            {renderNoResultsInBody?.()}
+          </div>
+        )}
+      </div>
+      {shouldShowFooter && (
         <div className={`${baseClass}__footer`}>
           {renderTableHelpText && !!rows?.length && (
             <div className={`${baseClass}__table-help-text`}>
@@ -595,16 +776,16 @@ const DataTable = ({
               disablePrev={!canPreviousPage}
               disableNext={!canNextPage}
               onPrevPage={() => {
-                toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
-                onClientSidePaginationChange &&
-                  onClientSidePaginationChange(pageIndex - 1);
-                previousPage();
+                !persistSelectedRows && toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
+                onClientSidePaginationChange
+                  ? onClientSidePaginationChange(pageIndex - 1)
+                  : previousPage();
               }}
               onNextPage={() => {
-                toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
-                onClientSidePaginationChange &&
-                  onClientSidePaginationChange(pageIndex + 1);
-                nextPage();
+                !persistSelectedRows && toggleAllRowsSelected(false); // Resets row selection on pagination (client-side)
+                onClientSidePaginationChange
+                  ? onClientSidePaginationChange(pageIndex + 1)
+                  : nextPage();
               }}
               hidePagination={!canPreviousPage && !canNextPage}
             />

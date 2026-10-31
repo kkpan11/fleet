@@ -1,4 +1,5 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 import { ICON_SIZES, IconSizes } from "styles/var/icon_sizes";
 
@@ -8,7 +9,7 @@ interface IColumnsProps {
 }
 
 const Columns = ({
-  color = "core-fleet-blue",
+  color = "ui-fleet-black-75",
   size = "medium",
 }: IColumnsProps) => {
   return (

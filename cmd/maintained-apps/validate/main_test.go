@@ -1,0 +1,180 @@
+//go:build darwin || windows
+
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestListDirectoryContents(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "TestDirectoryContents-")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	// directories
+	err = os.Mkdir(filepath.Join(tmpDir, "app1"), 0o755)
+	require.NoError(t, err)
+	err = os.Mkdir(filepath.Join(tmpDir, "app2"), 0o755)
+	require.NoError(t, err)
+
+	// file
+	err = os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("test"), 0o644)
+	require.NoError(t, err)
+
+	// symlinks
+	err = os.Symlink(filepath.Join(tmpDir, "app1"), filepath.Join(tmpDir, "symlinkdir"))
+	require.NoError(t, err)
+	err = os.Symlink(filepath.Join(tmpDir, "file1.txt"), filepath.Join(tmpDir, "symlinkfile"))
+	require.NoError(t, err)
+
+	directoryList, err := listDirectoryContents(tmpDir)
+	require.NoError(t, err)
+	expectedList := map[string]struct{}{
+		"app1": {},
+		"app2": {},
+	}
+	require.Equal(t, expectedList, directoryList)
+}
+
+func TestDetectApplicationChange(t *testing.T) {
+	// mock filepath.Join as it is operating system specific
+	originalJoin := pathJoin
+	defer func() { pathJoin = originalJoin }()
+	pathJoin = func(parts ...string) string {
+		return strings.Join(parts, "__")
+	}
+
+	directory := "__MadeupOS"
+
+	testCases := []struct {
+		name              string
+		preList           map[string]struct{}
+		postList          map[string]struct{}
+		expectedPath      string
+		expectedDirection bool
+	}{
+		{
+			name:              "Item added, returns new item",
+			preList:           map[string]struct{}{"App1": {}, "App2": {}},
+			postList:          map[string]struct{}{"App1": {}, "App2": {}, "App3": {}},
+			expectedPath:      "__MadeupOS__App3",
+			expectedDirection: true,
+		},
+		{
+			name:              "Item removed, returns removed item",
+			preList:           map[string]struct{}{"App1": {}, "App2": {}},
+			postList:          map[string]struct{}{"App1": {}},
+			expectedPath:      "__MadeupOS__App2",
+			expectedDirection: false,
+		},
+		{
+			name:              "No changes, returns empty",
+			preList:           map[string]struct{}{"App1": {}, "App2": {}},
+			postList:          map[string]struct{}{"App1": {}, "App2": {}},
+			expectedPath:      "",
+			expectedDirection: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, direction := detectApplicationChange(
+				directory,
+				tc.preList,
+				tc.postList,
+			)
+			if path != tc.expectedPath {
+				t.Errorf("expected path `%s`, got `%s`", tc.expectedPath, path)
+			}
+			if direction != tc.expectedDirection {
+				t.Errorf("expected direction `%t`, got `%t`", tc.expectedDirection, direction)
+			}
+		})
+	}
+}
+
+func TestValidateSqlInput(t *testing.T) {
+	testCases := []struct {
+		input   string
+		isValid bool
+	}{
+		{"", true},
+		{"Amazon DCV", true},
+		{"/Applications/DCV Viewer.app", true},
+		{"C:\\Program Files\\TeamViewer", true},
+		{"com.google.Chrome", true},
+		{"' OR '1'='1", false},
+		{"' OR 1=1--", false},
+		{"'; DROP TABLE users; --", false},
+		{"'; WAITFOR DELAY '00:00:05';--", false},
+		{"1; DELETE FROM table;--", false},
+		{"'; INSERT INTO users(username, password) VALUES('hacker','pass');--", false},
+	}
+	for _, tc := range testCases {
+		t.Run("Validating input `"+tc.input+"`", func(t *testing.T) {
+			got := validateSqlInput(tc.input)
+			if got != nil && tc.isValid {
+				t.Errorf("expected `%s` to be valid input, but got error", tc.input)
+			} else if got == nil && !tc.isValid {
+				t.Errorf("expected validation error for `%s`, but got no error", tc.input)
+			}
+		})
+	}
+}
+
+func TestProgramsExistsWhereClause(t *testing.T) {
+	testCases := []struct {
+		query string
+		want  string
+	}{
+		{"", ""},
+		{
+			"SELECT 1 FROM programs WHERE name LIKE 'QGIS %' AND publisher = 'QGIS.org' AND version LIKE '3.44.%';",
+			"name LIKE 'QGIS %' AND publisher = 'QGIS.org' AND version LIKE '3.44.%'",
+		},
+		{
+			"select 1 from programs where name = 'Foo'",
+			"name = 'Foo'",
+		},
+		{
+			"SELECT 1 FROM apps WHERE bundle_identifier = 'com.example.foo';",
+			"",
+		},
+		{
+			"SELECT 1 WHERE EXISTS (SELECT 1 FROM programs WHERE name = 'Foo') OR NOT EXISTS (SELECT 1 FROM system_info WHERE cpu_type LIKE 'ARM%');",
+			"",
+		},
+	}
+	for _, tc := range testCases {
+		require.Equal(t, tc.want, programsExistsWhereClause(tc.query), tc.query)
+	}
+}
+
+func TestPatchedQueryVersion(t *testing.T) {
+	testCases := []struct {
+		query string
+		want  string
+	}{
+		{"", ""},
+		{
+			"SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM programs WHERE name LIKE 'Microsoft .NET SDK 9.%' AND name LIKE '%(x64)' AND publisher = 'Microsoft Corporation' AND version_compare(version, '9.3.2026.52328') < 0);",
+			"9.3.2026.52328",
+		},
+		{
+			"SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM file WHERE path = 'C:\\foo.exe' AND version_compare(file_version, '1.2.3') < 0);",
+			"",
+		},
+		{
+			"SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM apps WHERE bundle_identifier = 'com.example.foo' AND version_compare(bundle_short_version, '1.2.3') < 0);",
+			"",
+		},
+	}
+	for _, tc := range testCases {
+		require.Equal(t, tc.want, patchedQueryVersion(tc.query), tc.query)
+	}
+}

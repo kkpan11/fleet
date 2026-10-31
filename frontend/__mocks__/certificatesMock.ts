@@ -1,5 +1,13 @@
-import { IHostCertificate } from "interfaces/certificates";
+import {
+  ICertificateAuthorityPartial,
+  ICertificatesEJBCA,
+  ICertificatesGoogleCAS,
+  ICertificatesNDES,
+  IHostCertificate,
+} from "interfaces/certificates";
+import { ICertificate } from "services/entities/certificates";
 import { IGetHostCertificatesResponse } from "services/entities/hosts";
+import { UNCHANGED_PASSWORD_API_RESPONSE } from "utilities/constants";
 
 const DEFAULT_HOST_CERTIFICATE_MOCK: IHostCertificate = {
   id: 1,
@@ -24,6 +32,8 @@ const DEFAULT_HOST_CERTIFICATE_MOCK: IHostCertificate = {
     organizational_unit: "Test Inc.",
     common_name: "Test Biz",
   },
+  source: "system",
+  username: "",
 };
 
 export const createMockHostCertificate = (
@@ -38,10 +48,93 @@ const DEFAULT_HOST_CERTIFICATES_RESPONSE_MOCK: IGetHostCertificatesResponse = {
     has_next_results: false,
     has_previous_results: false,
   },
+  count: 1,
 };
 
 export const createMockGetHostCertificatesResponse = (
   overrides?: Partial<IGetHostCertificatesResponse>
 ): IGetHostCertificatesResponse => {
   return { ...DEFAULT_HOST_CERTIFICATES_RESPONSE_MOCK, ...overrides };
+};
+
+const DEFAULT_CERT_AUTHORITY_PARTIAL_MOCK: ICertificateAuthorityPartial = {
+  id: 1,
+  name: "Test CA",
+  type: "digicert",
+};
+
+const DEFAULT_NDES_CERT_AUTHORITY_MOCK: ICertificatesNDES = {
+  id: 1,
+  type: "ndes_scep_proxy",
+  url: "https://ndes.example.com/certsrv/mscep/mscep.dll",
+  admin_url: "https://ndes.example.com/certsrv/mscep_admin/",
+  username: "ndes-username",
+  // the API returns the password masked
+  password: UNCHANGED_PASSWORD_API_RESPONSE,
+};
+
+export const createMockNDESCertAuthority = (
+  overrides?: Partial<ICertificatesNDES>
+): ICertificatesNDES => {
+  return { ...DEFAULT_NDES_CERT_AUTHORITY_MOCK, ...overrides };
+};
+
+const DEFAULT_EJBCA_CERT_AUTHORITY_MOCK: ICertificatesEJBCA = {
+  id: 1,
+  type: "ejbca",
+  name: "TEST_EJBCA",
+  url: "https://ejbca.example.com:8443",
+  trust_ca_bundle:
+    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+  certificate_authority_name: "ManagementCA",
+  certificate_profile_name: "ENDUSER",
+  end_entity_profile_name: "EMPTY",
+  certificate_common_name: "$FLEET_VAR_HOST_HARDWARE_SERIAL",
+  username_template: "$FLEET_VAR_HOST_UUID",
+  certificate_user_principal_names: ["$FLEET_VAR_HOST_HARDWARE_SERIAL"],
+  mtls_cert_expires_at: "2099-01-01T00:00:00Z",
+};
+
+export const createMockEJBCACertAuthority = (
+  overrides?: Partial<ICertificatesEJBCA>
+): ICertificatesEJBCA => {
+  return { ...DEFAULT_EJBCA_CERT_AUTHORITY_MOCK, ...overrides };
+};
+
+const DEFAULT_GOOGLE_CAS_CERT_AUTHORITY_MOCK: ICertificatesGoogleCAS = {
+  id: 7,
+  type: "google_cas",
+  name: "GOOGLE_WIFI",
+  project: "my-project",
+  location: "us-central1",
+  ca_pool: "my-ca-pool",
+  // the API returns the key masked
+  api_key_json: UNCHANGED_PASSWORD_API_RESPONSE,
+};
+
+export const createMockGoogleCASCertAuthority = (
+  overrides?: Partial<ICertificatesGoogleCAS>
+): ICertificatesGoogleCAS => {
+  return { ...DEFAULT_GOOGLE_CAS_CERT_AUTHORITY_MOCK, ...overrides };
+};
+
+export const createMockCertificateAuthorityPartial = (
+  overrides?: Partial<ICertificateAuthorityPartial>
+): ICertificateAuthorityPartial => {
+  return { ...DEFAULT_CERT_AUTHORITY_PARTIAL_MOCK, ...overrides };
+};
+
+const DEFAULT_ANDROID_CERT_MOCK: ICertificate = {
+  id: 1,
+  name: "Test Android Certificate",
+  subject_name: "CN=test@example.com, O=Test Inc.",
+  certificate_authority_id: 1,
+  certificate_authority_name: "Test CA",
+  created_at: "2021-08-19T02:02:17Z",
+};
+
+export const createMockAndroidCert = (
+  overrides?: Partial<ICertificate>
+): ICertificate => {
+  return { ...DEFAULT_ANDROID_CERT_MOCK, ...overrides };
 };

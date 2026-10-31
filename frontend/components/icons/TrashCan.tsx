@@ -1,4 +1,5 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 import { IconSizes, ICON_SIZES } from "styles/var/icon_sizes";
 
@@ -8,7 +9,7 @@ interface ITrashCanProps {
 }
 
 const TrashCan = ({
-  color = "core-fleet-blue",
+  color = "ui-fleet-black-75",
   size = "medium",
 }: ITrashCanProps) => {
   return (

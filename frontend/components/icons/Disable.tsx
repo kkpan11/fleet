@@ -1,11 +1,12 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 
 interface IDisable {
   color?: Colors;
 }
 
-const Disable = ({ color = "core-fleet-blue" }: IDisable) => {
+const Disable = ({ color = "ui-fleet-black-75" }: IDisable) => {
   return (
     <svg
       width="16"

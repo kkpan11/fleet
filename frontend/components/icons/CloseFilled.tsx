@@ -1,4 +1,5 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 import { ICON_SIZES, IconSizes } from "styles/var/icon_sizes";
 
@@ -9,7 +10,7 @@ interface IExCircledProps {
 
 const CloseFilled = ({
   size = "medium",
-  color = "core-fleet-blue",
+  color = "ui-fleet-black-75",
 }: IExCircledProps) => {
   return (
     <svg

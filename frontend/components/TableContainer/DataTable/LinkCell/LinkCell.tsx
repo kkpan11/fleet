@@ -1,9 +1,11 @@
 // Utilizes Link over Button so we can right click links
-import React from "react";
 
-import { Link } from "react-router";
 import classnames from "classnames";
+import React from "react";
+import { Link } from "react-router";
+
 import TooltipWrapper from "components/TooltipWrapper";
+
 import TooltipTruncatedTextCell from "../TooltipTruncatedTextCell";
 
 interface ILinkCellProps {
@@ -35,7 +37,10 @@ const LinkCell = ({
   prefix,
   suffix,
 }: ILinkCellProps): JSX.Element => {
-  const cellClasses = classnames(baseClass, className);
+  const cellClasses = classnames(baseClass, className, {
+    [`${baseClass}--tooltip`]: !!tooltipContent,
+    [`${baseClass}--tooltip-truncate`]: tooltipTruncate,
+  });
 
   const onClick = (e: React.MouseEvent): void => {
     customOnClick && customOnClick(e);

@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
+	"github.com/fleetdm/fleet/v4/server/contexts/license"
 
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	platform_http "github.com/fleetdm/fleet/v4/server/platform/http"
 	"github.com/fleetdm/fleet/v4/server/ptr"
 )
 
@@ -72,6 +74,13 @@ func listSoftwareVersionsEndpoint(ctx context.Context, request interface{}, svc 
 	// legacy endpoint for backwards compatibility)
 	req.SoftwareListOptions.ListOptions.IncludeMetadata = true
 
+	// fleet.DefaultPerPage is effectively unbounded, and returning a whole large
+	// inventory in one response takes long enough to trip a load balancer's idle
+	// timeout, so fall back to the bounded page size instead.
+	if req.SoftwareListOptions.ListOptions.PerPage == 0 {
+		req.SoftwareListOptions.ListOptions.PerPage = platform_http.MaxPerPage
+	}
+
 	resp, meta, err := svc.ListSoftware(ctx, req.SoftwareListOptions)
 	if err != nil {
 		return listSoftwareVersionsResponse{Err: err}, nil
@@ -110,8 +119,13 @@ func (svc *Service) ListSoftware(ctx context.Context, opt fleet.SoftwareListOpti
 	if err != nil {
 		return nil, nil, err
 	}
-	if !lic.IsPremium() && (opt.MaximumCVSS > 0 || opt.MinimumCVSS > 0 || opt.KnownExploit) {
+	if !lic.IsPremium() && (opt.MaximumCVSS > 0 || opt.MinimumCVSS > 0 || opt.KnownExploit || opt.AITool) {
 		return nil, nil, fleet.ErrMissingLicense
+	}
+
+	opt.TypeFilter, err = fleet.ParseSoftwareTypeFilter(opt.Source, opt.ExtensionFor)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// default sort order to hosts_count descending
@@ -125,6 +139,13 @@ func (svc *Service) ListSoftware(ctx context.Context, opt fleet.SoftwareListOpti
 	if err != nil {
 		return nil, nil, err
 	}
+	// ai_tool is Fleet Premium, so it's omitted on Free. That also hides software flagged before a
+	// downgrade, since the flag is never reset in the database.
+	if !lic.IsPremium() {
+		for i := range softwares {
+			softwares[i].AITool = nil
+		}
+	}
 
 	return softwares, meta, nil
 }
@@ -135,7 +156,7 @@ func (svc *Service) ListSoftware(ctx context.Context, opt fleet.SoftwareListOpti
 
 type getSoftwareRequest struct {
 	ID     uint  `url:"id"`
-	TeamID *uint `query:"team_id,optional"`
+	TeamID *uint `query:"team_id,optional" renameto:"fleet_id"`
 }
 
 type getSoftwareResponse struct {
@@ -170,7 +191,7 @@ func (svc *Service) SoftwareByID(ctx context.Context, id uint, teamID *uint, inc
 		if err != nil {
 			return nil, ctxerr.Wrap(ctx, err, "checking if team exists")
 		} else if !exists {
-			return nil, fleet.NewInvalidArgumentError("team_id", fmt.Sprintf("team %d does not exist", *teamID)).
+			return nil, fleet.NewInvalidArgumentError("team_id/fleet_id", fmt.Sprintf("fleet %d does not exist", *teamID)).
 				WithStatus(http.StatusNotFound)
 		}
 	}
@@ -179,6 +200,11 @@ func (svc *Service) SoftwareByID(ctx context.Context, id uint, teamID *uint, inc
 		return nil, fleet.ErrNoContext
 	}
 
+	// NOTE: The following logic relaxes the restriction so that software metadata (e.g. id, name)
+	// can be returned even if the requesting user does not have permission to view any hosts where the software
+	// is installed. However, host-specific information remains protected and is only available if the
+	// user is authorized for the relevant teams. This ensures basic metadata visibility across all users
+	// while preserving team-based access control for sensitive, host-linked data.
 	software, err := svc.ds.SoftwareByID(ctx, id, teamID, includeCVEScores, &fleet.TeamFilter{
 		User:            vc.User,
 		IncludeObserver: true,
@@ -188,18 +214,41 @@ func (svc *Service) SoftwareByID(ctx context.Context, id uint, teamID *uint, inc
 			// here we use a global admin as filter because we want
 			// to check if the software version exists
 			filter := fleet.TeamFilter{User: &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)}}
-
-			if _, err = svc.ds.SoftwareByID(ctx, id, teamID, includeCVEScores, &filter); err != nil {
-				return nil, ctxerr.Wrap(ctx, err, "checked using a global admin")
+			sw, err := svc.ds.SoftwareByID(ctx, id, teamID, includeCVEScores, &filter)
+			if err != nil {
+				// Not found anywhere
+				return nil, ctxerr.Wrap(ctx, err, "software not found for any team")
 			}
-
-			return nil, fleet.NewPermissionError("Error: You don’t have permission to view specified software. It is installed on hosts that belong to team you don’t have permissions to view.")
+			// Found, but user has no permission to hosts it's installed on.
+			// Instead of PermissionError, return a stub with the name.
+			stub := &fleet.Software{
+				ID:   id,
+				Name: sw.Name,
+			}
+			return stub, nil
 		}
-
 		return nil, ctxerr.Wrap(ctx, err, "getting software version by id")
+	}
+	if !license.IsPremium(ctx) {
+		software.AITool = nil
 	}
 
 	return software, nil
+}
+
+func (svc *Service) SoftwareLiteByID(
+	ctx context.Context,
+	id uint,
+) (fleet.SoftwareLite, error) {
+	if err := svc.authz.Authorize(ctx, &fleet.AuthzSoftwareInventory{}, fleet.ActionRead); err != nil {
+		return fleet.SoftwareLite{}, err
+	}
+	swLite, err := svc.ds.SoftwareLiteByID(ctx, id)
+	if err != nil {
+		return fleet.SoftwareLite{}, err
+	}
+
+	return swLite, nil
 }
 
 /////////////////////////////////////////////////////////////////////////////////
@@ -241,8 +290,13 @@ func (svc Service) CountSoftware(ctx context.Context, opt fleet.SoftwareListOpti
 	}
 
 	// Vulnerability filters are only available in premium
-	if !lic.IsPremium() && (opt.MaximumCVSS > 0 || opt.MinimumCVSS > 0 || opt.KnownExploit) {
+	if !lic.IsPremium() && (opt.MaximumCVSS > 0 || opt.MinimumCVSS > 0 || opt.KnownExploit || opt.AITool) {
 		return 0, fleet.ErrMissingLicense
+	}
+
+	opt.TypeFilter, err = fleet.ParseSoftwareTypeFilter(opt.Source, opt.ExtensionFor)
+	if err != nil {
+		return 0, err
 	}
 
 	// required for vulnerability filters

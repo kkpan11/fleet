@@ -1,12 +1,14 @@
 package fleet
 
 import (
+	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"time"
 )
 
-var ErrPasswordResetNotConfigured = errors.New("Cannot send password reset. SMTP or SES Is not configured.")
+var ErrPasswordResetNotConfigured = errors.New("Cannot send password reset. Requires that SMTP or SES (email) is configured.")
 
 // Mailer is an email campaign
 // Types which implement the Campaign interface
@@ -24,7 +26,7 @@ type Email struct {
 }
 
 type MailService interface {
-	SendEmail(e Email) error
+	SendEmail(ctx context.Context, e Email) error
 	CanSendEmail(smtpSettings SMTPSettings) bool
 }
 
@@ -54,4 +56,11 @@ var rxLooseEmail = regexp.MustCompile(`^[^\s@]+@[^\s@\.]+\..+$`)
 // an email.
 func IsLooseEmail(email string) bool {
 	return rxLooseEmail.MatchString(email)
+}
+
+// EmailLocalPart returns the part before the "@", or the whole value when there
+// is no "@".
+func EmailLocalPart(email string) string {
+	local, _, _ := strings.Cut(email, "@")
+	return local
 }

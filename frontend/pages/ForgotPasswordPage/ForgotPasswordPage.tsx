@@ -1,16 +1,16 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { InjectedRouter } from "react-router";
+
+import AuthenticationFormWrapper from "components/AuthenticationFormWrapper";
+import AuthenticationNav from "components/AuthenticationNav";
+import CustomLink from "components/CustomLink";
+import ForgotPasswordForm, {
+  IForgotPasswordFormData,
+} from "components/forms/ForgotPasswordForm/ForgotPasswordForm";
+import { notify } from "components/ToastNotification";
 import PATHS from "router/paths";
 import usersAPI from "services/entities/users";
 import formatErrorResponse from "utilities/format_error_response";
-
-// @ts-ignore
-import ForgotPasswordForm from "components/forms/ForgotPasswordForm";
-// @ts-ignore
-import StackedWhiteBoxes from "components/StackedWhiteBoxes";
-import AuthenticationFormWrapper from "components/AuthenticationFormWrapper";
-import Spinner from "components/Spinner";
-import CustomLink from "components/CustomLink";
 
 interface IForgotPasswordPage {
   router: InjectedRouter;
@@ -18,36 +18,24 @@ interface IForgotPasswordPage {
 
 const ForgotPasswordPage = ({ router }: IForgotPasswordPage) => {
   const [email, setEmail] = useState("");
-  const [errors, setErrors] = useState<{ [key: string]: string }>({});
-  const [isLoading, setIsLoading] = useState(false);
 
   const baseClass = "forgot-password";
 
-  useEffect(() => {
-    setErrors({});
-  }, []);
-
-  const handleSubmit = async (formData: any) => {
-    setIsLoading(true);
+  const handleSubmit = async (formData: IForgotPasswordFormData) => {
     try {
       await usersAPI.forgotPassword(formData);
-
       setEmail(formData.email);
-      setErrors({});
     } catch (response) {
-      const errorObject = formatErrorResponse(response);
       setEmail("");
-      setErrors(errorObject);
-      return false;
-    } finally {
-      setIsLoading(false);
+      const { base } = formatErrorResponse(response);
+      notify.error(base || "Couldn't send the reset email. Try again.", {
+        response,
+      });
     }
   };
 
   const renderContent = () => {
-    if (isLoading) {
-      return <Spinner />;
-    } else if (email) {
+    if (email) {
       return (
         <div className={`${baseClass}__text-wrapper`}>
           <p className={`${baseClass}__text`}>
@@ -68,20 +56,18 @@ const ForgotPasswordPage = ({ router }: IForgotPasswordPage) => {
       );
     }
 
-    return (
-      <ForgotPasswordForm
-        handleSubmit={handleSubmit}
-        onChangeFunc={() => setErrors({})}
-        serverErrors={errors}
-      />
-    );
+    return <ForgotPasswordForm handleSubmit={handleSubmit} />;
   };
 
   return (
-    <AuthenticationFormWrapper>
-      <StackedWhiteBoxes previousLocation={PATHS.LOGIN} router={router}>
-        <div className={baseClass}>{renderContent()}</div>
-      </StackedWhiteBoxes>
+    <AuthenticationFormWrapper
+      header="Reset password"
+      headerCta={
+        <AuthenticationNav previousLocation={PATHS.LOGIN} router={router} />
+      }
+      className={baseClass}
+    >
+      {renderContent()}
     </AuthenticationFormWrapper>
   );
 };

@@ -1,4 +1,5 @@
 import React from "react";
+
 import { COLORS, Colors } from "styles/var/colors";
 import { ICON_SIZES, IconSizes } from "styles/var/icon_sizes";
 
@@ -11,7 +12,7 @@ interface ILinuxCircledProps {
 const LinuxCircled = ({
   size = "extra-large",
   iconColor = "ui-fleet-black-75", // default grey
-  bgColor = "ui-blue-10", // default light blue
+  bgColor = "ui-fleet-black-10", // default light grey
 }: ILinuxCircledProps) => {
   return (
     <svg

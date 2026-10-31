@@ -1,14 +1,7 @@
 .host-details,
 .device-user {
-  .react-tabs__tab-panel--selected {
-    margin-top: $pad-medium;
-  }
+  @include vertical-page-layout;
 
-  display: flex;
-  flex-direction: column;
-  gap: $pad-medium;
-
-  @include color-contrasted-sections;
   .header {
     display: flex;
     flex-direction: column;
@@ -55,39 +48,42 @@
 
     .display-name-container {
       display: flex;
-      align-items: center;
+      align-items: baseline; // Align text to bottom
+      // Wrap "Last fetched..." below the h1 when the refetch button expands
+      // and squeezes the row.
+      flex-wrap: wrap;
+      column-gap: $pad-medium;
+      row-gap: $pad-xsmall;
+
+      // TooltipWrapper's <span> and inner __element div both sit in flex
+      // contexts; both need min-width: 0 for the h1's ellipsis to engage.
+      > * {
+        min-width: 0;
+      }
+
+      .component__tooltip-wrapper__element {
+        min-width: 0;
+        overflow: hidden;
+      }
+    }
+
+    // Let .title__inner shrink so the h1 can truncate.
+    .title__inner {
+      flex: 1 1 0;
+      min-width: 0;
     }
 
     .display-name {
       font-size: $large;
-      font-weight: $bold;
-      @include ellipse-text(300px);
-
-      @media (min-width: $break-md) {
-        @include ellipse-text(500px);
-      }
-
-      @media (min-width: $break-lg) {
-        @include ellipse-text(800px);
-      }
-
-      @media (min-width: $break-xxl) {
-        @include ellipse-text(1000px);
-      }
+      // No max-width: truncate only when the row runs out of room.
+      @include ellipse-text;
+      min-width: 0;
     }
   }
 
-  &__tab-nav {
-    background-color: $ui-off-white;
+  &__tab-nav,
+  &__software-tab-nav {
     width: 100%;
-
-    // direct descendant of selector allows us to only change the first level of
-    // tab styling and not change the tabs inside the cards.
-    > .react-tabs > .react-tabs__tab-list {
-      .react-tabs__tab--selected {
-        background-color: $ui-off-white;
-      }
-    }
   }
 
   .col-50 {
@@ -151,12 +147,7 @@
     &__container {
       margin: $pad-xxlarge 0; // Equal padding above and below empty states
       min-height: initial;
+      align-self: center;
     }
   }
-}
-
-// we dont need the margin on the host details page as we are not using grid css
-// for the spacing.
-.host-details__tab-nav .card {
-  margin-top: 0;
 }

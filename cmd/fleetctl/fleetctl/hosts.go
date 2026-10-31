@@ -2,6 +2,7 @@ package fleetctl
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/urfave/cli/v2"
 )
@@ -26,15 +27,16 @@ func hostsCommand() *cli.Command {
 func transferCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "transfer",
-		Usage:     "Transfer one or more hosts to a team",
-		UsageText: `This command will gather the set of hosts specified and transfer them to the team.`,
+		Usage:     "Transfer one or more hosts to a fleet",
+		UsageText: `This command will gather the set of hosts specified and transfer them to the fleet.`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     teamFlagName,
-				Usage:    "Team name hosts will be transferred to. Use '' for No team",
+				Name:     fleetFlagName,
+				Aliases:  []string{"team"},
+				Usage:    "Fleet name hosts will be transferred to. Use '' for unassigned",
 				Required: true,
 			},
-			&cli.StringSliceFlag{
+			&cli.StringFlag{
 				Name:  hostsFlagName,
 				Usage: "Comma-separated hostnames to transfer",
 			},
@@ -61,8 +63,11 @@ func transferCommand() *cli.Command {
 				return err
 			}
 
-			team := c.String(teamFlagName)
-			hosts := c.StringSlice(hostsFlagName)
+			team := c.String(fleetFlagName)
+			var hosts []string
+			if hostsFlag := c.String(hostsFlagName); hostsFlag != "" {
+				hosts = strings.Split(hostsFlag, ",")
+			}
 			label := c.String(labelFlagName)
 			status := c.String(statusFlagName)
 			searchQuery := c.String(searchQueryFlagName)

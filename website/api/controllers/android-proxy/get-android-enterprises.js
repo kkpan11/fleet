@@ -1,0 +1,124 @@
+module.exports = {
+
+
+  friendlyName: 'Get android enterprises',
+
+
+  description: 'List all android enterprises accessible to the calling user.',
+
+
+  inputs: {
+    // No inputs needed for list endpoint
+  },
+
+
+  exits: {
+    success: { description: 'Android enterprises list was successfully retrieved.' },
+    missingAuthHeader: { description: 'This request was missing an authorization header.', responseType: 'unauthorized'},
+    missingOriginHeader: { description: 'The request was missing an Origin header', responseType: 'badRequest'},
+    unauthorized: { description: 'Invalid authentication token.', responseType: 'unauthorized'},
+    notFound: { description: 'No Android enterprise found for this Fleet server.', responseType: 'notFound'},
+    tooManyRequests: { description: 'The Android management API rate limit was exceeded.', statusCode: 429 },
+  },
+
+
+  fn: async function () {
+
+    // Extract fleetServerSecret from the Authorization header
+    let authHeader = this.req.get('authorization');
+    let fleetServerSecret;
+
+    if (authHeader && authHeader.startsWith('Bearer')) {
+      fleetServerSecret = authHeader.replace('Bearer', '').trim();
+    } else {
+      throw 'missingAuthHeader';
+    }
+
+    let fleetServerUrl = this.req.get('Origin');
+    if (!fleetServerUrl) {
+      throw 'missingOriginHeader';
+    }
+
+    let thisAndroidEnterprise = await AndroidEnterprise.findOne({
+      fleetServerUrl: fleetServerUrl
+    });
+
+    if (!thisAndroidEnterprise) {
+      throw 'notFound';
+    }
+
+    if (thisAndroidEnterprise.fleetServerSecret !== fleetServerSecret) {
+      throw 'unauthorized';
+    }
+
+    // Get the shared Google API auth client with the getAndroidManagementAuthorizationClient helper.
+    // Note: we are doing this outside of the sails.helpers.flow.build() so any errors related to the website's credentials returned by the helper are not intercepted.
+    let androidManagementAuthClient = await sails.helpers.androidProxy.getAndroidManagementAuthorizationClient();
+
+    // Get the Android enterprises list from Google
+    try {
+      let enterprisesList = await sails.helpers.flow.build(async ()=>{
+        let { google } = require('googleapis');
+        let androidManagementConnection = google.androidmanagement({version: 'v1', auth: androidManagementAuthClient});
+
+        // List all enterprises accessible to this service account
+        let allEnterprises = [];
+        let tokenForNextPageOfEnterprises;
+        await sails.helpers.flow.until(async ()=>{
+          sails.androidProxyApiRequestCount++;// Count this Android Management API request toward the per-minute total logged in api/hooks/custom/index.js.
+          if (!sails.androidProxyApiRequestCountByEnterpriseId[thisAndroidEnterprise.androidEnterpriseId]) { sails.androidProxyApiRequestCountByEnterpriseId[thisAndroidEnterprise.androidEnterpriseId] = {count: 0, fleetServerUrl: thisAndroidEnterprise.fleetServerUrl}; }
+          sails.androidProxyApiRequestCountByEnterpriseId[thisAndroidEnterprise.androidEnterpriseId].count++;          let _rtKey = thisAndroidEnterprise.androidEnterpriseId + ':list_enterprises';
+          if (!sails.androidProxyApiRequestCountByRequestType[_rtKey]) { sails.androidProxyApiRequestCountByRequestType[_rtKey] = {count: 0, enterpriseId: thisAndroidEnterprise.androidEnterpriseId, fleetServerUrl: thisAndroidEnterprise.fleetServerUrl, requestType: 'list_enterprises'}; }
+          sails.androidProxyApiRequestCountByRequestType[_rtKey].count++;
+          let listEnterprisesResponse = await androidManagementConnection.enterprises.list({
+            projectId: sails.config.custom.androidEnterpriseProjectId,
+            pageSize: 100,
+            pageToken: tokenForNextPageOfEnterprises,
+          });
+          tokenForNextPageOfEnterprises = listEnterprisesResponse.data.nextPageToken;
+          if (listEnterprisesResponse.data.enterprises) {
+            allEnterprises = allEnterprises.concat(listEnterprisesResponse.data.enterprises);
+          }
+
+          if(!listEnterprisesResponse.data.nextPageToken){
+            return true;
+          }
+        });
+
+        return allEnterprises;
+      }).intercept({status: 429}, ()=>{
+        // If the Android management API returns a 429 response, log an additional warning that will trigger a help-p1 alert.
+        sails.log.warn(`p1: Android management API rate limit exceeded!`);
+        // Pass the 429 through to the Fleet server rather than collapsing it into a 500, so it can retry.
+        return 'tooManyRequests';
+      }).intercept((err)=>{
+        // Re-throw the error for handling outside the intercept
+        return err;
+      });
+
+      // Filter the results to only include enterprises belonging to this Fleet instance
+      let allEnterprises = enterprisesList || [];
+      let filteredEnterprises = allEnterprises.filter(enterprise => {
+        if (!enterprise) {
+          return false;
+        }
+        // Extract enterprise ID from the Google enterprise name (format: "enterprises/ENTERPRISE_ID")
+        let enterpriseId = enterprise.name ? enterprise.name.split('/')[1] : null;
+        return enterpriseId === thisAndroidEnterprise.androidEnterpriseId;
+      });
+
+      // Return only the enterprises belonging to this Fleet instance
+      return { enterprises: filteredEnterprises };
+
+    } catch (err) {
+      // The 429 intercept above hands back the tooManyRequests exit wrapped in an Error; let it through.
+      if (err.raw === 'tooManyRequests') {
+        throw 'tooManyRequests';
+      }
+      throw new Error(`When attempting to list android enterprises, an error occurred. Error: ${err}`);
+    }
+
+  }
+
+
+};

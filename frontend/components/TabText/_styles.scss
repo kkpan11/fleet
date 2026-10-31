@@ -10,14 +10,21 @@
     padding: 1px 12px;
     justify-content: center;
     align-items: center;
-    background-color: $core-vibrant-blue;
+    background-color: $core-fleet-green;
     border-radius: 29px;
-    color: $core-white;
+    color: $core-fleet-white;
     font-weight: $bold;
     font-size: $xx-small;
 
-    &--error {
+    &__alert {
       background-color: $core-vibrant-red;
     }
+    &__pending {
+      background-color: $ui-fleet-black-50;
+    }
+  }
+
+  &__check {
+    transform: scale(0.85);
   }
 }

@@ -1,6 +1,7 @@
 import React from "react";
 
 import { COLORS, Colors } from "styles/var/colors";
+
 // import { ICON_SIZES, IconSizes } from "styles/var/icon_sizes";
 
 interface IGitOpsModeIconProps {
@@ -10,7 +11,7 @@ interface IGitOpsModeIconProps {
 
 const GitOpsMode = ({
   // size = "small",
-  color = "core-fleet-white",
+  color = "ui-fleet-black-75",
 }: IGitOpsModeIconProps) => {
   // const iconSize = ICON_SIZES[size];
   return (

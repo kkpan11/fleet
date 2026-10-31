@@ -1,6 +1,5 @@
-import { ICertificatesIntegrationCustomSCEP } from "interfaces/integration";
-
-import valid_url from "components/forms/validators/valid_url";
+import { isValidURL } from "components/forms/validators";
+import { ICertificateAuthorityPartial } from "interfaces/certificates";
 
 import { ICustomSCEPFormData } from "./CustomSCEPForm";
 
@@ -29,7 +28,7 @@ type IFormValidations = Record<
 >;
 
 export const generateFormValidations = (
-  customSCEPIntegrations: ICertificatesIntegrationCustomSCEP[],
+  certAuthorities: ICertificateAuthorityPartial[],
   isEditing: boolean
 ) => {
   const FORM_VALIDATIONS: IFormValidations = {
@@ -54,8 +53,10 @@ export const generateFormValidations = (
           isValid: (formData: ICustomSCEPFormData) => {
             return (
               isEditing ||
-              customSCEPIntegrations.find(
-                (cert) => cert.name === formData.name
+              certAuthorities.find(
+                (cert) =>
+                  cert.type === "custom_scep_proxy" &&
+                  cert.name === formData.name
               ) === undefined
             );
           },
@@ -74,7 +75,7 @@ export const generateFormValidations = (
         {
           name: "validUrl",
           isValid: (formData: ICustomSCEPFormData) => {
-            return valid_url({ url: formData.scepURL });
+            return isValidURL({ url: formData.scepURL });
           },
           message: "Must be a valid URL.",
         },
